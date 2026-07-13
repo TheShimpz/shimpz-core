@@ -23,6 +23,7 @@ Design (deliberately minimal — no bearer, no TLS termination):
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 import select
 import socket
@@ -71,6 +72,38 @@ def permitted(host: str, port: int) -> bool:
     return False
 
 
+def _resolve_public(host: str, port: int) -> tuple[int, tuple] | None:
+    """Resolve host:port to a verified-PUBLIC address, or None if it resolves to an internal IP.
+
+    The confused-deputy guard. This proxy is (with Capsules) multi-homed onto many internal nets, so a
+    caller could otherwise `CONNECT shimpz-brain:3000` / `CONNECT capsule_<other>:<port>` / a datastore
+    and have this proxy tunnel to it. So `*` must mean "any PUBLIC host", NEVER an in-cluster peer: a
+    CONNECT to an internal NAME or a literal RFC1918/loopback/link-local/reserved IP is refused. We then
+    connect to the EXACT verified address (never a re-resolve), closing the resolve→connect TOCTOU and
+    any split-horizon fall-through to an internal address.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return None
+    for family, _stype, _proto, _canon, sockaddr in infos:
+        try:
+            addr = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            return None  # any internal resolution → refuse the whole CONNECT (no partial trust)
+        return family, sockaddr
+    return None
+
+
 class Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         cli = self.request
@@ -94,8 +127,25 @@ class Handler(socketserver.BaseRequestHandler):
             src = {"source": "loopback-probe"} if probe else {}
             audit.log("connect", f"{host}:{port}", result="denied", level="info" if probe else "warn", code=403, **src)
             return
+        resolved = _resolve_public(host, port)
+        if resolved is None:  # internal (RFC1918/loopback/…) or unresolvable → refuse the pivot
+            self._reply(cli, 403)
+            src = {"source": "loopback-probe"} if probe else {}
+            audit.log(
+                "connect",
+                f"{host}:{port}",
+                result="denied",
+                level="info" if probe else "warn",
+                code=403,
+                reason="internal or unresolvable destination",
+                **src,
+            )
+            return
+        family, sockaddr = resolved
         try:
-            upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
+            upstream = socket.socket(family, socket.SOCK_STREAM)
+            upstream.settimeout(CONNECT_TIMEOUT)
+            upstream.connect(sockaddr)  # the EXACT verified-public address, not a re-resolve
         except OSError as exc:
             self._reply(cli, 502)
             audit.log("connect", f"{host}:{port}", result="error", reason=str(exc))
