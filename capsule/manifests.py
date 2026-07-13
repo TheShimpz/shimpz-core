@@ -9,14 +9,44 @@ no secrets keyring, no browser, no Telegram — reached out to the internet ONLY
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
+import tarfile
 
 import docker
 import docker.types
+from marketplace import AppSpec
 
 # Multi-instance (R137): SHIMPZ_SUFFIX names this Space's resources; empty (the default) is prod.
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")
 IMAGE = os.environ.get("SHIMPZ_CAPSULE_IMAGE", "shimpz-brain:shimpz-local")
+
+# ── Brains (ADR-0004): the agent RUNTIME a Capsule boots, a per-Capsule choice ──────────────────
+# The same trusted-registry pattern as the marketplace: the store forwards only a brain id; THIS map
+# decides the image. Only brains that actually boot are listed (the storefront-honesty rule) —
+# codex/opencode enter here when their images exist. Auth is NEVER pre-provisioned: the Captain
+# authenticates the brain (interactive `claude` login, or an API key) after creation.
+BRAINS: dict[str, dict[str, str]] = {
+    "claude-code": {"image": IMAGE, "title": "Claude Code"},
+}
+DEFAULT_BRAIN = "claude-code"
+
+
+def build_inbox_tar(filename: str, data: bytes) -> bytes:
+    """A single-file tar for put_archive into the capsule's workspace inbox.
+
+    Owned by the runtime user (uid/gid 1000 = abc) so the brain can read AND clean it up.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(data)
+        info.mode = 0o644
+        info.uid = info.gid = 1000
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
 
 # Shared-plane container names (suffix-aware) that get CONNECTED into each capsule's own internal net —
 # passed from compose exactly like shimpz-driver receives SHIMPZ_POSTGRES_CONTAINER etc. Deliberately
@@ -40,6 +70,15 @@ PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "2048"))
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SHIMPZ_MODEL = os.environ.get("SHIMPZ_MODEL", "claude-sonnet-5")
+
+# Per-capsule APP envelope (mirrors drivers/apps: 1g because real uvicorn backends idle near 500 MiB —
+# R125; 0.5 vCPU; pids capped). One installed app = one container INSIDE the capsule's own network.
+APP_MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_APP_MEM_LIMIT", "1g")
+APP_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_APP_NANO_CPUS", str(500_000_000)))
+APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_APP_PIDS_LIMIT", "256"))
+# The MANY-tenant egress proxy (per-app token-gated) — connected into a capsule's net only when an
+# installed app actually declares egress; the capsule brain itself keeps using the brain-grade egress-proxy.
+APP_EGRESS_CONTAINER = os.environ.get("SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{SUFFIX}")
 
 # Vector reads Docker's json-file logs and derives the capsule from the line's own label (no Docker API).
 CAP_LOG_CONFIG = docker.types.LogConfig(type=docker.types.LogConfig.types.JSON, config={"labels": "capsule.id"})
@@ -65,6 +104,26 @@ def capsule_db_project(cid: str) -> str:
     return f"capsule_{cid}"
 
 
+def capsule_app_sane(app_id: str) -> str:
+    """The catalog id ('notification-center') as a Docker/Postgres-safe token ('notification_center')."""
+    return app_id.replace("-", "_")
+
+
+def capsule_app_container_name(cid: str, app_id: str) -> str:
+    return f"{CAPSULE_PREFIX}{cid}_app_{capsule_app_sane(app_id)}"
+
+
+def capsule_app_db_project(cid: str, app_id: str) -> str:
+    """The per-(capsule, app) DB project: 'cap_<sha10(cid)>_<app>'.
+
+    Deterministic (uninstall/teardown re-derive it with no lookup) and always within pg-driver's
+    58-char project cap: a readable 'capsule_<cid>_<app>' would overflow at the 40-char capsule-id
+    maximum, so the capsule contributes a fixed 10-hex digest instead.
+    """
+    digest = hashlib.sha256(cid.encode()).hexdigest()[:10]
+    return f"cap_{digest}_{capsule_app_sane(app_id)}"
+
+
 def shared_deps() -> list[tuple[str, list[str]]]:
     """(container_name, [aliases]) to connect into each capsule's OWN internal net.
 
@@ -80,11 +139,14 @@ def shared_deps() -> list[tuple[str, list[str]]]:
     ]
 
 
-def build_capsule_kwargs(cid: str, name: str, *, database_url: str, owner: str = "") -> dict:
+def build_capsule_kwargs(
+    cid: str, name: str, *, database_url: str, owner: str = "", brain: str = DEFAULT_BRAIN
+) -> dict:
     """Kwargs for docker-py's low-level `containers.create` — never `run`.
 
     `run` would risk an accidental host-port publish or default-network attach; the whole isolation
-    model depends on create + one explicit network.
+    model depends on create + one explicit network. `brain` picks the agent runtime image from the
+    trusted BRAINS registry (validated by the caller) and is recorded as the capsule.brain label.
     """
     env = {
         "PUID": "1000",
@@ -95,13 +157,16 @@ def build_capsule_kwargs(cid: str, name: str, *, database_url: str, owner: str =
         "SHIMPZ_CAPSULE_ID": cid,
         "SHIMPZ_CAPSULE_NAME": name,
         # DEFAULT-DENY EGRESS (same posture as the main brain): off any default route, the ONLY way out
-        # is the allowlist CONNECT proxy. NO_PROXY lists the in-cluster hosts it reaches directly.
+        # is the allowlist CONNECT proxy. NO_PROXY lists the in-cluster hosts it reaches directly;
+        # `.capsule` is the SUFFIX every installed app also answers on (<app-id>.capsule) — app names
+        # aren't knowable at capsule create, a suffix is, so http://<app-id>.capsule:<port> bypasses
+        # the proxy in every NO_PROXY-honoring client (curl/python/node all tail-match entries).
         "HTTPS_PROXY": "http://egress-proxy:8888",
         "HTTP_PROXY": "http://egress-proxy:8888",
         "https_proxy": "http://egress-proxy:8888",
         "http_proxy": "http://egress-proxy:8888",
-        "NO_PROXY": "localhost,127.0.0.1,::1,egress-proxy,postgres",
-        "no_proxy": "localhost,127.0.0.1,::1,egress-proxy,postgres",
+        "NO_PROXY": "localhost,127.0.0.1,::1,egress-proxy,postgres,.capsule",
+        "no_proxy": "localhost,127.0.0.1,::1,egress-proxy,postgres,.capsule",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         # The capsule's OWN scoped database — a least-privilege proj_ role, never the superuser.
         "DATABASE_URL": database_url,
@@ -128,7 +193,7 @@ def build_capsule_kwargs(cid: str, name: str, *, database_url: str, owner: str =
     if ANTHROPIC_API_KEY:
         env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
     return {
-        "image": IMAGE,
+        "image": BRAINS[brain]["image"],
         "name": capsule_container_name(cid),
         "hostname": cid,
         "environment": env,
@@ -159,7 +224,70 @@ def build_capsule_kwargs(cid: str, name: str, *, database_url: str, owner: str =
             retries=3,
             start_period=60 * 10**9,
         ),
-        "labels": {"capsule.driver": "1", "capsule.id": cid, "capsule.name": name, "capsule.owner": owner},
+        "labels": {
+            "capsule.driver": "1",
+            "capsule.id": cid,
+            "capsule.name": name,
+            "capsule.owner": owner,
+            "capsule.brain": brain,
+        },
+        "log_config": CAP_LOG_CONFIG,
+        "detach": True,
+    }
+
+
+def build_capsule_app_kwargs(
+    cid: str,
+    app_id: str,
+    spec: AppSpec,
+    *,
+    database_url: str = "",
+    proxy_env: dict[str, str] | None = None,
+    owner: str = "",
+    capsule_name: str = "",
+) -> dict:
+    """Kwargs for an installed APP container inside capsule `cid`'s own network.
+
+    Tighter than the capsule brain (the packaging contract allows it): non-root fixed uid, cap_drop ALL,
+    read-only rootfs with a /tmp tmpfs, no mounts at all — the app's ONLY state is its scoped DB, so an
+    app container is disposable by construction. `proxy_env` is the app-egress lock (HTTPS_PROXY with the
+    app's own token) — injected here by app.py only when the registry spec declares egress, never
+    caller-suppliable. NOTE: the label is `capsule.app.driver`, NOT `capsule.driver` — app containers must
+    never count against the capsule quota or appear in the capsule list.
+    """
+    env = {
+        # The contract: the app answers HTTP on $PORT on its own interface (see sdk packaging docs).
+        "PORT": str(spec.port),
+        "HOST": "0.0.0.0",  # noqa: S104 — the APP CONTAINER's own bind address, not this process's
+        "SHIMPZ_CAPSULE_ID": cid,
+        # The capsule's DISPLAY name — the owner-given identity ("the hero's name"), so every app can
+        # speak AS its capsule ("Zyon asks your approval") instead of leaking an internal id.
+        "SHIMPZ_CAPSULE_NAME": capsule_name or cid,
+        "SHIMPZ_APP": app_id,
+        "NO_PROXY": "localhost,127.0.0.1,::1,postgres,.capsule",
+        "no_proxy": "localhost,127.0.0.1,::1,postgres,.capsule",
+        **({"DATABASE_URL": database_url} if database_url else {}),
+        **(proxy_env or {}),
+    }
+    return {
+        "image": spec.image,
+        "name": capsule_app_container_name(cid, app_id),
+        "environment": env,
+        "user": "10001:10001",
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "privileged": False,
+        # ONE network at create: the capsule's OWN internal bridge (app.py re-attaches with the app-id
+        # alias so the capsule brain reaches it as http://<app-id>:<port>). Never a shared app net —
+        # apps are per-Capsule (ADR-0002); a shared instance would mix tenant data.
+        "network": capsule_network_name(cid),
+        "read_only": True,
+        "tmpfs": {"/tmp": "size=256m"},  # noqa: S108 — the APP CONTAINER's own scratch mount
+        "mem_limit": APP_MEM_LIMIT,
+        "nano_cpus": APP_NANO_CPUS,
+        "pids_limit": APP_PIDS_LIMIT,
+        "restart_policy": {"Name": "unless-stopped"},
+        "labels": {"capsule.app.driver": "1", "capsule.id": cid, "capsule.app": app_id, "capsule.owner": owner},
         "log_config": CAP_LOG_CONFIG,
         "detach": True,
     }

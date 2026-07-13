@@ -42,14 +42,17 @@ COPY pyproject.toml .
 # Pinned EXACT (not the open range pyproject documents for humans) — SECURITY_ENGINEERING_PLAN.md item 6.
 RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python --no-cache-dir docker==7.1.0
 
-COPY app.py validate.py manifests.py audit.py token_store.py pgdriver_client.py accounts_client.py healthcheck.py ./
+COPY app.py validate.py manifests.py marketplace.py audit.py token_store.py pgdriver_client.py accounts_client.py healthcheck.py ./
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
 # non-root user. /run/shimpz-capsuledriver gets GROUP `shimpzcapsuledriver-token` so the fresh volume's
 # perms already match what the token file inside needs — readable by the admin panel via that group.
-RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver \
+RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver /app-egress-policy \
     && chown capsuledriver:shimpzcapsuledriver-token /run/shimpz-capsuledriver && chmod 750 /run/shimpz-capsuledriver \
-    && chown -R capsuledriver:dockersock /var/log/capsule-driver
+    && chown -R capsuledriver:dockersock /var/log/capsule-driver \
+    # egress-policy mountpoint owned by the driver uid, so a FRESH policy volume copies up writable
+    # (an existing root-owned volume needs the one-time `chown 10001` — see docs/TESTS.md)
+    && chown capsuledriver:dockersock /app-egress-policy
 
 USER capsuledriver
 EXPOSE 7077
