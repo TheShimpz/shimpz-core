@@ -1,0 +1,11 @@
+# Build artefacts + secrets — never committed (keeps the every-turn sync clean)
+__pycache__/
+*.py[cod]
+node_modules/
+.venv/
+build/
+.svelte-kit/
+.output/
+.env
+.env.*
+!.env.example
