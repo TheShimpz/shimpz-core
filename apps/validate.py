@@ -9,6 +9,7 @@ request what this module allows.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass
@@ -21,14 +22,16 @@ PORT_MIN, PORT_MAX = 3100, 3999
 # The Claude-subscription OAuth code the panel forwards to `shimpz-login submit`. Claude's real code is
 # `<code>#<state>`, so the charset is "printable ASCII, no whitespace" — IDENTICAL to shimpz-login's own
 # SUBMIT_CODE_RE. The one real risk is whitespace/newline (a second stdin line typed into the brain's
-# interactive CLI), which this excludes; the code is validated HERE, then passed as a single argv
-# element (never a shell) and written to a file, so a `;`/backtick/`$` in it is inert.
+# interactive CLI), which this excludes; the code is validated HERE, then carried on private exec
+# stdin and written to a file, so a `;`/backtick/`$` in it is inert.
 LOGIN_CODE_RE = re.compile(r"^[!-~]{1,4096}$")
 
-# Every app runs one of these two runtime images — never a client-supplied image string.
+# Every app runs one of these two operator-selected release images — never a client-supplied image
+# string. The defaults preserve local development; an immutable release override injects each exact
+# manifest digest into shimpz-driver so app containers cannot drift behind the control plane.
 ALLOWED_IMAGES = {
-    "python": "shimpz-app-runtime:local",
-    "node": "shimpz-app-runtime-node:local",
+    "python": os.environ.get("SHIMPZ_APP_RUNTIME_IMAGE", "shimpz-app-runtime:local"),
+    "node": os.environ.get("SHIMPZ_APP_RUNTIME_NODE_IMAGE", "shimpz-app-runtime-node:local"),
 }
 ALLOWED_ENTRYPOINT_BINS = frozenset({"uv", "uvicorn", "python", "python3", "pnpm", "node"})
 ARG_RE = re.compile(r"^[A-Za-z0-9_./:=@,+-]{1,200}$")
@@ -40,12 +43,25 @@ ARG_RE = re.compile(r"^[A-Za-z0-9_./:=@,+-]{1,200}$")
 EGRESS_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
 REFUSED_EGRESS_HOSTS = frozenset(
     {
-        "api.stripe.com", "js.stripe.com", "checkout.stripe.com", "api.paypal.com", "api-m.paypal.com",
-        "api.braintreegateway.com", "api.adyen.com", "checkout.adyen.com", "api.razorpay.com",
-        "api.mercadopago.com", "api.pagar.me", "api.mollie.com", "api.paddle.com", "api.lemonsqueezy.com",
+        "api.stripe.com",
+        "js.stripe.com",
+        "checkout.stripe.com",
+        "api.paypal.com",
+        "api-m.paypal.com",
+        "api.braintreegateway.com",
+        "api.adyen.com",
+        "checkout.adyen.com",
+        "api.razorpay.com",
+        "api.mercadopago.com",
+        "api.pagar.me",
+        "api.mollie.com",
+        "api.paddle.com",
+        "api.lemonsqueezy.com",
         "connect.squareup.com",
+        "metadata.google.internal",
     }
 )
+REFUSED_EGRESS_SUFFIXES = (".home", ".internal", ".lan", ".local", ".localhost")
 
 # Positive allowlist: an app env var must be one of these keys. Every global secret name is
 # excluded BY CONSTRUCTION, not by a deny-list that could go stale (section 3).
@@ -69,6 +85,7 @@ FORBIDDEN_ENV_KEYS = frozenset(
         "CF_TUNNEL_TOKEN",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
+        "SHIMPZ_OPENAI_MEDIA_API_KEY",
         "VOICE_TOOLS_OPENAI_KEY",
         "GITHUB_TOKEN",
         "TELEGRAM_BOT_TOKEN",
@@ -79,10 +96,10 @@ FORBIDDEN_ENV_KEYS = frozenset(
 )
 
 DSN_RE = re.compile(r"^postgres(?:ql)?(?:\+\w+)?://proj_([a-z0-9_]+):[^@]+@postgres:5432/proj_([a-z0-9_]+)$")
-# shimpz-bus provision <project> always names the SCRAM user proj_<project> (mirrors shimpz-db's own
-# proj_<name> role) — same cross-project-credential-mismatch gate as DATABASE_URL below, so a
-# project can't declare another project's bus identity even if driver-side validation were
-# ever the only line of defense.
+# shimpz-bus provision <project> always names the SCRAM user proj_<project> (the same canonical
+# proj_<name> identity as the scoped Postgres role) — the same cross-project-credential-mismatch gate
+# as DATABASE_URL below. A project cannot declare another project's bus identity even if driver-side
+# validation were ever the only line of defense.
 BUS_USERNAME_RE = re.compile(r"^proj_([a-z0-9_]+)$")
 
 
@@ -91,7 +108,7 @@ class ValidationError(Exception):
 
 
 def sanitize_proj(name: str) -> str:
-    """Port of shimpzdetect.sh's _sanitize_proj — MUST match it exactly (shimpz-db/shimpz-app agree)."""
+    """Port of shimpzdetect.sh's _sanitize_proj — all app/control-plane validators must match exactly."""
     lowered = re.sub(r"[^a-z0-9_]+", "_", name.lower())
     return lowered.strip("_")
 
@@ -248,13 +265,12 @@ def validate_fqdn(fqdn: str) -> str:
 
 
 def validate_login_code(code: object) -> str:
-    """The Claude-subscription OAuth code the panel forwards to `shimpz-login submit` — argv, never a shell string.
+    """The Claude-subscription OAuth code sent to `shimpz-login submit` on private exec stdin.
 
     Rejected (a 400 that NEVER reaches the container) unless it matches the same charset
-    shimpz-login's own `submit` enforces: ^[A-Za-z0-9._~=/+-]{1,4096}$ — no whitespace, newline,
-    `;`, or backtick. The code is then passed as a single argv element, so this gate is defense
-    in depth on top of no-shell exec, but it is the security-sensitive line and is kept identical
-    on both sides. The refusal message NEVER echoes the code.
+    shimpz-login's own `submit` enforces: printable ASCII, 1..4096 chars, with no whitespace. The
+    fixed exec command receives the code only over stdin; this gate remains defense in depth and is
+    kept identical on both sides. The refusal message NEVER echoes the code.
     """
     if not isinstance(code, str) or not LOGIN_CODE_RE.match(code):
         raise ValidationError("login code must match ^[A-Za-z0-9._~=/+-]{1,4096}$ (no whitespace/newline)")
@@ -300,6 +316,15 @@ def validate_egress(egress: object) -> list[str]:
     for h in egress:
         if not EGRESS_HOST_RE.match(h):
             raise ValidationError(f"egress host must be a lowercase hostname: {h!r}")
+        is_ip_literal = True
+        try:
+            ipaddress.ip_address(h)
+        except ValueError:
+            is_ip_literal = False
+        if is_ip_literal:
+            raise ValidationError(f"egress host must not be an IP literal: {h!r}")
+        if h.endswith(REFUSED_EGRESS_SUFFIXES):
+            raise ValidationError(f"egress host must not use a private DNS suffix: {h!r}")
         if h in REFUSED_EGRESS_HOSTS:
             raise ValidationError(f"egress host {h!r} is a payment processor — payment is locked to ShimpzPay")
     return list(dict.fromkeys(egress))  # de-dup, order-preserving

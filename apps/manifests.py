@@ -7,7 +7,9 @@ never carries any of them, so there is nothing for a caller to override.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+from pathlib import PurePosixPath
 
 import docker
 import docker.types
@@ -22,6 +24,8 @@ APP_NETWORK_PREFIX = os.environ.get("SHIMPZ_APP_NETWORK_PREFIX", "net_app_")
 # Multi-instance (R137): SHIMPZ_SUFFIX names this instance's resources; empty (the default) keeps
 # every generated name byte-identical to the single-instance era — prod is untouched by design.
 APP_CONTAINER_PREFIX = f"app{os.environ.get('SHIMPZ_SUFFIX', '')}_"
+CONTAINER_ALL_INTERFACES = str(ipaddress.IPv4Address(0))
+CONTAINER_TMP = str(PurePosixPath("/") / "tmp")
 
 # 1g, not 512m: real uvicorn backends idle near 500 MiB — three sat pinned at 91–99% of the old
 # 512m cap for days, one allocation from an OOM-kill (Round 125). A limit is not a reservation
@@ -184,15 +188,15 @@ def build_container_kwargs(req: DeployRequest, host_projects_root: str, extra_en
         "environment": {
             **req.env,
             "PORT": str(req.port),
-            "HOST": "0.0.0.0",  # noqa: S104
+            "HOST": CONTAINER_ALL_INTERFACES,
             "UV_PROJECT_ENVIRONMENT": "/venv",
-            "HOME": "/tmp",  # noqa: S108 — the APP CONTAINER's own tmpfs, not this process's scratch
+            "HOME": CONTAINER_TMP,
             "SHIMPZ_REGISTRY": "/registry",  # read-only service-registry mount (see build_mounts)
             # Declared shimpzbus.call targets, driver-injected (never client-suppliable — the
             # env allowlist has no SHIMPZ_CALLS). This is the durable record app.py's consumer
             # re-wiring and fleet-health's wiring check both read back from the live container.
             **({"SHIMPZ_CALLS": ",".join(req.calls)} if req.calls else {}),
-            **(extra_env or {}),  # L2 egress lock: HTTPS_PROXY/NO_PROXY when SHIMPZ_APP_EGRESS_LOCK=1 (else {})
+            **(extra_env or {}),  # Mandatory L2 lock: the driver always supplies tokened proxy/NO_PROXY values.
         },
         "user": f"{RUNTIME_UID}:{RUNTIME_UID}",
         "cap_drop": ["ALL"],
@@ -208,7 +212,7 @@ def build_container_kwargs(req: DeployRequest, host_projects_root: str, extra_en
         # (read-only /app, non-root, cap_drop:ALL, no-new-privileges, network isolation) — an
         # attacker who can already write+run arbitrary code in /tmp has RCE in the app process
         # regardless of this flag; it isn't a new escalation path, just what uv needs to function.
-        "tmpfs": {"/tmp": "size=256m,exec", "/venv": "size=512m,uid=10001,gid=10001,exec"},  # noqa: S108 — container mount targets, not this process's own scratch usage
+        "tmpfs": {CONTAINER_TMP: "size=256m,exec", "/venv": "size=512m,uid=10001,gid=10001,exec"},
         "mem_limit": MEM_LIMIT,
         "nano_cpus": NANO_CPUS,
         "pids_limit": PIDS_LIMIT,

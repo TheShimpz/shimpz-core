@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/*_TOKEN_* ARGs here hold numeric group IDs and file paths, never secret values
 #
 # shimpz-driver — the ONLY container in this stack that holds /var/run/docker.sock.
@@ -10,6 +10,23 @@
 # item 6, extra weight given this is the ONE container holding docker.sock. `docker pull
 # python:3.14-slim` resolved to this exact digest; bump both together.
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+ARG SOURCE_DATE_EPOCH=0
+
+ARG DEBIAN_SNAPSHOT=20260623T000000Z
+RUN set -eux; \
+    . /etc/os-release; \
+    archive_keyring="$(find /usr/share/keyrings -maxdepth 1 -type f -name 'debian-archive-keyring.*' -print -quit)"; \
+    test -n "$archive_keyring"; \
+    rm -f /etc/apt/sources.list; \
+    find /etc/apt/sources.list.d -maxdepth 1 -type f -delete; \
+    printf '%s\n' \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME} main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-updates main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-security main" \
+        > /etc/apt/sources.list.d/debian-snapshot.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99shimpz-snapshot; \
+    test "$(grep -Fc "https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 2; \
+    test "$(grep -Fc "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 1
 
 ARG UV_VERSION=0.11.25
 # Same version AND hash as the main Dockerfile's UV_INSTALL_SHA256 (astral.sh serves an immutable
@@ -32,7 +49,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     echo "${UV_INSTALL_SHA256}  /tmp/uv-install.sh" | sha256sum -c - && \
     env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh && \
     rm -f /tmp/uv-install.sh && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/lib/apt/periodic/* /var/cache/apt/* /var/cache/fontconfig/* \
+        /var/cache/ldconfig/aux-cache /var/cache/man/* /var/log/apt/* \
+        /var/log/alternatives.log /var/log/dpkg.log /root/.cache/uv
 
 # `driver` needs TWO supplementary groups: `dockersock` (to read/write the Docker socket) and
 # `shimpzdriver-token` (so the token file it writes can be group-readable by `shimpz-brain`'s `abc` user,
@@ -43,14 +63,12 @@ RUN groupadd -g "${DOCKER_GID}" dockersock \
     && useradd -u 10001 -g dockersock -G shimpzdriver-token -M -s /usr/sbin/nologin driver
 
 WORKDIR /app
-COPY pyproject.toml .
-# Pinned EXACT (not the open `docker>=7.1.0` range pyproject.toml's own dependency spec still
-# documents for humans) — SECURITY_ENGINEERING_PLAN.md item 6: an unbounded range lets any future
-# release, including a compromised or breaking one, install silently on the next rebuild. Bump
-# deliberately, in both places, together.
-RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python --no-cache-dir docker==7.1.0
+COPY pyproject.toml uv.lock ./
+# The frozen lock binds Docker SDK's complete transitive graph and artifact hashes.
+RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
+    rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py audit.py token_store.py caddy_routes.py ./
+COPY app.py validate.py manifests.py audit.py token_store.py caddy_routes.py egress_lock.py ./
 
 # Pre-create + own every path a NAMED VOLUME will be mounted onto — Docker copies an image
 # directory's ownership/content into a fresh empty volume on first mount, which is otherwise

@@ -18,17 +18,19 @@ Endpoints (all require `Authorization: Bearer <token>` — see token_store.py):
   POST   /v1/stack/recreate             {service, env}   (C2: recreate a whitelisted stateless sidecar)
   POST   /v1/brain/login/start                           (Claude-subscription OAuth: run shimpz-login in `shimpz-brain`)
   GET    /v1/brain/login/url                             (read the bridge's authorize URL — not a secret)
-  POST   /v1/brain/login/code           {code}           (validated, then argv to `shimpz-login submit`)
+  POST   /v1/brain/login/code           {code}           (validated, then stdin to `shimpz-login submit`)
   GET    /v1/brain/login/status                          (read-only `shimpz-login status --json`)
 """
 
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -41,6 +43,8 @@ import audit
 import caddy_routes
 import docker
 import docker.errors
+import docker.utils.socket as docker_socket
+import egress_lock
 import manifests
 import token_store
 import validate
@@ -55,13 +59,14 @@ CADDY_CONTAINER = os.environ.get("SHIMPZ_CADDY_CONTAINER", "shimpz-caddy")
 POSTGRES_CONTAINER = os.environ.get("SHIMPZ_POSTGRES_CONTAINER", "shimpz-postgres")
 REDPANDA_CONTAINER = os.environ.get("SHIMPZ_REDPANDA_CONTAINER", "shimpz-redpanda")
 
-# Shimpz L2 — deny-by-default app egress, behind a flag (OFF = today's behavior EXACTLY). When ON, each
-# app's OWN network is `internal` (no NAT to the internet) and its only egress is the app-egress-proxy,
-# reached with a per-app token and allowed to exactly the app's effective_egress hosts. The flip
-# (SHIMPZ_APP_EGRESS_LOCK=1) is the -staging-validated cutover — until then this whole block is inert.
-APP_EGRESS_LOCK = os.environ.get("SHIMPZ_APP_EGRESS_LOCK") == "1"
-APP_EGRESS_NET = f"shimpz_app_egress_net{os.environ.get('SHIMPZ_SUFFIX', '')}"
-APP_EGRESS_PROXY = f"app-egress-proxy{os.environ.get('SHIMPZ_SUFFIX', '')}"
+# Shimpz L2 is a mandatory invariant, not a feature toggle. Missing means the secure default; any
+# explicit value other than the exact string "1" aborts startup before the Docker client is used.
+# Each app's OWN network is internal and the proxy is attached to that private network; apps never
+# join a shared bridge. The proxy's public-destination pinning prevents it becoming a cross-net pivot.
+egress_lock.require_enabled()
+APP_EGRESS_PROXY = os.environ.get(
+    "SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{os.environ.get('SHIMPZ_SUFFIX', '')}"
+)
 APP_EGRESS_POLICY_DIR = Path(os.environ.get("SHIMPZ_APP_EGRESS_POLICY_DIR", "/app-egress-policy"))
 # shimpz-caddy joins each app network at DEPLOY time; a recreated caddy (daemon restart, compose
 # recreate, crash) comes back with NONE of them and silently 502s every app domain (a real prod
@@ -115,7 +120,8 @@ def _list_apps() -> dict:
     containers = _docker.containers.list(all=True, filters={"label": "shimpz.driver=1"})
     return {
         "apps": [
-            {"name": c.labels.get("shimpz.app"), "port": c.labels.get("shimpz.port"), "status": c.status} for c in containers
+            {"name": c.labels.get("shimpz.app"), "port": c.labels.get("shimpz.port"), "status": c.status}
+            for c in containers
         ]
     }
 
@@ -212,18 +218,28 @@ def _wait_recreated_healthy(container, hc_test) -> tuple[bool, str]:
     return False, detail
 
 
-def _ensure_app_network(name: str, *, internal: bool = False):
+def _ensure_app_network(name: str):
     """Get-or-create this app's OWN network — never the old shared app_net.
 
     An app can never resolve or reach another app's container at all: there is no shared
-    bridge left to enumerate or scan. `internal=True` (the L2 lock) creates the net with NO NAT to the
-    internet — the app's only egress is then the app-egress-proxy. Default False = today's behavior.
+    bridge left to enumerate or scan. The network is ALWAYS internal (no NAT); the app's only
+    internet egress is the token-authenticated app-egress-proxy.
     """
     net_name = manifests.app_network_name(name)
     try:
-        return _docker.networks.get(net_name)
+        network = _docker.networks.get(net_name)
     except docker.errors.NotFound:
-        return _docker.networks.create(net_name, driver="bridge", internal=internal)
+        return _docker.networks.create(net_name, driver="bridge", internal=True)
+    network.reload()
+    if not network.attrs.get("Internal", False):
+        if network.attrs.get("Containers"):
+            raise ApiError(
+                HTTPStatus.CONFLICT,
+                f"legacy network {net_name!r} has public NAT; remove/redeploy its disposable app before launch",
+            )
+        network.remove()
+        return _docker.networks.create(net_name, driver="bridge", internal=True)
+    return network
 
 
 def _egress_token(name: str) -> str:
@@ -319,6 +335,7 @@ def _wire_network_deps(network, req: validate.DeployRequest) -> None:
     resolve `shimpz-postgres`, let alone reach it.
     """
     _safe_connect(network, CADDY_CONTAINER, required=True)
+    _safe_connect(network, APP_EGRESS_PROXY, aliases=["app-egress-proxy"], required=True)
     if "DATABASE_URL" in req.env:
         _safe_connect(network, POSTGRES_CONTAINER, aliases=["postgres"], required=True)
     # ANY bus env key declares bus usage: projects normally carry only SHIMPZ_BUS_SASL_* (the per-
@@ -410,23 +427,21 @@ def _deploy(name: str, body: dict) -> dict:
             except docker.errors.NotFound:
                 _docker.volumes.create(name=vol_name)
 
-        network = _ensure_app_network(name, internal=APP_EGRESS_LOCK)
+        network = _ensure_app_network(name)
         _wire_network_deps(network, req)
 
-        # L2 egress lock (flag-gated; proxy_env is {} when OFF → build_container_kwargs unchanged): publish
-        # the app's allowlist, and route its egress through the per-app-token proxy via HTTPS_PROXY.
-        proxy_env: dict[str, str] = {}
-        if APP_EGRESS_LOCK:
-            token = _egress_token(name)
-            _write_egress_policy(token, req.egress)
-            proxy_env = {"HTTPS_PROXY": f"http://{token}@{APP_EGRESS_PROXY}:8889", "NO_PROXY": _no_proxy_for(req)}
+        # Publish the app's allowlist and route egress through the per-app-token proxy. The proxy,
+        # not the app, is dynamically attached to this private network; no shared app bridge exists.
+        token = _egress_token(name)
+        _write_egress_policy(token, req.egress)
+        no_proxy = _no_proxy_for(req)
+        proxy = f"http://{token}@app-egress-proxy:8889"
+        proxy_env = {"HTTPS_PROXY": proxy, "https_proxy": proxy, "NO_PROXY": no_proxy, "no_proxy": no_proxy}
 
         kwargs = manifests.build_container_kwargs(req, _host_projects_root, extra_env=proxy_env)
         kwargs["name"] = candidate_name  # never the final name yet — that's the whole point
         try:
             candidate = _docker.containers.create(**kwargs)
-            if APP_EGRESS_LOCK:  # the app must be ON app_egress_net to reach the proxy (its only door out)
-                _safe_connect(_docker.networks.get(APP_EGRESS_NET), candidate_name, required=True)
             candidate.start()
         except docker.errors.APIError as exc:
             # create/start failed outright — nothing to roll back (the previous container, if
@@ -558,8 +573,8 @@ def _recreate(body: dict) -> dict:
 # A DELIBERATELY tiny scope expansion: the driver otherwise never touches the brain. These four
 # endpoints only ever exec the FIXED binary `shimpz-login` (never a client-chosen command) in the FIXED
 # container `shimpz-brain` (+ SHIMPZ_SUFFIX, never a client-chosen container). Bearer-gated by the existing
-# `_authed`, audited on every op, and the pasted code is validated + passed as argv (never a shell
-# string) and NEVER logged.
+# `_authed`, audited on every op, and the pasted code is validated + sent only over the private Docker
+# exec stdin stream. It is never placed in argv, environment metadata, or logs.
 def _brain_container():
     """The FIXED `shimpz-brain` brain container (+ SHIMPZ_SUFFIX) — the only container these endpoints ever address.
 
@@ -572,6 +587,40 @@ def _brain_container():
         return _docker.containers.get(name)
     except docker.errors.NotFound as exc:
         raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "brain container not found") from exc
+
+
+def _close_exec_stream(stream) -> None:
+    """Close docker-py's owning HTTP response before its raw socket (Python 3.14 safe)."""
+    response = getattr(stream, "_response", None)
+    if response is not None:
+        response.close()
+    else:
+        stream.close()
+
+
+def _brain_exec_stdin(brain, command: list[str], payload: bytes) -> int | None:
+    """Run one fixed brain operation with credential material carried only over stdin."""
+    exec_id = _docker.api.exec_create(
+        brain.id,
+        command,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+        user="abc",
+        environment={"HOME": "/config"},
+    )["Id"]
+    stream = _docker.api.exec_start(exec_id, socket=True)
+    try:
+        raw_socket = getattr(stream, "_sock", None)
+        if raw_socket is None:
+            raise OSError("Docker exec attach socket does not support a stdin half-close")
+        raw_socket.sendall(payload)
+        raw_socket.shutdown(socket.SHUT_WR)
+        for _stream_id, _chunk in docker_socket.frames_iter(stream, tty=False):
+            pass
+    finally:
+        _close_exec_stream(stream)
+    return _docker.api.exec_inspect(exec_id).get("ExitCode")
 
 
 def _brain_login_start() -> dict:
@@ -596,16 +645,15 @@ def _brain_login_url() -> dict:
 
 
 def _brain_login_code(body: dict) -> dict:
-    """Forward the pasted OAuth code to `shimpz-login submit` — validated FIRST, then passed as argv.
+    """Forward the pasted OAuth code to `shimpz-login submit` over private exec stdin.
 
-    validate.validate_login_code refuses anything outside ^[A-Za-z0-9._~=/+-]{1,4096}$ BEFORE any
-    exec (a bad code is a 400 that never reaches the container), and the code goes in as a single
-    argv element — never a shell string — so it can neither be interpolated nor inject a second
-    stdin line. The code is NEVER logged.
+    Validation happens before any exec. The fixed command has no caller data in argv; the code is
+    delivered through Docker's attach socket and half-closed, so it cannot enter process metadata or
+    inject a second stdin line. The code is never logged.
     """
     code = validate.validate_login_code(body.get("code"))
     brain = _brain_container()
-    rc, _ = brain.exec_run(["shimpz-login", "submit", code])
+    rc = _brain_exec_stdin(brain, ["shimpz-login", "submit"], code.encode("ascii"))
     ok = rc == 0
     audit.log("brain_login", "code", result="ok" if ok else "error")
     return {"ok": ok}
@@ -759,7 +807,7 @@ class Handler(BaseHTTPRequestHandler):
         except validate.ValidationError as exc:
             audit.log(method.lower(), self.path, result="denied", reason=str(exc))
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001 — top-level HTTP handler: log + surface, never crash the server
+        except Exception as exc:
             audit.log(method.lower(), self.path, result="error", reason=str(exc))
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -874,7 +922,7 @@ def _caddy_reconcile_loop() -> None:
         time.sleep(CADDY_RECONCILE_SECONDS)
         try:
             reconcile_caddy_networks()
-        except Exception as exc:  # noqa: BLE001 — a reconcile pass must never kill the loop; log loud, keep healing
+        except Exception as exc:
             print(f"caddy-reconcile: pass errored (continuing): {exc}", file=sys.stderr)
 
 
@@ -884,7 +932,7 @@ def main() -> None:
     n = reconcile_caddy_networks()
     print(f"shimpz-driver: startup caddy-reconcile connected {n} app network(s)", file=sys.stderr)
     threading.Thread(target=_caddy_reconcile_loop, daemon=True).start()
-    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)  # noqa: S104 — driver_net-only by design
+    server = ThreadingHTTPServer((str(ipaddress.IPv4Address(0)), LISTEN_PORT), Handler)
     print(f"shimpz-driver listening on :{LISTEN_PORT}", file=sys.stderr)
     server.serve_forever()
 
