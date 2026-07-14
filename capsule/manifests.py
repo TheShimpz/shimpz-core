@@ -3,32 +3,61 @@
 The ONE place that decides what a Capsule container actually gets. Every security-relevant field
 (security_opt, network, mounts, limits, Telegram/browser OFF) is a hardcoded constant here; the caller
 never carries any of them, so there is nothing to override. A Capsule is a `shimpz-brain` with:
-its OWN internal network, its OWN config+workspace volumes, a SCOPED Postgres DSN, no docker.sock,
-no secrets keyring, no browser, no Telegram — reached out to the internet ONLY via egress-proxy.
+its OWN internal core and Brain-egress networks, its OWN config+workspace volumes, a SCOPED Postgres
+DSN, no docker.sock, no secrets keyring, no browser, and no Telegram. Only the Brain reaches the broad
+egress-proxy; installed Apps remain on core and use the token-gated app proxy when declared.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import ipaddress
 import os
+import re
 import tarfile
+from decimal import Decimal, InvalidOperation
+from pathlib import PurePosixPath
 
 import docker
 import docker.types
+import network_policy
 from marketplace import AppSpec
 
 # Multi-instance (R137): SHIMPZ_SUFFIX names this Space's resources; empty (the default) is prod.
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")
 IMAGE = os.environ.get("SHIMPZ_CAPSULE_IMAGE", "shimpz-brain:shimpz-local")
+CODEX_IMAGE = os.environ.get("SHIMPZ_CODEX_CAPSULE_IMAGE", "shimpz-brain-codex:shimpz-local")
+# Hostile-tenant Capsules are unconditionally locked to gVisor. This is deliberately not an
+# environment setting: Docker rejects create when runsc is unavailable, and the driver refuses
+# lifecycle mutations until the daemon registry preserves its exact handler path, built-in security
+# defaults, and every existing workload proves this exact runtime.
+RUNTIME = "runsc"
+RUNTIME_PATH = network_policy.CAPSULE_RUNTIME_PATH
+CONTAINER_ALL_INTERFACES = str(ipaddress.IPv4Address(0))
+CONTAINER_TMP = str(PurePosixPath("/") / "tmp")
 
 # ── Brains (ADR-0004): the agent RUNTIME a Capsule boots, a per-Capsule choice ──────────────────
 # The same trusted-registry pattern as the marketplace: the store forwards only a brain id; THIS map
-# decides the image. Only brains that actually boot are listed (the storefront-honesty rule) —
-# codex/opencode enter here when their images exist. Auth is NEVER pre-provisioned: the Captain
-# authenticates the brain (interactive `claude` login, or an API key) after creation.
+# decides the image. Only brains that actually boot are listed (the storefront-honesty rule). The
+# Codex image is registered because its real build/boot/auth proof is shipped in
+# ``tests/test-codex-brain-live.py``. Credentials are always account-owned and land only in the
+# Capsule's private /config; no provider receives a platform-global key.
 BRAINS: dict[str, dict[str, str]] = {
-    "claude-code": {"image": IMAGE, "title": "Claude Code"},
+    "claude-code": {
+        "image": IMAGE,
+        "title": "Claude Code",
+        "default_model": "claude-sonnet-5",
+        "healthcheck": "claude --version >/dev/null",
+        "readycheck": "claude --version >/dev/null",
+    },
+    "codex": {
+        "image": CODEX_IMAGE,
+        "title": "Codex",
+        "default_model": "",
+        "healthcheck": "codex --version >/dev/null && shimpz-codex-auth status >/dev/null",
+        "readycheck": "test -s /config/.codex/config.toml && codex --version >/dev/null",
+    },
 }
 DEFAULT_BRAIN = "claude-code"
 
@@ -48,56 +77,113 @@ def build_inbox_tar(filename: str, data: bytes) -> bytes:
     return buf.getvalue()
 
 
-# Shared-plane container names (suffix-aware) that get CONNECTED into each capsule's own internal net —
-# passed from compose exactly like shimpz-driver receives SHIMPZ_POSTGRES_CONTAINER etc. Deliberately
-# MINIMAL: only egress-proxy (guarded to refuse internal destinations) + postgres (authz-isolated by the
-# per-capsule proj_ role). victorialogs is NOT connected — the shared, unauthenticated log store would
-# let any capsule read/forge every other capsule's logs; capsule logs still ship out via Vector's
-# json-file tail, so nothing is lost.
-EGRESS_CONTAINER = os.environ.get("SHIMPZ_EGRESS_PROXY_CONTAINER", f"egress-proxy{SUFFIX}")
-POSTGRES_CONTAINER = os.environ.get("SHIMPZ_POSTGRES_CONTAINER", f"shimpz-postgres{SUFFIX}")
+# Shared-plane identities are suffix-aware and intentionally split. Postgres plus installed Apps live
+# on the Capsule core/data network. The broad Brain proxy lives only on the separate Brain-egress
+# network, so an App can never use it as an unauthenticated confused deputy.
+EGRESS_CONTAINER = network_policy.EGRESS_CONTAINER
+POSTGRES_CONTAINER = network_policy.POSTGRES_CONTAINER
 
-CAPSULE_PREFIX = f"capsule{SUFFIX}_"
-NET_PREFIX = f"net_capsule{SUFFIX}_"
+CAPSULE_PREFIX = network_policy.CAPSULE_PREFIX
+NET_PREFIX = network_policy.CORE_NETWORK_PREFIX
 
-# Per-capsule envelope. A limit is not a reservation (the host has 125 GiB); it caps a runaway while
-# keeping the marginal footprint small enough to pack hundreds of Capsules per Space. cgroup v2:
-# mem_reservation ≈ memory.low (protect this much), mem_limit ≈ memory.max (hard cap).
+# Per-capsule envelope. The hard cap is charged in full against capsule-driver's global/owner
+# admission budget before Docker provisioning begins; the lower cgroup reservation is only runtime
+# reclaim protection, never the capacity-accounting unit. cgroup v2: mem_reservation ≈ memory.low,
+# mem_limit ≈ memory.max.
 MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_MEM_LIMIT", "2g")
 MEM_RESERVATION = os.environ.get("SHIMPZ_CAPSULE_MEM_RESERVATION", "384m")
 NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_NANO_CPUS", str(4_000_000_000)))  # 4 vCPU ceiling; idle ≈ 0
 PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "2048"))
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-SHIMPZ_MODEL = os.environ.get("SHIMPZ_MODEL", "claude-sonnet-5")
+
+def hard_memory_bytes(value: str | int | float, *, setting: str) -> int:
+    """Parse one Docker hard-memory setting once and reject an absent/unbounded value."""
+    if isinstance(value, bool):
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
+    match = re.fullmatch(
+        r"(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<unit>[kmgtp]?)(?:i?b)?",
+        str(value).strip(),
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
+    try:
+        parsed = Decimal(match.group("number")) * Decimal(1024 ** "bkmgtp".index(match.group("unit").lower() or "b"))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{setting} must be a valid positive Docker memory size") from exc
+    if parsed <= 0 or parsed != parsed.to_integral_value():
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
+    return int(parsed)
+
+
+MEM_LIMIT_BYTES = hard_memory_bytes(MEM_LIMIT, setting="SHIMPZ_CAPSULE_MEM_LIMIT")
+
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def model_for_brain(brain: str, value: object = None) -> str:
+    """Return one Capsule's validated provider model, or that provider's explicit default."""
+    if brain not in BRAINS:
+        raise ValueError(f"unsupported brain: {brain!r}")
+    if value is None or value == "":
+        return BRAINS[brain]["default_model"]
+    if not isinstance(value, str):
+        raise ValueError("model must be a string")
+    model = value.strip()
+    if not model:
+        return BRAINS[brain]["default_model"]
+    if MODEL_RE.fullmatch(model) is None:
+        raise ValueError("model must be 1-128 safe identifier characters")
+    return model
+
 
 # Per-capsule APP envelope (mirrors drivers/apps: 1g because real uvicorn backends idle near 500 MiB —
 # R125; 0.5 vCPU; pids capped). One installed app = one container INSIDE the capsule's own network.
 APP_MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_APP_MEM_LIMIT", "1g")
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_APP_PIDS_LIMIT", "256"))
+APP_MEM_LIMIT_BYTES = hard_memory_bytes(APP_MEM_LIMIT, setting="SHIMPZ_CAPSULE_APP_MEM_LIMIT")
 # The MANY-tenant egress proxy (per-app token-gated) — connected into a capsule's net only when an
 # installed app actually declares egress; the capsule brain itself keeps using the brain-grade egress-proxy.
-APP_EGRESS_CONTAINER = os.environ.get("SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{SUFFIX}")
+APP_EGRESS_CONTAINER = network_policy.APP_EGRESS_CONTAINER
 
 # Vector reads Docker's json-file logs and derives the capsule from the line's own label (no Docker API).
-CAP_LOG_CONFIG = docker.types.LogConfig(type=docker.types.LogConfig.types.JSON, config={"labels": "capsule.id"})
+# Keep the required json-file driver, but never inherit its unbounded default: a hostile workload can
+# otherwise fill the host filesystem without exceeding its cgroup memory/PID admission envelope.
+CAP_LOG_MAX_SIZE = "5m"
+CAP_LOG_MAX_FILE = "2"
+CAP_LOG_CONFIG = docker.types.LogConfig(
+    type=docker.types.LogConfig.types.JSON,
+    config={
+        "labels": "capsule.id",
+        "max-size": CAP_LOG_MAX_SIZE,
+        "max-file": CAP_LOG_MAX_FILE,
+    },
+)
 
 
 def capsule_container_name(cid: str) -> str:
-    return f"{CAPSULE_PREFIX}{cid}"
+    return network_policy.capsule_container_name(cid)
 
 
 def capsule_network_name(cid: str) -> str:
-    return f"{NET_PREFIX}{cid}"
+    return network_policy.network_name(cid, network_policy.CORE_KIND)
+
+
+def capsule_brain_egress_network_name(cid: str) -> str:
+    return network_policy.network_name(cid, network_policy.BRAIN_EGRESS_KIND)
+
+
+def capsule_network_labels(cid: str, kind: str) -> dict[str, str]:
+    return network_policy.network_labels(cid, kind)
 
 
 def capsule_config_volume(cid: str) -> str:
-    return f"{CAPSULE_PREFIX}{cid}_config"
+    return network_policy.volume_name(cid, network_policy.CONFIG_VOLUME_KIND)
 
 
 def capsule_workspace_volume(cid: str) -> str:
-    return f"{CAPSULE_PREFIX}{cid}_workspace"
+    return network_policy.volume_name(cid, network_policy.WORKSPACE_VOLUME_KIND)
 
 
 def capsule_db_project(cid: str) -> str:
@@ -110,7 +196,7 @@ def capsule_app_sane(app_id: str) -> str:
 
 
 def capsule_app_container_name(cid: str, app_id: str) -> str:
-    return f"{CAPSULE_PREFIX}{cid}_app_{capsule_app_sane(app_id)}"
+    return network_policy.capsule_app_container_name(cid, app_id)
 
 
 def capsule_app_db_project(cid: str, app_id: str) -> str:
@@ -124,23 +210,24 @@ def capsule_app_db_project(cid: str, app_id: str) -> str:
     return f"cap_{digest}_{capsule_app_sane(app_id)}"
 
 
-def shared_deps() -> list[tuple[str, list[str]]]:
-    """(container_name, [aliases]) to connect into each capsule's OWN internal net.
+def core_deps() -> list[tuple[str, list[str]]]:
+    """Shared services allowed on a Capsule's app/data plane."""
+    return [(POSTGRES_CONTAINER, ["postgres"])]
 
-    Aliases matter: these containers carry a SHIMPZ_SUFFIX in their real name, but the capsule brain
-    addresses them by the bare compose service name (its HTTPS_PROXY/DATABASE_URL do), so the alias is
-    what its DNS actually resolves. Minimal set: its sole route out (egress-proxy, which refuses any
-    internal destination) and its own database (postgres, authz-isolated by its proj_ role) — nothing
-    else is reachable, so there is no cross-capsule or capsule→brain L3 path.
-    """
-    return [
-        (EGRESS_CONTAINER, ["egress-proxy"]),
-        (POSTGRES_CONTAINER, ["postgres"]),
-    ]
+
+def brain_egress_deps() -> list[tuple[str, list[str]]]:
+    """The broad proxy allowed only on a Capsule Brain's separate egress plane."""
+    return [(EGRESS_CONTAINER, ["egress-proxy"])]
 
 
 def build_capsule_kwargs(
-    cid: str, name: str, *, database_url: str, owner: str = "", brain: str = DEFAULT_BRAIN
+    cid: str,
+    name: str,
+    *,
+    database_url: str,
+    owner: str = "",
+    brain: str = DEFAULT_BRAIN,
+    model: object = None,
 ) -> dict:
     """Kwargs for docker-py's low-level `containers.create` — never `run`.
 
@@ -148,6 +235,7 @@ def build_capsule_kwargs(
     model depends on create + one explicit network. `brain` picks the agent runtime image from the
     trusted BRAINS registry (validated by the caller) and is recorded as the capsule.brain label.
     """
+    selected_model = model_for_brain(brain, model)
     env = {
         "PUID": "1000",
         "PGID": "1000",
@@ -156,8 +244,8 @@ def build_capsule_kwargs(
         "SHIMPZ_HOME": "/config/.shimpz",
         "SHIMPZ_CAPSULE_ID": cid,
         "SHIMPZ_CAPSULE_NAME": name,
-        # DEFAULT-DENY EGRESS (same posture as the main brain): off any default route, the ONLY way out
-        # is the allowlist CONNECT proxy. NO_PROXY lists the in-cluster hosts it reaches directly;
+        # The core network has no default route. Only this Brain also joins its private egress network,
+        # where the broad/audited CONNECT proxy is its sole outbound path. NO_PROXY lists core services;
         # `.capsule` is the SUFFIX every installed app also answers on (<app-id>.capsule) — app names
         # aren't knowable at capsule create, a suffix is, so http://<app-id>.capsule:<port> bypasses
         # the proxy in every NO_PROXY-honoring client (curl/python/node all tail-match entries).
@@ -170,7 +258,6 @@ def build_capsule_kwargs(
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         # The capsule's OWN scoped database — a least-privilege proj_ role, never the superuser.
         "DATABASE_URL": database_url,
-        "SHIMPZ_MODEL": SHIMPZ_MODEL,
         # Infinity-memory + run knobs (mirror the main brain).
         "SHIMPZ_MEMORY_DIR": "/config/.shimpz/memory",
         "SHIMPZ_MEM_TTL_DAYS": "90",
@@ -190,35 +277,46 @@ def build_capsule_kwargs(
         "TELEGRAM_BOT_TOKEN": "",
         "TELEGRAM_ALLOWED_USERS": "",
     }
-    if ANTHROPIC_API_KEY:
-        env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
+    if brain == "claude-code":
+        env["SHIMPZ_MODEL"] = selected_model
     return {
         "image": BRAINS[brain]["image"],
         "name": capsule_container_name(cid),
         "hostname": cid,
+        "runtime": RUNTIME,
         "environment": env,
         # Hardened, identical to the main brain minus the browser's elevated caps: no new privileges,
-        # not privileged, no docker.sock, no secrets keyring. (cap_drop:ALL would break the LSIO s6 init
-        # that must chown/setuid to drop to the runtime user — so we match the brain, not the L2 apps.)
-        "security_opt": ["no-new-privileges:true"],
+        # not privileged, no docker.sock, no secrets keyring.
+        "security_opt": ["no-new-privileges:true", "apparmor=docker-default"],
         "privileged": False,
-        # ONE network at create: the capsule's OWN internal bridge. The shared plane (egress-proxy /
-        # postgres / victorialogs) is CONNECTED INTO it afterward — the capsule shares a net with NO
-        # other capsule and NOT with the main brain, so it can never resolve or reach them.
+        "ipc_mode": "private",
+        "cgroupns": "private",
+        # Boot-minimized against the shipping LSIO/s6 Brain images: CHOWN + DAC_OVERRIDE are required
+        # for supervised init, SETGID + SETUID for the abc transition, and KILL for clean shutdown.
+        # Removing any required member was exercised independently; no other default capability stays.
+        "cap_drop": ["ALL"],
+        "cap_add": ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+        # Create on the Capsule core network. app.py then attaches only this Brain to its separate
+        # Brain-egress network; broad egress-proxy is never a core-network member.
         "network": capsule_network_name(cid),
         "mounts": [
             docker.types.Mount(target="/config", source=capsule_config_volume(cid), type="volume"),
             docker.types.Mount(target="/config/workspace", source=capsule_workspace_volume(cid), type="volume"),
         ],
-        "tmpfs": {"/tmp": "size=2g,mode=1777"},  # noqa: S108 — the CAPSULE's own scratch mount, not this process's
+        "tmpfs": {CONTAINER_TMP: "size=2g,mode=1777"},
         "mem_limit": MEM_LIMIT,
+        # Equal memory and memory+swap ceilings disable swap for this hostile workload. Leaving
+        # MemorySwap unset lets Docker grant an additional swap allowance on swap-enabled hosts.
+        "memswap_limit": MEM_LIMIT,
         "mem_reservation": MEM_RESERVATION,
         "nano_cpus": NANO_CPUS,
         "pids_limit": PIDS_LIMIT,
         "ulimits": [docker.types.Ulimit(name="nofile", soft=65536, hard=65536)],
-        "restart_policy": {"Name": "unless-stopped"},
+        # Hostile workloads may only become runnable through the driver's static+live proof. Docker
+        # daemon startup or a natural process crash must never auto-start them behind that gate.
+        "restart_policy": {"Name": "no"},
         "healthcheck": docker.types.Healthcheck(
-            test=["CMD-SHELL", "claude --version >/dev/null"],
+            test=["CMD-SHELL", BRAINS[brain]["healthcheck"]],
             interval=30 * 10**9,
             timeout=10 * 10**9,
             retries=3,
@@ -230,6 +328,7 @@ def build_capsule_kwargs(
             "capsule.name": name,
             "capsule.owner": owner,
             "capsule.brain": brain,
+            "capsule.model": selected_model,
         },
         "log_config": CAP_LOG_CONFIG,
         "detach": True,
@@ -246,7 +345,7 @@ def build_capsule_app_kwargs(
     owner: str = "",
     capsule_name: str = "",
 ) -> dict:
-    """Kwargs for an installed APP container inside capsule `cid`'s own network.
+    """Kwargs for an installed APP container inside capsule `cid`'s own core/data network.
 
     Tighter than the capsule brain (the packaging contract allows it): non-root fixed uid, cap_drop ALL,
     read-only rootfs with a /tmp tmpfs, no mounts at all — the app's ONLY state is its scoped DB, so an
@@ -258,7 +357,7 @@ def build_capsule_app_kwargs(
     env = {
         # The contract: the app answers HTTP on $PORT on its own interface (see sdk packaging docs).
         "PORT": str(spec.port),
-        "HOST": "0.0.0.0",  # noqa: S104 — the APP CONTAINER's own bind address, not this process's
+        "HOST": CONTAINER_ALL_INTERFACES,
         "SHIMPZ_CAPSULE_ID": cid,
         # The capsule's DISPLAY name — the owner-given identity ("the hero's name"), so every app can
         # speak AS its capsule ("Zyon asks your approval") instead of leaking an internal id.
@@ -272,22 +371,33 @@ def build_capsule_app_kwargs(
     return {
         "image": spec.image,
         "name": capsule_app_container_name(cid, app_id),
+        "runtime": RUNTIME,
         "environment": env,
         "user": "10001:10001",
         "cap_drop": ["ALL"],
-        "security_opt": ["no-new-privileges:true"],
+        "security_opt": ["no-new-privileges:true", "apparmor=docker-default"],
         "privileged": False,
+        "ipc_mode": "private",
+        "cgroupns": "private",
         # ONE network at create: the capsule's OWN internal bridge (app.py re-attaches with the app-id
         # alias so the capsule brain reaches it as http://<app-id>:<port>). Never a shared app net —
         # apps are per-Capsule (ADR-0002); a shared instance would mix tenant data.
         "network": capsule_network_name(cid),
         "read_only": True,
-        "tmpfs": {"/tmp": "size=256m"},  # noqa: S108 — the APP CONTAINER's own scratch mount
+        "tmpfs": {CONTAINER_TMP: "size=256m"},
         "mem_limit": APP_MEM_LIMIT,
+        "memswap_limit": APP_MEM_LIMIT,
         "nano_cpus": APP_NANO_CPUS,
         "pids_limit": APP_PIDS_LIMIT,
-        "restart_policy": {"Name": "unless-stopped"},
-        "labels": {"capsule.app.driver": "1", "capsule.id": cid, "capsule.app": app_id, "capsule.owner": owner},
+        "ulimits": [docker.types.Ulimit(name="nofile", soft=4096, hard=4096)],
+        "restart_policy": {"Name": "no"},
+        "labels": {
+            "capsule.app.driver": "1",
+            "capsule.id": cid,
+            "capsule.app": app_id,
+            "capsule.app.db": "1" if spec.db else "0",
+            "capsule.owner": owner,
+        },
         "log_config": CAP_LOG_CONFIG,
         "detach": True,
     }

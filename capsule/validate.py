@@ -55,12 +55,12 @@ def validate_chat_message(message: object) -> str:
 # Claude's real code is `<code>#<state>`, so the charset is "printable ASCII, no whitespace" —
 # byte-identical to drivers/apps' LOGIN_CODE_RE and to shimpz-login's own SUBMIT_CODE_RE. The one
 # real risk is whitespace/newline (a second stdin line); a `;`/backtick/`$` is inert because the
-# code goes in as a single argv element, never a shell string.
+# code is carried on the private Docker exec stdin stream, never interpreted by a shell.
 LOGIN_CODE_RE = re.compile(r"^[!-~]{1,4096}$")
 
 
 def validate_login_code(code: object) -> str:
-    """The Claude-subscription OAuth code forwarded to `shimpz-login submit` — argv, never a shell string.
+    """The Claude-subscription OAuth code forwarded to `shimpz-login submit` over private stdin.
 
     The refusal message NEVER echoes the code.
     """

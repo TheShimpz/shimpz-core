@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/DOCKER_GID ARGs are numeric group IDs, never secrets
 #
 # capsule-driver — the SECOND container (besides shimpz-driver) holding /var/run/docker.sock, dedicated
@@ -8,6 +8,23 @@
 # not a claim that socket access itself is contained (holding the socket is host-root-equivalent).
 # Pinned by digest (same as drivers/apps/Dockerfile — bump both together).
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+ARG SOURCE_DATE_EPOCH=0
+
+ARG DEBIAN_SNAPSHOT=20260623T000000Z
+RUN set -eux; \
+    . /etc/os-release; \
+    archive_keyring="$(find /usr/share/keyrings -maxdepth 1 -type f -name 'debian-archive-keyring.*' -print -quit)"; \
+    test -n "$archive_keyring"; \
+    rm -f /etc/apt/sources.list; \
+    find /etc/apt/sources.list.d -maxdepth 1 -type f -delete; \
+    printf '%s\n' \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME} main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-updates main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-security main" \
+        > /etc/apt/sources.list.d/debian-snapshot.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99shimpz-snapshot; \
+    test "$(grep -Fc "https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 2; \
+    test "$(grep -Fc "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 1
 
 ARG UV_VERSION=0.11.25
 # Same version AND hash as drivers/apps/Dockerfile (astral.sh serves an immutable versioned artifact).
@@ -20,6 +37,8 @@ ARG SHIMPZ_CAPSULEDRIVER_TOKEN_GID=10010
 # The pg-driver token group — this driver joins it (read-only) to request a scoped DB from pg-driver.
 # MUST match drivers/apps + brain's SHIMPZ_PGDRIVER_TOKEN_GID so the shared 0440 token is readable.
 ARG SHIMPZ_PGDRIVER_TOKEN_GID=10004
+ARG SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID=10012
+ARG SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID=10013
 
 # Downloaded + hash-checked BEFORE execution — never `curl | sh` (SECURITY_ENGINEERING_PLAN.md item 6).
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
@@ -27,7 +46,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     echo "${UV_INSTALL_SHA256}  /tmp/uv-install.sh" | sha256sum -c - && \
     env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh && \
     rm -f /tmp/uv-install.sh && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/lib/apt/periodic/* /var/cache/apt/* /var/cache/fontconfig/* \
+        /var/cache/ldconfig/aux-cache /var/cache/man/* /var/log/apt/* \
+        /var/log/alternatives.log /var/log/dpkg.log /root/.cache/uv
 
 # `capsuledriver` needs THREE groups: `dockersock` (the socket), `shimpzcapsuledriver-token` (so the
 # token it writes is group-readable by the admin's uid 1000), and `shimpzpgdriver-token` (so it can
@@ -35,21 +57,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
 RUN groupadd -g "${DOCKER_GID}" dockersock \
     && groupadd -g "${SHIMPZ_CAPSULEDRIVER_TOKEN_GID}" shimpzcapsuledriver-token \
     && groupadd -g "${SHIMPZ_PGDRIVER_TOKEN_GID}" shimpzpgdriver-token \
-    && useradd -u 10001 -g dockersock -G shimpzcapsuledriver-token,shimpzpgdriver-token -M -s /usr/sbin/nologin capsuledriver
+    && groupadd -g "${SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID}" shimpzbraincred-unseal-token \
+    && groupadd -g "${SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID}" shimpzbrain-resolve \
+    && useradd -u 10001 -g dockersock \
+        -G shimpzcapsuledriver-token,shimpzpgdriver-token,shimpzbraincred-unseal-token,shimpzbrain-resolve \
+        -M -s /usr/sbin/nologin capsuledriver
 
 WORKDIR /app
-COPY pyproject.toml .
-# Pinned EXACT (not the open range pyproject documents for humans) — SECURITY_ENGINEERING_PLAN.md item 6.
-RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python --no-cache-dir docker==7.1.0
+COPY pyproject.toml uv.lock ./
+# The frozen lock binds Docker SDK's complete transitive graph and artifact hashes.
+RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
+    rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py marketplace.py audit.py token_store.py pgdriver_client.py accounts_client.py healthcheck.py ./
+COPY app.py validate.py manifests.py network_policy.py marketplace.py cleanup_state.py audit.py token_store.py \
+     pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
 # non-root user. /run/shimpz-capsuledriver gets GROUP `shimpzcapsuledriver-token` so the fresh volume's
 # perms already match what the token file inside needs — readable by the admin panel via that group.
-RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver /app-egress-policy \
+RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver /var/lib/capsule-driver/pg-principals \
+        /var/lib/capsule-driver/cleanup \
+        /app-egress-policy /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
     && chown capsuledriver:shimpzcapsuledriver-token /run/shimpz-capsuledriver && chmod 750 /run/shimpz-capsuledriver \
-    && chown -R capsuledriver:dockersock /var/log/capsule-driver \
+    && chown capsuledriver:shimpzbraincred-unseal-token /run/shimpz-braincred-unseal \
+    && chown capsuledriver:shimpzbrain-resolve /run/shimpz-accounts-brain-resolve \
+    && chmod 0750 /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
+    && chown -R capsuledriver:dockersock /var/log/capsule-driver /var/lib/capsule-driver \
     # egress-policy mountpoint owned by the driver uid, so a FRESH policy volume copies up writable
     # (an existing root-owned volume needs the one-time `chown 10001` — see docs/TESTS.md)
     && chown capsuledriver:dockersock /app-egress-policy
