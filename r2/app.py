@@ -5,7 +5,9 @@ SECURITY_ENGINEERING_PLAN.md item 7: `shimpz-brain` (the brain) never sees the R
 restricted, allowlisted, audited HTTP API instead. Every endpoint is one SPECIFIC operation with a
 fixed request shape (validate.py) — never a generic "run rclone" passthrough. Before this split a
 prompt-injected brain could `rclone delete` the whole bucket or exfiltrate the access key; now it can
-only ever ask for one of: upload one file (get a presigned link), list a prefix, download one object.
+only ever ask for one of: upload one file (get a presigned link), list a prefix, download one small
+object. A separate loopback-only operator capability handles immutable encrypted backup upload and
+bounded-range recovery without widening any Brain-facing operation.
 
 Mandatory controls (same contract as the other sidecars):
   - Auth fail-closed on EVERY endpoint: `Authorization: Bearer <token>` required; no anonymous route.
@@ -21,30 +23,107 @@ object (the whole reason R2 exists over kclient) transfers with bounded memory.
 
 Endpoints (all require `Authorization: Bearer <token>`):
   POST /v1/r2/upload   body=<raw bytes>  headers: X-R2-Filename, X-R2-Expire? -> {key, link, size}
+  POST /v1/r2/backup/upload body=<raw backup bytes> headers: X-Backup-SHA256,
+       X-Backup-Created-At -> {key, sha256, size} under the immutable backups/v1 prefix
+  GET  /v1/r2/backup/download ?key=<exact backup key>&offset=<n>&length=<n> -> <raw range>
   GET  /v1/r2/list     ?prefix=<prefix>  -> {prefix, entries: [{size, modtime, path}, ...]}
   GET  /v1/r2/get      ?key=<key>        -> <raw bytes>  (X-R2-Size header)
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import ipaddress
 import os
+import re
+import socket
+import stat
 import sys
 import tempfile
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import parse_qs, urlsplit
 
 import audit
+import backup_gate
 import r2_client
 import token_store
 import validate
 
 LISTEN_PORT = int(os.environ.get("SHIMPZ_R2DRIVER_PORT", "7075"))
+LISTEN_HOST = str(ipaddress.IPv4Address(0))
 _CHUNK = 1024 * 1024
+_BACKUP_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_BACKUP_CREATED_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+_BACKUP_SPOOL_PREFIX = ".shimpz-r2backup-"
+BACKUP_SPOOL_DIR = Path(os.environ.get("SHIMPZ_R2DRIVER_BACKUP_SPOOL_DIR", "/var/lib/shimpz-r2backup"))
+_backup_transfer_gate = backup_gate.BackupTransferGate()
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _prepare_backup_spool() -> None:
+    """Validate the ciphertext-only spool and recover exact leftovers from a crashed process."""
+    if not BACKUP_SPOOL_DIR.is_absolute():
+        raise RuntimeError("SHIMPZ_R2DRIVER_BACKUP_SPOOL_DIR must be absolute")
+    BACKUP_SPOOL_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = BACKUP_SPOOL_DIR.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise RuntimeError(f"unsafe backup spool directory: {BACKUP_SPOOL_DIR}")
+    removed = False
+    for stale in BACKUP_SPOOL_DIR.glob(f"{_BACKUP_SPOOL_PREFIX}*"):
+        stale_info = stale.lstat()
+        if (
+            not stat.S_ISREG(stale_info.st_mode)
+            or stale_info.st_uid != os.geteuid()
+            or stat.S_IMODE(stale_info.st_mode) != 0o600
+        ):
+            raise RuntimeError(f"unsafe backup spool leftover: {stale}")
+        stale.unlink()
+        removed = True
+    if removed:
+        _fsync_directory(BACKUP_SPOOL_DIR)
+
+
+@contextlib.contextmanager
+def _backup_spool_file():
+    fd, temporary_name = tempfile.mkstemp(prefix=_BACKUP_SPOOL_PREFIX, suffix=".sbk", dir=BACKUP_SPOOL_DIR)
+    temporary = Path(temporary_name)
+    _fsync_directory(BACKUP_SPOOL_DIR)
+    try:
+        with os.fdopen(fd, "w+b") as stream:
+            fd = -1
+            yield stream
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
+        _fsync_directory(BACKUP_SPOOL_DIR)
+
+
+@contextlib.contextmanager
+def _exclusive_backup_transfer():
+    try:
+        with _backup_transfer_gate.claim():
+            yield
+    except backup_gate.BackupTransferBusyError as exc:
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "another private backup transfer is active") from exc
+
 
 _token = token_store.ensure_token()
+_backup_token = token_store.ensure_private_token(
+    Path(os.environ.get("SHIMPZ_R2DRIVER_BACKUP_TOKEN_FILE", "/run/shimpz-r2backup/token"))
+)
 
 
 class ApiError(Exception):
@@ -58,11 +137,34 @@ def _date_key(filename: str) -> str:
     return f"uploads/{time.strftime('%Y/%m/%d', time.gmtime())}/{filename}"
 
 
+def _backup_key(created_at: str, sha256: str) -> str:
+    if not _BACKUP_CREATED_RE.fullmatch(created_at):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "X-Backup-Created-At must be an exact UTC timestamp")
+    try:
+        created = time.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "X-Backup-Created-At is not a real UTC timestamp") from exc
+    if not _BACKUP_SHA_RE.fullmatch(sha256):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "X-Backup-SHA256 must be a lowercase SHA-256 digest")
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", created)
+    return f"backups/v1/{time.strftime('%Y/%m/%d', created)}/{stamp}-{sha256}.sbk"
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "r2-driver/1.0"
 
     def _authed(self) -> bool:
-        return self.headers.get("Authorization", "") == f"Bearer {_token}"
+        path = urlsplit(self.path).path
+        if path in {"/v1/r2/backup/upload", "/v1/r2/backup/download"}:
+            # The backup capability is exercisable only by an explicitly approved host-side
+            # `docker exec`, whose HTTP hop is loopback. A network peer cannot use this operation
+            # even if the private bearer is accidentally disclosed later.
+            if self.client_address[0] != "127.0.0.1":
+                return False
+            expected = _backup_token
+        else:
+            expected = _token
+        return self.headers.get("Authorization", "") == f"Bearer {expected}"
 
     def _send_json(self, status: HTTPStatus, payload: object) -> None:
         import json
@@ -75,22 +177,61 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _stream_body_to(self, dest: Path) -> int:
+    def _peer_disconnected(self) -> bool:
+        """Observe FIN/RST without consuming any pipelined request byte."""
+        try:
+            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def _stream_body_to(
+        self,
+        destination: BinaryIO,
+        *,
+        backup: bool = False,
+        deadline: float | None = None,
+    ) -> tuple[int, str]:
         """Stream the raw request body to `dest` in bounded chunks, enforcing the upload cap."""
         remaining = int(self.headers.get("Content-Length", "0") or "0")
-        validate.validate_upload_size(remaining)
+        if backup:
+            validate.validate_backup_upload_size(remaining)
+        else:
+            validate.validate_upload_size(remaining)
         written = 0
-        with dest.open("wb") as fh:
-            while remaining > 0:
+        digest = hashlib.sha256()
+        destination.seek(0)
+        destination.truncate(0)
+        while remaining > 0:
+            if deadline is not None:
+                seconds_left = deadline - time.monotonic()
+                if seconds_left <= 0:
+                    raise ApiError(
+                        HTTPStatus.REQUEST_TIMEOUT,
+                        "private backup request exceeded its total deadline",
+                    )
+                self.connection.settimeout(seconds_left)
+            try:
                 chunk = self.rfile.read(min(_CHUNK, remaining))
-                if not chunk:
-                    break
-                fh.write(chunk)
-                written += len(chunk)
-                remaining -= len(chunk)
+            except TimeoutError as exc:
+                raise ApiError(
+                    HTTPStatus.REQUEST_TIMEOUT,
+                    "private backup request exceeded its total deadline",
+                ) from exc
+            if not chunk:
+                break
+            destination.write(chunk)
+            digest.update(chunk)
+            written += len(chunk)
+            remaining -= len(chunk)
+        destination.flush()
+        os.fsync(destination.fileno())
         if written == 0:
             raise ApiError(HTTPStatus.BAD_REQUEST, "empty upload body")
-        return written
+        if remaining:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "upload body ended before Content-Length")
+        return written, digest.hexdigest()
 
     def _dispatch(self, method: str) -> None:
         if not self._authed():
@@ -114,10 +255,13 @@ class Handler(BaseHTTPRequestHandler):
         except r2_client.R2NotFoundError as exc:
             audit.log(method.lower(), self.path, result="denied", reason=str(exc))
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except r2_client.R2AlreadyExistsError as exc:
+            audit.log(method.lower(), self.path, result="denied", reason=str(exc))
+            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except r2_client.R2Error as exc:
             audit.log(method.lower(), self.path, result="error", reason=str(exc))
             self._send_json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001 — top-level HTTP handler: log + surface, never crash the server, NEVER treat as success
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             audit.log(method.lower(), self.path, result="error", reason=str(exc))
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -128,9 +272,21 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/v1/r2/upload":
             self._upload()
             return
+        if method == "POST" and path == "/v1/r2/backup/upload":
+            self._backup_upload()
+            return
+        if method == "GET" and path == "/v1/r2/backup/download":
+            self._backup_download(
+                validate.validate_backup_key((query.get("key") or [""])[0]),
+                (query.get("offset") or [""])[0],
+                (query.get("length") or [""])[0],
+            )
+            return
         if method == "GET" and path == "/v1/r2/list":
             prefix = validate.validate_prefix((query.get("prefix") or [""])[0])
-            entries = r2_client.list_prefix(prefix)
+            entries = [
+                entry for entry in r2_client.list_prefix(prefix) if validate.generic_entry_visible(entry.get("path"))
+            ]
             trace = audit.log("r2.list", prefix or "<root>", result="ok", count=len(entries))
             self._send_json(HTTPStatus.OK, {"prefix": prefix, "entries": entries, "trace_id": trace})
             return
@@ -147,7 +303,9 @@ class Handler(BaseHTTPRequestHandler):
         tmp = Path(tmp_str)
         os.close(fd)
         try:
-            size = self._stream_body_to(tmp)
+            with tmp.open("w+b") as destination:
+                size, _sha256 = self._stream_body_to(destination)
+            audit.log("r2.upload", key, result="attempt", level="info", size=size)
             r2_client.upload(str(tmp), key)
             url = r2_client.link(key, expire)
         finally:
@@ -155,13 +313,99 @@ class Handler(BaseHTTPRequestHandler):
         trace = audit.log("r2.upload", key, result="ok", size=size)
         self._send_json(HTTPStatus.OK, {"key": key, "link": url, "size": size, "trace_id": trace})
 
+    def _backup_upload(self) -> None:
+        expected_sha256 = self.headers.get("X-Backup-SHA256", "")
+        created_at = self.headers.get("X-Backup-Created-At", "")
+        budget = validate.validate_backup_deadline(self.headers.get("X-Backup-Deadline-Seconds"))
+        deadline = time.monotonic() + budget
+        key = _backup_key(created_at, expected_sha256)
+        with _exclusive_backup_transfer(), _backup_spool_file() as source:
+            size, actual_sha256 = self._stream_body_to(source, backup=True, deadline=deadline)
+            if actual_sha256 != expected_sha256:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "backup body SHA-256 does not match X-Backup-SHA256")
+            audit.log(
+                "r2.backup.upload",
+                key,
+                result="attempt",
+                level="info",
+                size=size,
+                sha256=actual_sha256,
+            )
+            uploaded_size = r2_client.backup_upload(
+                source,
+                key,
+                expected_sha256,
+                size,
+                deadline=deadline,
+                cancel_check=self._peer_disconnected,
+            )
+            if uploaded_size != size:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, "rclone reported an unexpected uploaded size")
+        trace = audit.log("r2.backup.upload", key, result="ok", size=size, sha256=actual_sha256)
+        self._send_json(
+            HTTPStatus.OK,
+            {"key": key, "sha256": actual_sha256, "size": size, "trace_id": trace},
+        )
+
+    def _backup_download(self, key: str, offset_value: str, length_value: str) -> None:
+        with _exclusive_backup_transfer():
+            object_size = r2_client.backup_size(key, cancel_check=self._peer_disconnected)
+            offset, count = validate.validate_backup_range(offset_value, length_value, object_size)
+            digest = validate.backup_key_sha256(key)
+            # A range is bounded to 256 MiB and staged on the ciphertext-only backup volume. rclone must
+            # finish with the exact byte count before headers are emitted, so an upstream failure can
+            # still be returned as JSON rather than becoming an apparently successful truncated range.
+            with tempfile.TemporaryFile(prefix=".shimpz-r2backup-range-", dir=BACKUP_SPOOL_DIR) as temporary:
+                r2_client.backup_download_range(
+                    key,
+                    offset,
+                    count,
+                    temporary,
+                    cancel_check=self._peer_disconnected,
+                )
+                self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(count))
+                self.send_header("Content-Range", f"bytes {offset}-{offset + count - 1}/{object_size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Backup-Size", str(object_size))
+                self.send_header("X-Backup-SHA256", digest)
+                self.end_headers()
+                try:
+                    while chunk := temporary.read(_CHUNK):
+                        self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError) as exc:
+                    audit.log(
+                        "r2.backup.download",
+                        key,
+                        result="error",
+                        reason=type(exc).__name__,
+                        offset=offset,
+                        length=count,
+                    )
+                    return
+        audit.log(
+            "r2.backup.download",
+            key,
+            result="ok",
+            size=object_size,
+            sha256=digest,
+            offset=offset,
+            length=count,
+        )
+
     def _get(self, key: str) -> None:
+        expected_size = r2_client.object_size(key)
+        validate.validate_download_size(expected_size)
         fd, tmp_str = tempfile.mkstemp(prefix="r2dl-", dir="/tmp")
         tmp = Path(tmp_str)
         os.close(fd)
         try:
-            size = r2_client.download(key, str(tmp))
+            size = r2_client.download(key, str(tmp), validate.DOWNLOAD_MAX_BYTES)
             validate.validate_download_size(size)
+            if size != expected_size:
+                raise r2_client.R2Error("generic object size changed during bounded download")
             audit.log("r2.get", key, result="ok", size=size)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/octet-stream")
@@ -187,7 +431,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)  # noqa: S104 — r2driver_net-only by design
+    _prepare_backup_spool()
+    # IPv4Address(0) is INADDR_ANY. The container must serve its private Docker network as well as
+    # loopback health/operator calls; Compose publishes no host port.
+    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     print(f"r2-driver listening on :{LISTEN_PORT}", file=sys.stderr)
     server.serve_forever()
 

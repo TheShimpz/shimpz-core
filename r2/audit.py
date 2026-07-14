@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -18,17 +19,27 @@ from pathlib import Path
 AUDIT_PATH = Path(os.environ.get("SHIMPZ_R2DRIVER_AUDIT_LOG", "/var/log/r2-driver/audit.jsonl"))
 MAX_BYTES = 10 * 1024 * 1024
 BACKUPS = 3
+_WRITE_LOCK = threading.Lock()
 
 
-def _rotate() -> None:
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _rotate() -> bool:
     if not AUDIT_PATH.exists() or AUDIT_PATH.stat().st_size <= MAX_BYTES:
-        return
+        return False
     for i in range(BACKUPS - 1, 0, -1):
         src = AUDIT_PATH.with_name(f"{AUDIT_PATH.name}.{i}")
         dst = AUDIT_PATH.with_name(f"{AUDIT_PATH.name}.{i + 1}")
         if src.exists():
             src.replace(dst)
     AUDIT_PATH.replace(AUDIT_PATH.with_name(f"{AUDIT_PATH.name}.1"))
+    return True
 
 
 def log(
@@ -48,9 +59,26 @@ def log(
         **extra,
     }
     line = json.dumps(event, sort_keys=True)
+    payload = f"{line}\n".encode()
+    with _WRITE_LOCK:
+        AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _rotate():
+            _fsync_directory(AUDIT_PATH.parent)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(AUDIT_PATH, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError("audit append made no progress")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(AUDIT_PATH.parent)
     print(line, file=sys.stdout, flush=True)
-    AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _rotate()
-    with AUDIT_PATH.open("a") as fh:
-        fh.write(line + "\n")
     return trace_id
