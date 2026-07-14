@@ -208,12 +208,16 @@ def backup_upload(
     def remaining_timeout() -> float:
         return remaining_deadline_seconds(deadline, time.monotonic(), "backup upload transaction")
 
-    # `--ignore-existing` makes a pre-existing key a skip, never a replacement. The key is derived
-    # from the body SHA-256 by app.py, and we verify the remote bytes after either create or skip.
-    # Concurrent valid writers can therefore race only with identical content.
+    # `--ignore-existing` makes a pre-existing key a skip, never a replacement. `--copy-links` is
+    # intentionally narrow here: rclone's local backend otherwise treats /proc/self/fd/N as a
+    # directory symlink. Following this one inherited descriptor preserves the already-validated
+    # inode and never reopens the mutable spool pathname. The key is derived from the body SHA-256,
+    # and we verify the remote bytes after either create or skip. Concurrent valid writers can
+    # therefore race only with identical content.
     proc = _run(
         [
             "copyto",
+            "--copy-links",
             "--ignore-existing",
             "--no-update-modtime",
             f"/proc/self/fd/{source_fd}",
