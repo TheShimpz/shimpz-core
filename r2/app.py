@@ -37,7 +37,6 @@ import hashlib
 import ipaddress
 import os
 import re
-import socket
 import stat
 import sys
 import tempfile
@@ -179,12 +178,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _peer_disconnected(self) -> bool:
         """Observe FIN/RST without consuming any pipelined request byte."""
-        try:
-            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
-        except BlockingIOError:
-            return False
-        except OSError:
-            return True
+        return r2_client.peer_disconnected(self.connection)
 
     def _stream_body_to(
         self,

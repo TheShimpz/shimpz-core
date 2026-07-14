@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import stat
 import subprocess
 import time
@@ -77,6 +78,24 @@ class R2AlreadyExistsError(R2Error):
 
 class R2CancelledError(R2Error):
     """The private HTTP caller disconnected and its rclone work was killed and reaped."""
+
+
+def peer_disconnected(connection: socket.socket) -> bool:
+    """Peek for FIN/RST immediately while preserving the handler's prior socket timeout."""
+    previous_timeout = connection.gettimeout()
+    try:
+        # MSG_DONTWAIT alone is insufficient after http.server has assigned a positive socket
+        # timeout: CPython polls for that timeout before recv(). Temporarily changing the socket
+        # mode keeps cancellation checks genuinely nonblocking even after a long upload deadline.
+        connection.setblocking(False)
+        return connection.recv(1, socket.MSG_PEEK) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+    finally:
+        with suppress(OSError):
+            connection.settimeout(previous_timeout)
 
 
 def remaining_deadline_seconds(deadline: float, now: float, description: str) -> float:
