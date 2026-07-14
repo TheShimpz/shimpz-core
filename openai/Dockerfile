@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/*_TOKEN_* ARGs here hold numeric group IDs and file paths, never secret values
 #
 # openai-driver — the ONLY container that holds the OpenAI API key (SECURITY_ENGINEERING_PLAN.md
@@ -9,10 +9,14 @@
 # code, not hand-rolled.
 # Pinned by digest (same base the other stdlib sidecars pin) — SECURITY_ENGINEERING_PLAN.md item 6.
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+ARG SOURCE_DATE_EPOCH=0
 
-# The ONLY openai SDK install in the fleet — the brain image is SDK-free (its shimpzopenai.py client
-# speaks plain HTTP to this sidecar).
-RUN pip install --no-cache-dir openai==2.44.0
+# The ONLY OpenAI SDK install in the fleet. The generated lock binds the complete transitive graph and
+# every accepted artifact hash; --require-hashes fails closed on an undeclared package or artifact.
+COPY requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir --require-hashes --requirement /tmp/requirements.lock \
+    && rm -f /tmp/requirements.lock \
+    && rm -rf /root/.cache/pip
 
 # Fixed GID for the token-sharing group — MUST match the same groupadd in the main Dockerfile (shimpz-brain's
 # `abc` user joins it there). DISTINCT from every other sidecar's token GID (10002-10007) so no
