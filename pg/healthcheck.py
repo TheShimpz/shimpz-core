@@ -1,16 +1,32 @@
 #!/usr/local/bin/python3
-"""Docker HEALTHCHECK probe: the server is up and its auth gate is live.
+"""Docker HEALTHCHECK probe: liveness is public and the mutation auth gate is live."""
 
-An unauthenticated GET must be refused with 403 (see app.py's bearer-token check) — same proof
-cf-driver's own dedicated healthcheck makes for its endpoint.
-"""
-
+import json
 import sys
 import urllib.error
 import urllib.request
 
+import driver_manifest
+
+manifest = driver_manifest.load()
+
 try:
-    urllib.request.urlopen("http://127.0.0.1:7072/v1/capsules/provision", timeout=3)
+    with urllib.request.urlopen(f"http://127.0.0.1:{manifest.port}{manifest.health_path}", timeout=3) as response:
+        healthy = response.status == 200 and json.load(response) == {"status": "ok"}
+except OSError, ValueError, json.JSONDecodeError:
+    sys.exit(1)
+
+if not healthy:
+    sys.exit(1)
+
+try:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{manifest.port}/v1/capsules/provision",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(request, timeout=3)  # noqa: S310 - fixed loopback URL
 except urllib.error.HTTPError as exc:
     sys.exit(0 if exc.code == 403 else 1)
 except OSError, ValueError:

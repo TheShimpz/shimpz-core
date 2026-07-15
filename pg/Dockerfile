@@ -41,7 +41,8 @@ RUN groupadd -g "${SHIMPZ_PGDRIVER_TOKEN_GID}" shimpzpgdriver-token \
     && useradd -u 10001 -G shimpzpgdriver-token -M -s /usr/sbin/nologin pgdriver
 
 WORKDIR /app
-COPY app.py validate.py pg_client.py principal_store.py audit.py token_store.py healthcheck.py ./
+COPY app.py validate.py pg_client.py principal_store.py audit.py token_store.py healthcheck.py \
+    driver_manifest.py shimpz.driver.toml ./
 
 # Pre-create + own every path a NAMED VOLUME will be mounted onto — Docker copies an image
 # directory's ownership/content into a fresh empty volume on first mount, which is otherwise

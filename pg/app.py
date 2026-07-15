@@ -12,13 +12,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 import audit
+import driver_manifest
 import pg_client
 import principal_store
 import token_store
 import validate
 
+DRIVER = driver_manifest.load()
 LISTEN_HOST = os.environ.get("SHIMPZ_PGDRIVER_HOST", "")
-LISTEN_PORT = int(os.environ.get("SHIMPZ_PGDRIVER_PORT", "7072"))
+LISTEN_PORT = DRIVER.port
 MAX_BODY_BYTES = int(os.environ.get("SHIMPZ_PGDRIVER_MAX_BODY_BYTES", str(64 * 1024)))
 _provisioner_token = token_store.ensure_token()
 
@@ -111,7 +113,7 @@ def _finalize_capsule(body: dict) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "pg-driver/2.0"
+    server_version = f"{DRIVER.id}-driver/{DRIVER.version}"
 
     def _bearer(self) -> str:
         scheme, separator, value = self.headers.get("Authorization", "").partition(" ")
@@ -172,6 +174,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str) -> None:
         path = urlsplit(self.path).path
+        if method == "GET" and path == DRIVER.health_path:
+            self._send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+        if method == "GET" and path == DRIVER.metadata_path:
+            self._send_json(HTTPStatus.OK, DRIVER.public())
+            return
         if not self._bearer():
             raise ApiError(HTTPStatus.FORBIDDEN, "bearer required")
         if method != "POST":

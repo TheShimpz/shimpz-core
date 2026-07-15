@@ -1,0 +1,21 @@
+schema_version = 1
+id = "postgresql"
+title = "PostgreSQL"
+version = "3.0.0"
+summary = "Managed PostgreSQL databases isolated per Capsule and App."
+interface = "shimpz.postgresql/v1"
+scope = "space"
+credential_policy = "managed"
+data_plane = "direct"
+port = 7072
+health_path = "/healthz"
+metadata_path = "/v1/driver"
+
+[capabilities]
+operations = [
+  "capsule.provision",
+  "capsule.finalize",
+  "capsule.drop",
+  "capsule.app.create",
+  "capsule.app.drop",
+]
