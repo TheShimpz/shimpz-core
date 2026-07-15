@@ -86,6 +86,8 @@ RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver /var/lib/capsule-
     && chown capsuledriver:shimpzbrain-resolve /run/shimpz-accounts-brain-resolve \
     && chmod 0750 /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
     && chown -R capsuledriver:dockersock /var/log/capsule-driver /var/lib/capsule-driver \
+    && chmod 0700 /var/lib/capsule-driver/pg-principals /var/lib/capsule-driver/r2-principals \
+        /var/lib/capsule-driver/cleanup \
     # egress-policy mountpoint owned by the driver uid, so a FRESH policy volume copies up writable
     # (an existing root-owned volume needs the one-time `chown 10001` — see docs/TESTS.md)
     && chown capsuledriver:dockersock /app-egress-policy

@@ -205,6 +205,13 @@ class R2DriverClientTests(unittest.TestCase):
         self.assertTrue(all(item[0][1] == "/v1/capsules/retire" for item in calls))
         self.assertTrue(all(item[0][2] == {"capsule_id": "capsule_1"} for item in calls))
 
+    def test_image_seeds_every_private_principal_directory_owner_only(self) -> None:
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(
+            "chmod 0700 /var/lib/capsule-driver/pg-principals /var/lib/capsule-driver/r2-principals",
+            dockerfile,
+        )
+
     def test_metadata_projection_rejects_secret_fields(self) -> None:
         metadata = {
             "id": "primary",
