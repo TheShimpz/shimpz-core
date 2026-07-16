@@ -2090,8 +2090,7 @@ def _codex_device_info(container) -> dict:
         raise ApiError(HTTPStatus.BAD_GATEWAY, "Codex device login returned an invalid response") from exc
     code_parts = user_code.split("-") if isinstance(user_code, str) else []
     valid_code = 2 <= len(code_parts) <= 3 and all(
-        4 <= len(part) <= 8 and part.isascii() and part.isalnum() and part == part.upper()
-        for part in code_parts
+        4 <= len(part) <= 8 and part.isascii() and part.isalnum() and part == part.upper() for part in code_parts
     )
     if (
         payload.get("pending") is not False

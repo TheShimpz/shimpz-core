@@ -5,10 +5,10 @@ from __future__ import annotations
 import threading
 import unittest
 from http import HTTPStatus
+from typing import ClassVar
 from unittest import mock
 
 import test_r2_bridge as fixture
-
 
 app = fixture.app
 _patched = fixture._patched
@@ -17,7 +17,7 @@ _patched = fixture._patched
 class _CodexContainer:
     id = "codex-capsule-container"
     status = "running"
-    labels = {"capsule.brain": "codex"}
+    labels: ClassVar[dict[str, str]] = {"capsule.brain": "codex"}
 
     def reload(self) -> None:
         return None
@@ -91,9 +91,8 @@ class CodexLoginBridgeTests(unittest.TestCase):
                 (0, '{"state":"succeeded"}'),
             )
         )
-        with _patched(_brain_exec=lambda *_args: next(invalid)):
-            with self.assertRaises(app.ApiError) as caught:
-                app._codex_login_status(object())
+        with _patched(_brain_exec=lambda *_args: next(invalid)), self.assertRaises(app.ApiError) as caught:
+            app._codex_login_status(object())
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
 
     def test_device_code_is_never_accepted_by_shimpz(self) -> None:
@@ -105,9 +104,9 @@ class CodexLoginBridgeTests(unittest.TestCase):
                 _require_current_authorization=lambda cid, supplied: container,
             ),
             mock.patch.object(app, "_brain_exec_stdin") as secret_transport,
+            self.assertRaises(app.ApiError) as caught,
         ):
-            with self.assertRaises(app.ApiError) as caught:
-                app._capsule_login_code("capsule_1", {"code": "AB12-CDE34"}, lease)
+            app._capsule_login_code("capsule_1", {"code": "AB12-CDE34"}, lease)
         self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
         self.assertIn("provider website", caught.exception.message)
         secret_transport.assert_not_called()
@@ -131,8 +130,9 @@ class CodexLoginBridgeTests(unittest.TestCase):
             _require_current_authorization=authorize,
             _chat_lock_for=lambda _cid: threading.Lock(),
             _require_no_durable_chat_turn=lambda supplied: events.append(("durable", supplied.id)),
-            _release_finished_credential_mutation=lambda cid, supplied: events.append(("release", cid, supplied.id))
-            or True,
+            _release_finished_credential_mutation=lambda cid, supplied: (
+                events.append(("release", cid, supplied.id)) or True
+            ),
             _brain_exec=execute,
         ):
             result = app._capsule_login_cancel("capsule_1", lease)
