@@ -16,6 +16,11 @@ from pathlib import Path
 CAPSULE = Path(__file__).resolve().parents[1]
 FIXTURE = CAPSULE / "tests" / "fixtures" / "hello-pulse"
 REGISTRY_IMAGE = "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+MANAGED_LABEL = "com.shimpz.local.managed"
+PROFILE_LABEL = "com.shimpz.local.profile"
+SPACE_LABEL = "com.shimpz.local.space-id"
+KIND_LABEL = "com.shimpz.local.kind"
+LOCAL_PROFILE = "single-owner-local-v1"
 
 
 class DockerFlowTests(unittest.TestCase):
@@ -37,6 +42,48 @@ class DockerFlowTests(unittest.TestCase):
 
     def _remove(self, *arguments: str) -> None:
         self._run(*arguments, check=False, timeout=120)
+
+    @staticmethod
+    def _ownership(space_id: str, kind: str) -> dict[str, str]:
+        return {
+            MANAGED_LABEL: "1",
+            PROFILE_LABEL: LOCAL_PROFILE,
+            SPACE_LABEL: space_id,
+            KIND_LABEL: kind,
+        }
+
+    def _owned_ids(self, resource: str, space_id: str, kind: str) -> list[str]:
+        expected = self._ownership(space_id, kind)
+        filters: list[str] = []
+        for key, value in expected.items():
+            filters.extend(("--filter", f"label={key}={value}"))
+        if resource == "container":
+            result = self._run("container", "ls", "--all", "--quiet", *filters, check=False)
+        else:
+            result = self._run("network", "ls", "--quiet", *filters, check=False)
+        if result.returncode != 0:
+            return []
+
+        verified: list[str] = []
+        for resource_id in result.stdout.splitlines():
+            inspected = self._run("inspect", resource_id, check=False)
+            if inspected.returncode != 0:
+                continue
+            try:
+                metadata = json.loads(inspected.stdout)[0]
+            except (IndexError, TypeError, json.JSONDecodeError):
+                continue
+            labels = metadata.get("Config", {}).get("Labels") if resource == "container" else metadata.get("Labels")
+            if isinstance(labels, dict) and all(labels.get(key) == value for key, value in expected.items()):
+                verified.append(resource_id)
+        return verified
+
+    def _cleanup_owned_space(self, space_id: str) -> None:
+        # Workloads must leave their networks before Docker can remove those networks.
+        for container_id in self._owned_ids("container", space_id, "assistant"):
+            self._remove("container", "rm", "--force", container_id)
+        for network_id in self._owned_ids("network", space_id, "capsule"):
+            self._remove("network", "rm", network_id)
 
     def _wait_registry(self, port: int) -> None:
         deadline = time.monotonic() + 30
@@ -425,8 +472,30 @@ class DockerFlowTests(unittest.TestCase):
                 "print(oct(stat.S_IMODE(s.st_mode)),s.st_uid,s.st_gid,s.st_nlink)",
             ).stdout.strip()
             self.assertEqual(token_mode, "0o440 10001 10010 1")
+
+            # Leave one exact-owned pair for the outer finally. This proves cleanup does not depend
+            # on reaching the controller reset route and therefore also runs after an earlier failure.
+            self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/cleanup_capsule/create",
+                {"name": "Cleanup Capsule"},
+            )
+            self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/cleanup_capsule/assistants",
+                {"assistant": "hello-pulse"},
+            )
+            self.assertEqual(len(self._owned_ids("container", space_id, "assistant")), 1)
+            self.assertEqual(len(self._owned_ids("network", space_id, "capsule")), 1)
         finally:
             # Cleanup remains strictly scoped to this test's unique names/labels.
+            self._cleanup_owned_space(space_id)
+            owned_containers = self._owned_ids("container", space_id, "assistant")
+            owned_networks = self._owned_ids("network", space_id, "capsule")
             self._remove("rm", "--force", controller)
             self._remove("rm", "--force", registry)
             self._remove("network", "rm", foreign_network)
@@ -435,6 +504,8 @@ class DockerFlowTests(unittest.TestCase):
                 self._remove("image", "rm", "--force", trusted_ref)
             self._remove("image", "rm", "--force", fixture_tag, controller_tag)
             self._remove("buildx", "rm", "--force", builder)
+            self.assertEqual(owned_containers, [])
+            self.assertEqual(owned_networks, [])
 
 
 if __name__ == "__main__":
