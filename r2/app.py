@@ -399,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._capsule_lifecycle(method, path)
             elif match is not None:
                 self._capsule_credentials(method, match)
-        except Exception as exc:  # noqa: BLE001 - mapped to a closed, non-secret HTTP error below
+        except Exception as exc:
             self._capsule_api_error(method, path, exc)
         return True
 
