@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from http import HTTPStatus
+from pathlib import Path
+
+CAPSULE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CAPSULE))
+
+import local_app
+import local_registry
+
+
+class LocalContractTests(unittest.TestCase):
+    def _registry(self, image: str) -> dict[str, local_registry.AssistantSpec]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(json.dumps({"schema": 1, "hello_pulse_image": image}), encoding="utf-8")
+            return local_registry.load_registry(path)
+
+    def test_registry_accepts_only_a_non_placeholder_digest(self) -> None:
+        digest = "127.0.0.1:5000/shimpz/hello-pulse@sha256:" + "a" * 64
+        registry = self._registry(digest)
+        self.assertEqual(registry["hello-pulse"].image, digest)
+        self.assertEqual(set(registry["hello-pulse"].operations), {"hello"})
+
+        invalid = (
+            "ghcr.io/roxygens/shimpz-space:latest",
+            "ghcr.io/roxygens/shimpz-space@sha256:" + "0" * 64,
+            "https://ghcr.io/roxygens/hello@sha256:" + "a" * 64,
+        )
+        for image in invalid:
+            with self.subTest(image=image), self.assertRaises(local_registry.RegistryError):
+                self._registry(image)
+
+    def test_registry_shape_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(
+                json.dumps({"schema": 1, "hello_pulse_image": "x", "command": ["/bin/sh"]}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(local_registry.RegistryError):
+                local_registry.load_registry(path)
+
+    def test_hello_contract_is_closed_and_bounded(self) -> None:
+        self.assertEqual(local_registry.validate_hello_input({}), {"name": "Shimpz"})
+        self.assertEqual(local_registry.validate_hello_input({"name": "Captain"}), {"name": "Captain"})
+        for invalid in ({"name": ""}, {"name": " x"}, {"name": "x\n"}, {"extra": True}, []):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                local_registry.validate_hello_input(invalid)
+
+    def test_identifiers_are_strict_and_bounded(self) -> None:
+        self.assertEqual(local_app.validate_capsule_id("demo_capsule"), "demo_capsule")
+        for invalid in ("Demo", "-demo", "demo-1", "a" * 41, "demo space", ""):
+            with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as caught:
+                local_app.validate_capsule_id(invalid)
+            self.assertEqual(caught.exception.status, HTTPStatus.UNPROCESSABLE_ENTITY)
+
+    def test_capsule_name_matches_the_admin_contract(self) -> None:
+        self.assertEqual(local_app.validate_capsule_name("My Capsule"), "My Capsule")
+        for invalid in ("", " padded", "padded ", "x\n", "x" * 81, None):
+            with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem):
+                local_app.validate_capsule_name(invalid)
+
+    def test_container_limits_are_intentionally_small(self) -> None:
+        self.assertEqual(local_app.ASSISTANT_NANO_CPUS, 250_000_000)
+        self.assertEqual(local_app.ASSISTANT_MEMORY, 128 * 1024 * 1024)
+        self.assertEqual(local_app.ASSISTANT_PIDS, 64)
+        self.assertEqual(local_app.half_cpu_set(96), "0-47")
+        self.assertEqual(local_app.half_cpu_set(8), "0-3")
+        self.assertEqual(local_app.half_cpu_set(1), "0")
+
+
+if __name__ == "__main__":
+    unittest.main()

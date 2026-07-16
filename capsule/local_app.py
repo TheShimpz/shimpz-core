@@ -1,0 +1,1048 @@
+"""Minimal Docker controller for one locally owned Shimpz Space.
+
+This is intentionally separate from the hosted Capsule controller.  An empty Capsule is
+one labeled internal network; its only runnable resources are build-allowlisted,
+digest-pinned first-party Assistants with a fixed operation contract.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import select
+import socket
+import struct
+import sys
+import threading
+import time
+from contextlib import ExitStack, suppress
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+import docker
+import local_audit
+import local_token_store
+from docker.errors import APIError, DockerException, ImageNotFound, NotFound
+from docker.types import LogConfig, Ulimit
+from local_registry import (
+    AssistantSpec,
+    RegistryError,
+    load_registry,
+    validate_operation_input,
+    validate_operation_output,
+)
+
+LISTEN_PORT = 7077
+PROFILE = "single-owner-local-v1"
+MANAGED_LABEL = "com.shimpz.local.managed"
+PROFILE_LABEL = "com.shimpz.local.profile"
+SPACE_LABEL = "com.shimpz.local.space-id"
+KIND_LABEL = "com.shimpz.local.kind"
+CAPSULE_LABEL = "com.shimpz.local.capsule-id"
+CAPSULE_NAME_LABEL = "com.shimpz.local.capsule-name"
+ASSISTANT_LABEL = "com.shimpz.local.assistant-id"
+IMAGE_LABEL = "com.shimpz.local.image"
+
+_CAPSULE_ID = re.compile(r"[a-z0-9_]{1,40}")
+_ASSISTANT_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+_SPACE_ID = re.compile(r"[a-z0-9][a-z0-9]*(?:-[a-z0-9]+)*")
+MAX_CAPSULE_ID_LENGTH = 40
+MAX_ASSISTANT_ID_LENGTH = 48
+MAX_SPACE_ID_LENGTH = 48
+MAX_BODY_BYTES = 16 * 1024
+MAX_RESPONSE_BYTES = 32 * 1024
+MAX_PATH_BYTES = 512
+REQUEST_TIMEOUT_SECONDS = 10
+RPC_TIMEOUT_SECONDS = 8
+HEALTH_TIMEOUT_SECONDS = 15
+
+ASSISTANT_UID = "10001:10001"
+ASSISTANT_MEMORY = 128 * 1024 * 1024
+ASSISTANT_NANO_CPUS = 250_000_000
+ASSISTANT_PIDS = 64
+
+
+class ApiProblem(RuntimeError):  # noqa: N818 - an HTTP problem carries both status and safe public detail
+    def __init__(self, status: HTTPStatus, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.code = code
+
+
+def validate_capsule_id(value: str) -> str:
+    if len(value) > MAX_CAPSULE_ID_LENGTH or _CAPSULE_ID.fullmatch(value) is None:
+        raise ApiProblem(HTTPStatus.UNPROCESSABLE_ENTITY, "invalid Capsule id", code="invalid-capsule-id")
+    return value
+
+
+def validate_capsule_name(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 80
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ApiProblem(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "Capsule name must contain 1 to 80 trimmed characters",
+            code="invalid-capsule-name",
+        )
+    return value
+
+
+def validate_space_id(value: str) -> str:
+    if len(value) > MAX_SPACE_ID_LENGTH or _SPACE_ID.fullmatch(value) is None:
+        raise RuntimeError("SHIMPZ_SPACE_ID must be a lowercase, dash-separated identifier")
+    return value
+
+
+def _space_prefix(space_id: str) -> str:
+    return hashlib.sha256(space_id.encode("ascii")).hexdigest()[:12]
+
+
+def half_cpu_set(processors: int) -> str:
+    if isinstance(processors, bool) or not isinstance(processors, int) or processors < 1:
+        raise RuntimeError("the Docker daemon reported an invalid CPU count")
+    available = max(1, processors // 2)
+    return "0" if available == 1 else f"0-{available - 1}"
+
+
+class LocalController:
+    def __init__(self, client: docker.DockerClient, space_id: str, registry: dict[str, AssistantSpec]) -> None:
+        self.client = client
+        self.space_id = validate_space_id(space_id)
+        self.registry = registry
+        self._locks = tuple(threading.RLock() for _ in range(64))
+        daemon_info = self._require_default_seccomp()
+        self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
+
+    def _require_default_seccomp(self) -> dict:
+        try:
+            info = self.client.info()
+            options = info.get("SecurityOptions", [])
+        except DockerException as exc:
+            raise RuntimeError("the Docker daemon is unavailable") from exc
+        if not any(isinstance(option, str) and option.startswith("name=seccomp") for option in options):
+            raise RuntimeError("the Docker daemon default seccomp profile is required")
+        return info
+
+    def _lock(self, capsule_id: str) -> threading.RLock:
+        slot = hashlib.sha256(capsule_id.encode("ascii")).digest()[0] % len(self._locks)
+        return self._locks[slot]
+
+    def _base_labels(self, capsule_id: str, kind: str) -> dict[str, str]:
+        return {
+            MANAGED_LABEL: "1",
+            PROFILE_LABEL: PROFILE,
+            SPACE_LABEL: self.space_id,
+            KIND_LABEL: kind,
+            CAPSULE_LABEL: capsule_id,
+        }
+
+    def _network_name(self, capsule_id: str) -> str:
+        return f"shimpz-local-{_space_prefix(self.space_id)}-capsule-{capsule_id}"
+
+    def _container_name(self, capsule_id: str, assistant_id: str) -> str:
+        return f"shimpz-local-{_space_prefix(self.space_id)}-{capsule_id}-assistant-{assistant_id}"
+
+    @staticmethod
+    def _labels_include(actual: object, expected: dict[str, str]) -> bool:
+        return isinstance(actual, dict) and all(actual.get(key) == value for key, value in expected.items())
+
+    def _validate_network(self, network, capsule_id: str) -> str:
+        network.reload()
+        attrs = network.attrs
+        expected = self._base_labels(capsule_id, "capsule")
+        labels = attrs.get("Labels") or {}
+        if (
+            not self._labels_include(labels, expected)
+            or attrs.get("Name") != self._network_name(capsule_id)
+            or attrs.get("Driver") != "bridge"
+            or attrs.get("Internal") is not True
+            or attrs.get("Attachable") is not False
+        ):
+            raise ApiProblem(HTTPStatus.CONFLICT, "Capsule resource ownership conflict", code="ownership-conflict")
+        try:
+            return validate_capsule_name(labels.get(CAPSULE_NAME_LABEL))
+        except ApiProblem as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Capsule resource ownership conflict",
+                code="ownership-conflict",
+            ) from exc
+
+    def _network(self, capsule_id: str, *, required: bool = True):
+        try:
+            network = self.client.networks.get(self._network_name(capsule_id))
+        except NotFound:
+            if required:
+                raise ApiProblem(HTTPStatus.NOT_FOUND, "Capsule not found", code="capsule-not-found") from None
+            return None
+        self._validate_network(network, capsule_id)
+        return network
+
+    def list_capsules(self) -> dict[str, list[dict[str, str]]]:
+        filters = {
+            "label": [
+                f"{MANAGED_LABEL}=1",
+                f"{PROFILE_LABEL}={PROFILE}",
+                f"{SPACE_LABEL}={self.space_id}",
+                f"{KIND_LABEL}=capsule",
+            ]
+        }
+        capsules: list[dict[str, str]] = []
+        try:
+            networks = self.client.networks.list(filters=filters)
+        except DockerException as exc:
+            raise ApiProblem(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Docker is unavailable",
+                code="docker-unavailable",
+            ) from exc
+        for network in networks:
+            labels = network.attrs.get("Labels") or {}
+            capsule_id = labels.get(CAPSULE_LABEL)
+            if not isinstance(capsule_id, str):
+                raise ApiProblem(HTTPStatus.CONFLICT, "Capsule resource ownership conflict", code="ownership-conflict")
+            validate_capsule_id(capsule_id)
+            name = self._validate_network(network, capsule_id)
+            capsules.append({"id": capsule_id, "name": name, "status": "running"})
+        capsules.sort(key=lambda item: item["id"])
+        return {"capsules": capsules}
+
+    def create_capsule(self, capsule_id: str, name: str) -> dict[str, object]:
+        capsule_id = validate_capsule_id(capsule_id)
+        name = validate_capsule_name(name)
+        with self._lock(capsule_id):
+            existing = self._network(capsule_id, required=False)
+            if existing is not None:
+                existing_name = self._validate_network(existing, capsule_id)
+                if existing_name != name:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Capsule id already belongs to a different name",
+                        code="capsule-name-conflict",
+                    )
+                return {"id": capsule_id, "name": name, "status": "running", "created": False}
+            try:
+                labels = self._base_labels(capsule_id, "capsule")
+                labels[CAPSULE_NAME_LABEL] = name
+                network = self.client.networks.create(
+                    self._network_name(capsule_id),
+                    driver="bridge",
+                    internal=True,
+                    attachable=False,
+                    check_duplicate=True,
+                    labels=labels,
+                )
+            except APIError as exc:
+                # A concurrent idempotent creator is safe only when the resulting
+                # resource proves the exact ownership/profile labels.
+                network = self._network(capsule_id, required=False)
+                if network is None:
+                    raise ApiProblem(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "Docker could not create the Capsule",
+                        code="docker-create-failed",
+                    ) from exc
+                existing_name = self._validate_network(network, capsule_id)
+                if existing_name != name:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Capsule id already belongs to a different name",
+                        code="capsule-name-conflict",
+                    ) from exc
+                return {"id": capsule_id, "name": name, "status": "running", "created": False}
+            self._validate_network(network, capsule_id)
+            return {"id": capsule_id, "name": name, "status": "running", "created": True}
+
+    def _assistant_filters(self, capsule_id: str) -> dict[str, list[str] | bool]:
+        return {
+            "all": True,
+            "filters": {
+                "label": [
+                    f"{MANAGED_LABEL}=1",
+                    f"{PROFILE_LABEL}={PROFILE}",
+                    f"{SPACE_LABEL}={self.space_id}",
+                    f"{KIND_LABEL}=assistant",
+                    f"{CAPSULE_LABEL}={capsule_id}",
+                ]
+            },
+        }
+
+    def _assistant_container(self, capsule_id: str, assistant_id: str, *, required: bool = True):
+        name = self._container_name(capsule_id, assistant_id)
+        try:
+            container = self.client.containers.get(name)
+        except NotFound:
+            if required:
+                raise ApiProblem(
+                    HTTPStatus.NOT_FOUND,
+                    "Assistant is not installed",
+                    code="assistant-not-found",
+                ) from None
+            return None
+        return container
+
+    def _resolve(self, assistant_id: str) -> AssistantSpec:
+        spec = self.registry.get(assistant_id)
+        if spec is None:
+            # Resolution is intentionally completed before any image lookup/pull.
+            raise ApiProblem(HTTPStatus.NOT_FOUND, "Assistant is not allowlisted", code="assistant-not-allowlisted")
+        return spec
+
+    @staticmethod
+    def _image_labels_valid(image, spec: AssistantSpec) -> bool:
+        labels = (image.attrs.get("Config") or {}).get("Labels") or {}
+        return labels.get("org.shimpz.assistant.id") == spec.assistant_id and labels.get(
+            "org.shimpz.assistant.api"
+        ) == "1"
+
+    def _trusted_image(self, spec: AssistantSpec):
+        try:
+            image = self.client.images.get(spec.image)
+        except ImageNotFound:
+            try:
+                image = self.client.images.pull(spec.image)
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.BAD_GATEWAY,
+                    "the trusted Assistant image could not be pulled",
+                    code="image-pull-failed",
+                ) from exc
+        except DockerException as exc:
+            raise ApiProblem(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Docker is unavailable",
+                code="docker-unavailable",
+            ) from exc
+        image.reload()
+        repo_digests = image.attrs.get("RepoDigests") or []
+        if spec.image not in repo_digests or not self._image_labels_valid(image, spec):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "the Assistant image does not match its trusted contract",
+                code="image-contract-mismatch",
+            )
+        return image
+
+    def _assistant_labels(self, capsule_id: str, spec: AssistantSpec) -> dict[str, str]:
+        labels = self._base_labels(capsule_id, "assistant")
+        labels.update({ASSISTANT_LABEL: spec.assistant_id, IMAGE_LABEL: spec.image})
+        return labels
+
+    def _validate_container(self, container, capsule_id: str, spec: AssistantSpec, network_name: str) -> None:
+        container.reload()
+        attrs = container.attrs
+        config = attrs.get("Config") or {}
+        host = attrs.get("HostConfig") or {}
+        expected_labels = self._assistant_labels(capsule_id, spec)
+        security_options = host.get("SecurityOpt") or []
+        networks = (attrs.get("NetworkSettings") or {}).get("Networks") or {}
+        if (
+            not self._labels_include(config.get("Labels"), expected_labels)
+            or config.get("Image") != spec.image
+            or config.get("User") != ASSISTANT_UID
+            or host.get("ReadonlyRootfs") is not True
+            or "ALL" not in (host.get("CapDrop") or [])
+            or not any(str(option).startswith("no-new-privileges") for option in security_options)
+            or any("seccomp=unconfined" in str(option) for option in security_options)
+            or host.get("Privileged") is not False
+            or host.get("NetworkMode") != network_name
+            or host.get("Memory") != ASSISTANT_MEMORY
+            or host.get("MemorySwap") != ASSISTANT_MEMORY
+            or host.get("NanoCpus") != ASSISTANT_NANO_CPUS
+            or host.get("CpusetCpus") != self.cpuset_cpus
+            or host.get("PidsLimit") != ASSISTANT_PIDS
+            or host.get("IpcMode") != "private"
+            or host.get("CgroupnsMode") != "private"
+            or host.get("Tmpfs") not in (None, {})
+            or host.get("AutoRemove") is not False
+            or (host.get("RestartPolicy") or {}).get("Name") not in {"", "no"}
+            or (host.get("LogConfig") or {}).get("Type") != "json-file"
+            or (host.get("LogConfig") or {}).get("Config") != {"max-file": "2", "max-size": "1m"}
+            or host.get("PortBindings") not in (None, {})
+            or host.get("Binds") not in (None, [])
+            or host.get("Devices") not in (None, [])
+            or host.get("DeviceRequests") not in (None, [])
+            or attrs.get("Mounts") not in (None, [])
+            or set(networks) != {network_name}
+        ):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "the installed Assistant failed its isolation profile",
+                code="assistant-isolation-drift",
+            )
+
+    @staticmethod
+    def _close_exec_stream(stream) -> None:
+        response = getattr(stream, "_response", None)
+        if response is not None:
+            response.close()
+        else:
+            stream.close()
+
+    @staticmethod
+    def _read_exact(raw_socket: socket.socket, amount: int, deadline: float) -> bytes:
+        output = bytearray()
+        while len(output) < amount:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([raw_socket], [], [], remaining)[0]:
+                raise TimeoutError
+            chunk = raw_socket.recv(amount - len(output))
+            if not chunk:
+                raise EOFError
+            output.extend(chunk)
+        return bytes(output)
+
+    def _rpc(self, container, spec: AssistantSpec, method: str, path: str, payload: dict) -> object:
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        if len(encoded) > MAX_BODY_BYTES:
+            raise ApiProblem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request is too large", code="body-too-large")
+        try:
+            created = self.client.api.exec_create(
+                container.id,
+                [spec.rpc_command, method, path],
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                privileged=False,
+                user=ASSISTANT_UID,
+            )
+            exec_id = created["Id"]
+            stream = self.client.api.exec_start(exec_id, socket=True)
+            raw_socket = getattr(stream, "_sock", None)
+            if raw_socket is None:
+                raise OSError("the Docker attach socket cannot half-close stdin")
+            raw_socket.sendall(encoded)
+            raw_socket.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + RPC_TIMEOUT_SECONDS
+            stdout = bytearray()
+            stderr_bytes = 0
+            while True:
+                try:
+                    header = self._read_exact(raw_socket, 8, deadline)
+                except EOFError:
+                    break
+                stream_id, length = struct.unpack(">BxxxL", header)
+                if length > MAX_RESPONSE_BYTES + 1:
+                    raise ValueError("oversized Docker exec frame")
+                chunk = self._read_exact(raw_socket, length, deadline)
+                if stream_id == 1:
+                    stdout.extend(chunk)
+                    if len(stdout) > MAX_RESPONSE_BYTES:
+                        raise ValueError("oversized Assistant response")
+                else:
+                    stderr_bytes += len(chunk)
+                    if stderr_bytes > MAX_RESPONSE_BYTES:
+                        raise ValueError("oversized Assistant error")
+        except TimeoutError as exc:
+            raise ApiProblem(
+                HTTPStatus.GATEWAY_TIMEOUT,
+                "Assistant operation timed out",
+                code="assistant-timeout",
+            ) from exc
+        except (DockerException, OSError, ValueError, KeyError) as exc:
+            raise ApiProblem(HTTPStatus.BAD_GATEWAY, "Assistant operation failed", code="assistant-rpc-failed") from exc
+        finally:
+            if "stream" in locals():
+                self._close_exec_stream(stream)
+
+        try:
+            details = self.client.api.exec_inspect(exec_id)
+            exit_code = details.get("ExitCode")
+            decoded = json.loads(bytes(stdout))
+        except (DockerException, UnicodeError, json.JSONDecodeError) as exc:
+            raise ApiProblem(HTTPStatus.BAD_GATEWAY, "Assistant operation failed", code="assistant-rpc-failed") from exc
+        if exit_code != 0 or stderr_bytes:
+            raise ApiProblem(HTTPStatus.BAD_GATEWAY, "Assistant operation failed", code="assistant-rpc-failed")
+        return decoded
+
+    def _wait_ready(self, container, spec: AssistantSpec) -> None:
+        deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            container.reload()
+            if container.status not in {"created", "running"}:
+                break
+            if container.status == "running":
+                try:
+                    result = self._rpc(container, spec, "GET", spec.health_path, {})
+                except ApiProblem:
+                    pass
+                else:
+                    if result == {"status": "ok"}:
+                        return
+            time.sleep(0.2)
+        raise ApiProblem(HTTPStatus.BAD_GATEWAY, "Assistant did not become ready", code="assistant-not-ready")
+
+    def list_registry(self) -> dict[str, list[dict[str, object]]]:
+        return {
+            "assistants": [
+                {
+                    "id": spec.assistant_id,
+                    "title": "Hello Pulse",
+                    "summary": "A tiny first-party Assistant that proves the local install and operation flow.",
+                    "operations": sorted(spec.operations),
+                }
+                for spec in sorted(self.registry.values(), key=lambda item: item.assistant_id)
+            ]
+        }
+
+    def health(self) -> dict[str, str]:
+        try:
+            if self.client.ping() is not True:
+                raise DockerException("unexpected Docker ping response")
+        except DockerException as exc:
+            raise ApiProblem(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Docker is unavailable",
+                code="docker-unavailable",
+            ) from exc
+        return {"status": "ok"}
+
+    def list_assistants(self, capsule_id: str) -> dict[str, list[dict[str, str]]]:
+        capsule_id = validate_capsule_id(capsule_id)
+        self._network(capsule_id)
+        output: list[dict[str, str]] = []
+        try:
+            containers = self.client.containers.list(**self._assistant_filters(capsule_id))
+        except DockerException as exc:
+            raise ApiProblem(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Docker is unavailable",
+                code="docker-unavailable",
+            ) from exc
+        for container in containers:
+            labels = container.labels
+            assistant_id = labels.get(ASSISTANT_LABEL)
+            spec = self.registry.get(assistant_id)
+            if spec is None:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "an installed Assistant is no longer allowlisted",
+                    code="assistant-registry-drift",
+                )
+            self._validate_container(container, capsule_id, spec, self._network_name(capsule_id))
+            output.append({"assistant": assistant_id, "status": container.status})
+        output.sort(key=lambda item: item["assistant"])
+        return {"assistants": output}
+
+    def install_assistant(self, capsule_id: str, assistant_id: str) -> dict[str, object]:
+        capsule_id = validate_capsule_id(capsule_id)
+        spec = self._resolve(assistant_id)
+        with self._lock(capsule_id):
+            network = self._network(capsule_id)
+            existing = self._assistant_container(capsule_id, assistant_id, required=False)
+            if existing is not None:
+                self._validate_container(existing, capsule_id, spec, network.name)
+                existing.reload()
+                if existing.status != "running":
+                    try:
+                        existing.start()
+                    except DockerException as exc:
+                        raise ApiProblem(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            "Docker could not start the Assistant",
+                            code="docker-start-failed",
+                        ) from exc
+                    self._wait_ready(existing, spec)
+                return {"assistant": assistant_id, "installed": False}
+
+            image = self._trusted_image(spec)
+            try:
+                container = self.client.containers.create(
+                    image=spec.image,
+                    name=self._container_name(capsule_id, assistant_id),
+                    command=None,
+                    detach=True,
+                    user=ASSISTANT_UID,
+                    network=network.name,
+                    labels=self._assistant_labels(capsule_id, spec),
+                    environment={
+                        "SHIMPZ_ASSISTANT_ID": assistant_id,
+                        "SHIMPZ_CAPSULE_ID": capsule_id,
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    },
+                    read_only=True,
+                    cap_drop=["ALL"],
+                    security_opt=["no-new-privileges:true"],
+                    privileged=False,
+                    ipc_mode="private",
+                    cgroupns="private",
+                    mem_limit=ASSISTANT_MEMORY,
+                    memswap_limit=ASSISTANT_MEMORY,
+                    nano_cpus=ASSISTANT_NANO_CPUS,
+                    cpuset_cpus=self.cpuset_cpus,
+                    pids_limit=ASSISTANT_PIDS,
+                    ulimits=[Ulimit(name="nofile", soft=1024, hard=1024)],
+                    restart_policy={"Name": "no"},
+                    log_config=LogConfig(type=LogConfig.types.JSON, config={"max-size": "1m", "max-file": "2"}),
+                )
+                container.reload()
+                if container.attrs.get("Image") != image.id:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Docker resolved an unexpected Assistant image",
+                        code="image-resolution-mismatch",
+                    )
+                container.start()
+                self._validate_container(container, capsule_id, spec, network.name)
+                self._wait_ready(container, spec)
+            except ApiProblem:
+                if "container" in locals():
+                    container.remove(force=True)
+                raise
+            except DockerException as exc:
+                if "container" in locals():
+                    with suppress(DockerException):
+                        container.remove(force=True)
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Docker could not install the Assistant",
+                    code="docker-install-failed",
+                ) from exc
+            return {"assistant": assistant_id, "installed": True}
+
+    def uninstall_assistant(self, capsule_id: str, assistant_id: str) -> dict[str, object]:
+        capsule_id = validate_capsule_id(capsule_id)
+        spec = self._resolve(assistant_id)
+        with self._lock(capsule_id):
+            network = self._network(capsule_id)
+            container = self._assistant_container(capsule_id, assistant_id, required=False)
+            if container is None:
+                return {"assistant": assistant_id, "uninstalled": False}
+            self._validate_container(container, capsule_id, spec, network.name)
+            try:
+                container.remove(force=True)
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Docker could not uninstall the Assistant",
+                    code="docker-remove-failed",
+                ) from exc
+            return {"assistant": assistant_id, "uninstalled": True}
+
+    def invoke(self, capsule_id: str, assistant_id: str, operation: str, payload: object) -> dict[str, object]:
+        capsule_id = validate_capsule_id(capsule_id)
+        spec = self._resolve(assistant_id)
+        operation_spec = spec.operations.get(operation)
+        if operation_spec is None:
+            raise ApiProblem(HTTPStatus.NOT_FOUND, "operation is not declared", code="operation-not-declared")
+        try:
+            safe_payload = validate_operation_input(assistant_id, operation, payload)
+        except ValueError as exc:
+            raise ApiProblem(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc), code="invalid-operation-input") from exc
+        with self._lock(capsule_id):
+            network = self._network(capsule_id)
+            container = self._assistant_container(capsule_id, assistant_id)
+            self._validate_container(container, capsule_id, spec, network.name)
+            container.reload()
+            if container.status != "running":
+                raise ApiProblem(HTTPStatus.CONFLICT, "Assistant is not running", code="assistant-not-running")
+            raw_result = self._rpc(container, spec, operation_spec.method, operation_spec.path, safe_payload)
+        try:
+            result = validate_operation_output(assistant_id, operation, raw_result)
+        except ValueError as exc:
+            raise ApiProblem(
+                HTTPStatus.BAD_GATEWAY,
+                "the Assistant returned an invalid result",
+                code="invalid-operation-output",
+            ) from exc
+        return {"assistant": assistant_id, "operation": operation, "result": result}
+
+    def destroy_capsule(self, capsule_id: str) -> dict[str, object]:
+        capsule_id = validate_capsule_id(capsule_id)
+        with self._lock(capsule_id):
+            network = self._network(capsule_id, required=False)
+            try:
+                containers = self.client.containers.list(**self._assistant_filters(capsule_id))
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Docker is unavailable",
+                    code="docker-unavailable",
+                ) from exc
+            removed = 0
+            for container in containers:
+                assistant_id = container.labels.get(ASSISTANT_LABEL)
+                spec = self.registry.get(assistant_id)
+                if spec is None or network is None:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Capsule resources failed their ownership contract",
+                        code="ownership-conflict",
+                    )
+                self._validate_container(container, capsule_id, spec, network.name)
+                try:
+                    container.remove(force=True)
+                except DockerException as exc:
+                    raise ApiProblem(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "Docker could not destroy the Capsule",
+                        code="docker-remove-failed",
+                    ) from exc
+                removed += 1
+            if network is None:
+                return {"id": capsule_id, "destroyed": False, "assistants_removed": removed}
+            try:
+                network.remove()
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Docker could not destroy the Capsule",
+                    code="docker-remove-failed",
+                ) from exc
+            return {"id": capsule_id, "destroyed": True, "assistants_removed": removed}
+
+    def _validate_reset_container(self, container) -> None:
+        container.reload()
+        labels = container.attrs.get("Config", {}).get("Labels") or {}
+        capsule_id = labels.get(CAPSULE_LABEL)
+        assistant_id = labels.get(ASSISTANT_LABEL)
+        if (
+            not isinstance(capsule_id, str)
+            or len(capsule_id) > MAX_CAPSULE_ID_LENGTH
+            or _CAPSULE_ID.fullmatch(capsule_id) is None
+            or not isinstance(assistant_id, str)
+            or len(assistant_id) > MAX_ASSISTANT_ID_LENGTH
+            or _ASSISTANT_ID.fullmatch(assistant_id) is None
+            or not isinstance(labels.get(IMAGE_LABEL), str)
+            or not self._labels_include(labels, self._base_labels(capsule_id, "assistant"))
+            or container.name != self._container_name(capsule_id, assistant_id)
+        ):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "a labeled Space resource failed its ownership contract",
+                code="ownership-conflict",
+            )
+
+    def reset_space(self) -> dict[str, object]:
+        """Remove every exactly owned workload/network without accepting resource ids."""
+        with ExitStack() as locks:
+            for lock in self._locks:
+                locks.enter_context(lock)
+            assistant_filters = {
+                "label": [
+                    f"{MANAGED_LABEL}=1",
+                    f"{PROFILE_LABEL}={PROFILE}",
+                    f"{SPACE_LABEL}={self.space_id}",
+                    f"{KIND_LABEL}=assistant",
+                ]
+            }
+            network_filters = {
+                "label": [
+                    f"{MANAGED_LABEL}=1",
+                    f"{PROFILE_LABEL}={PROFILE}",
+                    f"{SPACE_LABEL}={self.space_id}",
+                    f"{KIND_LABEL}=capsule",
+                ]
+            }
+            try:
+                containers = self.client.containers.list(all=True, filters=assistant_filters)
+                networks = self.client.networks.list(filters=network_filters)
+                for container in containers:
+                    self._validate_reset_container(container)
+                for network in networks:
+                    labels = network.attrs.get("Labels") or {}
+                    capsule_id = labels.get(CAPSULE_LABEL)
+                    if not isinstance(capsule_id, str):
+                        raise ApiProblem(
+                            HTTPStatus.CONFLICT,
+                            "a labeled Space resource failed its ownership contract",
+                            code="ownership-conflict",
+                        )
+                    validate_capsule_id(capsule_id)
+                    self._validate_network(network, capsule_id)
+                for container in containers:
+                    container.remove(force=True)
+                for network in networks:
+                    network.remove()
+            except ApiProblem:
+                raise
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Docker could not reset the Space",
+                    code="docker-reset-failed",
+                ) from exc
+            return {
+                "reset": True,
+                "assistants_removed": len(containers),
+                "capsules_removed": len(networks),
+            }
+
+
+class BoundedServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(self, address, handler, controller: LocalController, token: str) -> None:
+        super().__init__(address, handler)
+        self.controller = controller
+        self.token = token
+        self._slots = threading.BoundedSemaphore(16)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._slots.acquire(blocking=False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server: BoundedServer
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_args) -> None:
+        return
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+
+    def _authorized(self) -> bool:
+        values = self.headers.get_all("Authorization", failobj=[])
+        expected = f"Bearer {self.server.token}"
+        return len(values) == 1 and hmac.compare_digest(values[0], expected)
+
+    def _send(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        if len(encoded) > MAX_RESPONSE_BYTES:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+            encoded = b'{"error":"response exceeded its limit"}'
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        if status == HTTPStatus.UNAUTHORIZED:
+            self.send_header("WWW-Authenticate", 'Bearer realm="shimpz-local"')
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(encoded)
+
+    def _body(self) -> dict[str, object]:
+        if self.headers.get_all("Transfer-Encoding", failobj=[]):
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "chunked requests are not accepted", code="chunked-request")
+        lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(lengths) != 1:
+            raise ApiProblem(HTTPStatus.LENGTH_REQUIRED, "one Content-Length is required", code="content-length")
+        try:
+            length = int(lengths[0])
+        except ValueError as exc:
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length") from exc
+        if length < 2 or length > MAX_BODY_BYTES:
+            raise ApiProblem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request is too large", code="body-too-large")
+        content_types = self.headers.get_all("Content-Type", failobj=[])
+        if len(content_types) != 1:
+            raise ApiProblem(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "application/json is required", code="content-type")
+        content_type = content_types[0].split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise ApiProblem(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "application/json is required", code="content-type")
+        try:
+            raw_body = self.rfile.read(length)
+            if len(raw_body) != length:
+                raise ValueError("short request body")
+            body = json.loads(raw_body)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid JSON body", code="invalid-json") from exc
+        if not isinstance(body, dict):
+            raise ApiProblem(HTTPStatus.UNPROCESSABLE_ENTITY, "a JSON object is required", code="invalid-body")
+        return body
+
+    def _capsule_create_body(self) -> str:
+        body = self._body()
+        if set(body) != {"name"}:
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Capsule creation requires only a name",
+                code="invalid-body",
+            )
+        return validate_capsule_name(body["name"])
+
+    def _install_body(self) -> str:
+        body = self._body()
+        if set(body) != {"assistant"} or not isinstance(body["assistant"], str):
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "assistant must identify one allowlisted Assistant",
+                code="invalid-body",
+            )
+        return body["assistant"]
+
+    def _reject_body(self) -> None:
+        if self.headers.get_all("Transfer-Encoding", failobj=[]):
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "this request cannot have a body", code="unexpected-body")
+        lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(lengths) > 1:
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length")
+        if lengths:
+            try:
+                length = int(lengths[0])
+            except ValueError as exc:
+                raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length") from exc
+            if length != 0:
+                raise ApiProblem(HTTPStatus.BAD_REQUEST, "this request cannot have a body", code="unexpected-body")
+
+    def _route(self) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None]:  # noqa: C901
+        if len(self.path.encode("utf-8", "replace")) > MAX_PATH_BYTES:
+            raise ApiProblem(HTTPStatus.URI_TOO_LONG, "request path is too long", code="path-too-long")
+        parsed = urlsplit(self.path)
+        if parsed.query or parsed.fragment or "%" in parsed.path:
+            raise ApiProblem(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted", code="invalid-path")
+        parts = [part for part in parsed.path.split("/") if part]
+        controller = self.server.controller
+        if self.command != "POST":
+            self._reject_body()
+
+        if self.command == "GET" and parts == ["healthz"]:
+            return HTTPStatus.OK, controller.health(), "health", None, None
+        if self.command == "GET" and parts == ["v1", "assistants"]:
+            return HTTPStatus.OK, controller.list_registry(), "registry-list", None, None
+        if self.command == "GET" and parts == ["v1", "capsules"]:
+            return HTTPStatus.OK, controller.list_capsules(), "capsule-list", None, None
+        if self.command == "DELETE" and parts == ["v1", "space"]:
+            return HTTPStatus.OK, controller.reset_space(), "space-reset", None, None
+        if len(parts) == 4 and parts[:2] == ["v1", "capsules"] and parts[3] == "create":
+            capsule_id = validate_capsule_id(parts[2])
+            if self.command == "POST":
+                name = self._capsule_create_body()
+                return (
+                    HTTPStatus.OK,
+                    controller.create_capsule(capsule_id, name),
+                    "capsule-create",
+                    capsule_id,
+                    None,
+                )
+        if len(parts) == 3 and parts[:2] == ["v1", "capsules"]:
+            capsule_id = validate_capsule_id(parts[2])
+            if self.command == "DELETE":
+                return HTTPStatus.OK, controller.destroy_capsule(capsule_id), "capsule-destroy", capsule_id, None
+        if len(parts) == 4 and parts[:2] == ["v1", "capsules"] and parts[3] == "assistants":
+            capsule_id = validate_capsule_id(parts[2])
+            if self.command == "GET":
+                return HTTPStatus.OK, controller.list_assistants(capsule_id), "assistant-list", capsule_id, None
+            if self.command == "POST":
+                assistant_id = self._install_body()
+                return (
+                    HTTPStatus.OK,
+                    controller.install_assistant(capsule_id, assistant_id),
+                    "assistant-install",
+                    capsule_id,
+                    assistant_id,
+                )
+        if len(parts) == 5 and parts[:2] == ["v1", "capsules"] and parts[3] == "assistants":
+            capsule_id = validate_capsule_id(parts[2])
+            assistant_id = parts[4]
+            if self.command == "DELETE":
+                return (
+                    HTTPStatus.OK,
+                    controller.uninstall_assistant(capsule_id, assistant_id),
+                    "assistant-uninstall",
+                    capsule_id,
+                    assistant_id,
+                )
+        if (
+            len(parts) == 7
+            and parts[:2] == ["v1", "capsules"]
+            and parts[3] == "assistants"
+            and parts[5] == "operations"
+            and self.command == "POST"
+        ):
+            capsule_id = validate_capsule_id(parts[2])
+            assistant_id = parts[4]
+            operation = parts[6]
+            payload = self._body()
+            return (
+                HTTPStatus.OK,
+                controller.invoke(capsule_id, assistant_id, operation, payload),
+                "assistant-invoke",
+                capsule_id,
+                assistant_id,
+            )
+        raise ApiProblem(HTTPStatus.NOT_FOUND, "route not found", code="route-not-found")
+
+    def _handle(self) -> None:
+        self.close_connection = True
+        operation = "request"
+        capsule_id = None
+        assistant_id = None
+        if not self._authorized():
+            trace_id = local_audit.record("authentication", result="denied", detail="invalid-bearer")
+            self._send(HTTPStatus.UNAUTHORIZED, {"error": "authentication required", "trace_id": trace_id})
+            return
+        try:
+            status, payload, operation, capsule_id, assistant_id = self._route()
+            trace_id = local_audit.record(
+                operation,
+                result="ok",
+                capsule=capsule_id,
+                assistant=assistant_id,
+            )
+            payload["trace_id"] = trace_id
+            self._send(status, payload)
+        except ApiProblem as exc:
+            trace_id = local_audit.record(
+                operation,
+                result="denied" if exc.status < 500 else "error",
+                capsule=capsule_id,
+                assistant=assistant_id,
+                detail=exc.code,
+            )
+            self._send(exc.status, {"error": exc.message, "trace_id": trace_id})
+        except DockerException:
+            trace_id = local_audit.record(operation, result="error", detail="docker-error")
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Docker is unavailable", "trace_id": trace_id})
+        except Exception:  # noqa: BLE001 - final HTTP trust-boundary fail-closed guard
+            trace_id = local_audit.record(operation, result="error", detail="internal-error")
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error", "trace_id": trace_id})
+
+    do_GET = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_POST = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_DELETE = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_HEAD = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_OPTIONS = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_PATCH = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+    do_PUT = _handle  # noqa: N815 - BaseHTTPRequestHandler callback name
+
+
+def main() -> int:
+    try:
+        space_id = os.environ["SHIMPZ_SPACE_ID"]
+        registry = load_registry()
+        token = local_token_store.ensure_token()
+        client = docker.from_env(timeout=REQUEST_TIMEOUT_SECONDS)
+        controller = LocalController(client, space_id, registry)
+        server = BoundedServer(("0.0.0.0", LISTEN_PORT), Handler, controller, token)  # noqa: S104
+    except (KeyError, RegistryError, RuntimeError, DockerException) as exc:
+        print(f"capsule-driver-local: startup failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    local_audit.record("startup", result="ok")
+    try:
+        server.serve_forever(poll_interval=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        client.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

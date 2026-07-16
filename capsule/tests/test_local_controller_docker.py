@@ -1,0 +1,441 @@
+# ruff: noqa: S603,S607
+"""No-mock end-to-end contract against the real local Docker daemon."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+import unittest
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
+
+CAPSULE = Path(__file__).resolve().parents[1]
+FIXTURE = CAPSULE / "tests" / "fixtures" / "hello-pulse"
+REGISTRY_IMAGE = "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+
+
+class DockerFlowTests(unittest.TestCase):
+    maxDiff = None
+
+    def _run(self, *arguments: str, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            ["docker", *arguments],
+            cwd=CAPSULE,
+            env={**os.environ, "DOCKER_BUILDKIT": "1"},
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if check and result.returncode != 0:
+            self.fail(f"docker {arguments[0]} failed (rc={result.returncode}): {result.stderr[-2000:]}")
+        return result
+
+    def _remove(self, *arguments: str) -> None:
+        self._run(*arguments, check=False, timeout=120)
+
+    def _wait_registry(self, port: int) -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/v2/", timeout=1) as response:
+                    if response.status == 200:
+                        return
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.2)
+        self.fail("the test OCI registry did not become ready")
+
+    def _api(
+        self,
+        port: int,
+        token: str | None,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+        headers = {"Connection": "close"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        if encoded is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=encoded,
+            headers=headers,
+            method=method,
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=30)  # noqa: S310
+        except urllib.error.HTTPError as exc:
+            response = exc
+        with response:
+            payload = json.loads(response.read(32 * 1024 + 1))
+            self.assertIsInstance(payload, dict)
+            return response.status, payload
+
+    def _wait_controller(self, container: str) -> tuple[int, str]:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            state = self._run("inspect", "--format", "{{.State.Status}}", container, check=False)
+            if state.returncode == 0 and state.stdout.strip() == "running":
+                token_result = self._run(
+                    "exec",
+                    container,
+                    "/opt/venv/bin/python",
+                    "-c",
+                    "from pathlib import Path; print(Path('/run/shimpz-local/token').read_text())",
+                    check=False,
+                )
+                if token_result.returncode == 0 and len(token_result.stdout.strip()) == 64:
+                    mapping = self._run("port", container, "7077/tcp").stdout.strip()
+                    port = int(mapping.rsplit(":", 1)[1])
+                    try:
+                        status, _ = self._api(port, token_result.stdout.strip(), "GET", "/healthz")
+                    except (OSError, urllib.error.URLError):
+                        pass
+                    else:
+                        if status == 200:
+                            return port, token_result.stdout.strip()
+            time.sleep(0.25)
+        log_result = self._run("logs", container, check=False)
+        logs = (log_result.stdout + log_result.stderr)[-2000:]
+        self.fail(f"the local controller did not become ready: {logs}")
+        raise AssertionError("unreachable")
+
+    @unittest.skipUnless(os.environ.get("SHIMPZ_RUN_DOCKER_TESTS") == "1", "real Docker test is opt-in")
+    def test_real_pull_isolation_lifecycle_and_space_reset(self) -> None:
+        unique = uuid.uuid4().hex[:12]
+        builder = f"shimpz-local-test-{unique}"
+        registry = f"shimpz-registry-{unique}"
+        controller = f"shimpz-controller-{unique}"
+        fixture_tag = f"shimpz-hello-pulse-test:{unique}"
+        controller_tag = f"shimpz-capsule-driver-local-test:{unique}"
+        token_volume = f"shimpz-local-token-{unique}"
+        audit_volume = f"shimpz-local-audit-{unique}"
+        space_id = f"test-space-{unique}"
+        foreign_network = f"shimpz-foreign-{unique}"
+        trusted_ref = ""
+
+        try:
+            self._run(
+                "buildx",
+                "create",
+                "--name",
+                builder,
+                "--driver",
+                "docker-container",
+                "--driver-opt",
+                "network=host",
+                "--driver-opt",
+                "cpuset-cpus=0-47",
+                "--driver-opt",
+                "memory=4g",
+                "--driver-opt",
+                "memory-swap=4g",
+                "--bootstrap",
+            )
+            self._run(
+                "buildx",
+                "build",
+                "--builder",
+                builder,
+                "--load",
+                "--tag",
+                fixture_tag,
+                str(FIXTURE),
+            )
+            fixture_id = self._run("image", "inspect", "--format", "{{.Id}}", fixture_tag).stdout.strip()
+
+            self._run(
+                "run",
+                "--detach",
+                "--name",
+                registry,
+                "--cpuset-cpus",
+                "0-1",
+                "--cpus",
+                "1",
+                "--memory",
+                "256m",
+                "--memory-swap",
+                "256m",
+                "--pids-limit",
+                "128",
+                "--publish",
+                "127.0.0.1::5000",
+                REGISTRY_IMAGE,
+            )
+            registry_port = int(self._run("port", registry, "5000/tcp").stdout.strip().rsplit(":", 1)[1])
+            self._wait_registry(registry_port)
+            repository_tag = f"127.0.0.1:{registry_port}/shimpz/hello-pulse:test"
+            self._run("tag", fixture_tag, repository_tag)
+            self._run("push", repository_tag)
+            repo_digests = json.loads(
+                self._run("image", "inspect", "--format", "{{json .RepoDigests}}", repository_tag).stdout
+            )
+            trusted_ref = next(item for item in repo_digests if item.startswith(repository_tag.rsplit(":", 1)[0] + "@"))
+            self.assertRegex(trusted_ref, r"@sha256:[0-9a-f]{64}$")
+
+            # Remove every local fixture reference so installation must perform a real digest pull.
+            self._remove("image", "rm", "--force", repository_tag, fixture_tag, fixture_id)
+            self.assertNotEqual(self._run("image", "inspect", trusted_ref, check=False).returncode, 0)
+
+            self._run(
+                "buildx",
+                "build",
+                "--builder",
+                builder,
+                "--load",
+                "--file",
+                str(CAPSULE / "Dockerfile.local"),
+                "--build-arg",
+                f"HELLO_PULSE_IMAGE={trusted_ref}",
+                "--tag",
+                controller_tag,
+                str(CAPSULE),
+            )
+            self._run("volume", "create", token_volume)
+            self._run("volume", "create", audit_volume)
+            socket_gid = str(Path("/var/run/docker.sock").stat().st_gid)
+            self._run(
+                "run",
+                "--detach",
+                "--name",
+                controller,
+                "--cpuset-cpus",
+                "0-1",
+                "--cpus",
+                "2",
+                "--memory",
+                "512m",
+                "--memory-swap",
+                "512m",
+                "--pids-limit",
+                "128",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,nodev,size=32m",  # noqa: S108
+                "--group-add",
+                socket_gid,
+                "--volume",
+                "/var/run/docker.sock:/var/run/docker.sock",
+                "--volume",
+                f"{token_volume}:/run/shimpz-local",
+                "--volume",
+                f"{audit_volume}:/var/log/shimpz-local",
+                "--env",
+                f"SHIMPZ_SPACE_ID={space_id}",
+                "--publish",
+                "127.0.0.1::7077",
+                controller_tag,
+            )
+            port, token = self._wait_controller(controller)
+
+            unauthenticated, _ = self._api(port, None, "GET", "/v1/assistants")
+            self.assertEqual(unauthenticated, 401)
+            status, catalog = self._api(port, token, "GET", "/v1/assistants")
+            self.assertEqual(status, 200)
+            self.assertEqual(catalog["assistants"][0]["id"], "hello-pulse")
+            self.assertEqual(catalog["assistants"][0]["operations"], ["hello"])
+
+            status, created = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/create",
+                {"name": "Demo Capsule"},
+            )
+            self.assertEqual((status, created["created"]), (200, True))
+            _, created_again = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/create",
+                {"name": "Demo Capsule"},
+            )
+            self.assertFalse(created_again["created"])
+            _, capsules = self._api(port, token, "GET", "/v1/capsules")
+            self.assertEqual(
+                capsules["capsules"],
+                [{"id": "demo_capsule", "name": "Demo Capsule", "status": "running"}],
+            )
+
+            # An unknown ID is rejected while the trusted image is still absent from the daemon.
+            unknown_status, _ = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/assistants",
+                {"assistant": "unknown-assistant"},
+            )
+            self.assertEqual(unknown_status, 404)
+            self.assertNotEqual(self._run("image", "inspect", trusted_ref, check=False).returncode, 0)
+
+            installed_status, installed = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/assistants",
+                {"assistant": "hello-pulse"},
+            )
+            self.assertEqual((installed_status, installed["installed"]), (200, True))
+            self.assertEqual(self._run("image", "inspect", trusted_ref, check=False).returncode, 0)
+            _, installed_again = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/assistants",
+                {"assistant": "hello-pulse"},
+            )
+            self.assertFalse(installed_again["installed"])
+
+            assistant_name = self._run(
+                "ps",
+                "--all",
+                "--filter",
+                f"label=com.shimpz.local.space-id={space_id}",
+                "--filter",
+                "label=com.shimpz.local.assistant-id=hello-pulse",
+                "--format",
+                "{{.Names}}",
+            ).stdout.strip()
+            self.assertTrue(assistant_name)
+            metadata = json.loads(self._run("inspect", assistant_name).stdout)[0]
+            host = metadata["HostConfig"]
+            self.assertEqual(metadata["Config"]["User"], "10001:10001")
+            self.assertTrue(host["ReadonlyRootfs"])
+            self.assertIn("ALL", host["CapDrop"])
+            self.assertTrue(any(item.startswith("no-new-privileges") for item in host["SecurityOpt"]))
+            self.assertNotIn("seccomp=unconfined", host["SecurityOpt"])
+            self.assertEqual(host["Memory"], 128 * 1024 * 1024)
+            self.assertEqual(host["MemorySwap"], 128 * 1024 * 1024)
+            self.assertEqual(host["NanoCpus"], 250_000_000)
+            self.assertEqual(host["PidsLimit"], 64)
+            self.assertEqual(host["CpusetCpus"], "0-47")
+            self.assertIn(host.get("Tmpfs"), (None, {}))
+            self.assertEqual(metadata["Mounts"], [])
+            self.assertIn(host["PortBindings"], (None, {}))
+            networks = metadata["NetworkSettings"]["Networks"]
+            self.assertEqual(len(networks), 1)
+            network_name = next(iter(networks))
+            network_metadata = json.loads(self._run("network", "inspect", network_name).stdout)[0]
+            self.assertTrue(network_metadata["Internal"])
+            self.assertEqual(network_metadata["Labels"]["com.shimpz.local.space-id"], space_id)
+            self.assertEqual(network_metadata["Labels"]["com.shimpz.local.capsule-name"], "Demo Capsule")
+
+            _, listed = self._api(port, token, "GET", "/v1/capsules/demo_capsule/assistants")
+            self.assertEqual(listed["assistants"], [{"assistant": "hello-pulse", "status": "running"}])
+            _, invoked = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/assistants/hello-pulse/operations/hello",
+                {"name": "Captain"},
+            )
+            self.assertEqual(invoked["result"], {"message": "Hello, Captain. Your Capsule is alive."})
+            unknown_operation, _ = self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/demo_capsule/assistants/hello-pulse/operations/shell",
+                {},
+            )
+            self.assertEqual(unknown_operation, 404)
+
+            _, removed = self._api(
+                port,
+                token,
+                "DELETE",
+                "/v1/capsules/demo_capsule/assistants/hello-pulse",
+            )
+            self.assertTrue(removed["uninstalled"])
+            _, removed_again = self._api(
+                port,
+                token,
+                "DELETE",
+                "/v1/capsules/demo_capsule/assistants/hello-pulse",
+            )
+            self.assertFalse(removed_again["uninstalled"])
+            _, destroyed = self._api(port, token, "DELETE", "/v1/capsules/demo_capsule")
+            self.assertTrue(destroyed["destroyed"])
+            _, destroyed_again = self._api(port, token, "DELETE", "/v1/capsules/demo_capsule")
+            self.assertFalse(destroyed_again["destroyed"])
+
+            # Reset owns no identifiers and ignores a similarly labeled resource missing the exact kind label.
+            self._run(
+                "network",
+                "create",
+                "--internal",
+                "--label",
+                "com.shimpz.local.managed=1",
+                "--label",
+                "com.shimpz.local.profile=single-owner-local-v1",
+                "--label",
+                f"com.shimpz.local.space-id={space_id}",
+                foreign_network,
+            )
+            self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/reset_capsule/create",
+                {"name": "Reset Capsule"},
+            )
+            self._api(
+                port,
+                token,
+                "POST",
+                "/v1/capsules/reset_capsule/assistants",
+                {"assistant": "hello-pulse"},
+            )
+            reset_status, reset = self._api(port, token, "DELETE", "/v1/space")
+            self.assertEqual(reset_status, 200)
+            self.assertEqual((reset["assistants_removed"], reset["capsules_removed"]), (1, 1))
+            _, reset_again = self._api(port, token, "DELETE", "/v1/space")
+            self.assertEqual((reset_again["assistants_removed"], reset_again["capsules_removed"]), (0, 0))
+            self.assertEqual(self._run("network", "inspect", foreign_network, check=False).returncode, 0)
+
+            audit = self._run(
+                "exec",
+                controller,
+                "/opt/venv/bin/python",
+                "-c",
+                "from pathlib import Path; print(Path('/var/log/shimpz-local/audit.jsonl').read_text())",
+            ).stdout
+            self.assertIn('"operation":"space-reset"', audit)
+            self.assertIn('"operation":"assistant-invoke"', audit)
+            self.assertNotIn("Captain", audit)
+            self.assertNotIn(token, audit)
+
+            token_mode = self._run(
+                "exec",
+                controller,
+                "/opt/venv/bin/python",
+                "-c",
+                "import os,stat; s=os.stat('/run/shimpz-local/token'); "
+                "print(oct(stat.S_IMODE(s.st_mode)),s.st_uid,s.st_gid,s.st_nlink)",
+            ).stdout.strip()
+            self.assertEqual(token_mode, "0o440 10001 10010 1")
+        finally:
+            # Cleanup remains strictly scoped to this test's unique names/labels.
+            self._remove("rm", "--force", controller)
+            self._remove("rm", "--force", registry)
+            self._remove("network", "rm", foreign_network)
+            self._remove("volume", "rm", "--force", token_volume, audit_volume)
+            if trusted_ref:
+                self._remove("image", "rm", "--force", trusted_ref)
+            self._remove("image", "rm", "--force", fixture_tag, controller_tag)
+            self._remove("buildx", "rm", "--force", builder)
+
+
+if __name__ == "__main__":
+    unittest.main()

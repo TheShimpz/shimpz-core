@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# check=skip=SecretsUsedInArgOrEnv ; HELLO_PULSE_IMAGE is a public OCI digest, not a credential
+#
+# Separate local-only Capsule controller. It deliberately does not copy or import the hosted
+# app.py/runsc/PG/R2/Brain implementation.
+FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+ARG SOURCE_DATE_EPOCH=0
+
+ARG DEBIAN_SNAPSHOT=20260623T000000Z
+RUN set -eux; \
+    . /etc/os-release; \
+    archive_keyring="$(find /usr/share/keyrings -maxdepth 1 -type f -name 'debian-archive-keyring.*' -print -quit)"; \
+    test -n "$archive_keyring"; \
+    rm -f /etc/apt/sources.list; \
+    find /etc/apt/sources.list.d -maxdepth 1 -type f -delete; \
+    printf '%s\n' \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME} main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-updates main" \
+        "deb [signed-by=${archive_keyring}] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} ${VERSION_CODENAME}-security main" \
+        > /etc/apt/sources.list.d/debian-snapshot.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99shimpz-snapshot
+
+ARG UV_VERSION=0.11.25
+ARG UV_INSTALL_SHA256=ca2de1bca2913ba30ce88658b6d90a663c627ecac378803aa58084a9adb35a46
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv-install.sh && \
+    echo "${UV_INSTALL_SHA256}  /tmp/uv-install.sh" | sha256sum -c - && \
+    env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/lib/apt/periodic/* /var/cache/apt/* /var/cache/ldconfig/aux-cache \
+        /var/log/apt/* /var/log/alternatives.log /var/log/dpkg.log /root/.cache/uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
+    rm -rf /root/.cache/uv
+
+COPY local_app.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py ./
+
+# A normal source build remains possible, but cannot start until release automation supplies the
+# published Hello Pulse digest with `--build-arg HELLO_PULSE_IMAGE=repo@sha256:...`.
+ARG HELLO_PULSE_IMAGE=ghcr.io/roxygens/shimpz-space@sha256:0000000000000000000000000000000000000000000000000000000000000000
+RUN mkdir -p /etc/shimpz && HELLO_PULSE_IMAGE="$HELLO_PULSE_IMAGE" /opt/venv/bin/python -c \
+    'import json, os, pathlib; pathlib.Path("/etc/shimpz/local-assistants.json").write_text(json.dumps({"schema": 1, "hello_pulse_image": os.environ["HELLO_PULSE_IMAGE"]}, separators=(",", ":")) + "\n", encoding="utf-8")'
+
+RUN groupadd --gid 10001 shimpzlocal && \
+    groupadd --gid 10010 shimpzlocal-token && \
+    useradd --uid 10001 --gid 10001 --groups 10010 --no-create-home --shell /usr/sbin/nologin shimpzlocal && \
+    mkdir -p /run/shimpz-local /var/log/shimpz-local && \
+    chown shimpzlocal:shimpzlocal-token /run/shimpz-local && chmod 2750 /run/shimpz-local && \
+    chown shimpzlocal:shimpzlocal /var/log/shimpz-local && chmod 0700 /var/log/shimpz-local && \
+    chmod 0555 /app/local_healthcheck.py && chmod 0444 /etc/shimpz/local-assistants.json
+
+LABEL org.opencontainers.image.source="https://github.com/roxygens/shimpz-drivers" \
+      org.shimpz.component="capsule-driver-local" \
+      org.shimpz.local.profile="single-owner-local-v1"
+
+USER 10001:10001
+EXPOSE 7077
+HEALTHCHECK --interval=10s --timeout=4s --start-period=10s --retries=3 \
+    CMD ["/opt/venv/bin/python", "/app/local_healthcheck.py"]
+ENTRYPOINT ["/opt/venv/bin/python", "/app/local_app.py"]
