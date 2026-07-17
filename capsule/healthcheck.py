@@ -200,7 +200,7 @@ def _load_network_members(network: dict, inspections: dict[str, dict]) -> bool:
 
 
 def network_topology_ready() -> bool:
-    """Require exact workload posture and two-plane membership for every Capsule."""
+    """Require exact workload posture and core-network membership for every Capsule."""
     status, summaries = _docker_json("/containers/json?all=1")
     if status != 200 or not isinstance(summaries, list):
         return False
@@ -212,46 +212,46 @@ def network_topology_ready() -> bool:
         return False
 
     for cid in cids:
-        for kind in (network_policy.CORE_KIND, network_policy.BRAIN_EGRESS_KIND):
-            name = network_policy.network_name(cid, kind)
-            encoded = urllib.parse.quote(name, safe="")
-            network_status, network = _docker_json(f"/networks/{encoded}")
-            if network_status != 200 or not isinstance(network, dict):
-                return False
-            if not _load_network_members(network, inspections) or not network_policy.network_members_valid(
-                network,
-                inspections,
-                cid,
-                kind,
-                # Engine omits an intentionally stopped Brain from network inventory. Its immutable
-                # image/resource/endpoints were proved above; only a running Brain must be a live member.
-                require_brain=cid in running_brains,
-                require_dependencies=True,
-            ):
-                return False
-            for workload_id, (workload_cid, expected_kinds, running) in workloads.items():
-                if (
-                    workload_cid == cid
-                    and kind in expected_kinds
-                    and (
-                        not network_policy.workload_endpoint_valid(
+        kind = network_policy.CORE_KIND
+        name = network_policy.network_name(cid, kind)
+        encoded = urllib.parse.quote(name, safe="")
+        network_status, network = _docker_json(f"/networks/{encoded}")
+        if network_status != 200 or not isinstance(network, dict):
+            return False
+        if not _load_network_members(network, inspections) or not network_policy.network_members_valid(
+            network,
+            inspections,
+            cid,
+            kind,
+            # Engine omits an intentionally stopped anchor from network inventory. Its immutable
+            # image/resource/endpoint was proved above; only a running anchor must be a live member.
+            require_brain=cid in running_brains,
+            require_dependencies=True,
+        ):
+            return False
+        for workload_id, (workload_cid, expected_kinds, running) in workloads.items():
+            if (
+                workload_cid == cid
+                and kind in expected_kinds
+                and (
+                    not network_policy.workload_endpoint_valid(
+                        network,
+                        inspections[workload_id],
+                        cid,
+                        kind,
+                    )
+                    or (
+                        running
+                        and not network_policy.workload_live_membership_valid(
                             network,
                             inspections[workload_id],
                             cid,
                             kind,
                         )
-                        or (
-                            running
-                            and not network_policy.workload_live_membership_valid(
-                                network,
-                                inspections[workload_id],
-                                cid,
-                                kind,
-                            )
-                        )
                     )
-                ):
-                    return False
+                )
+            ):
+                return False
     return True
 
 

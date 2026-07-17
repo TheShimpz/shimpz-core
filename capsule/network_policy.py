@@ -15,15 +15,13 @@ from decimal import Decimal, InvalidOperation
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")
 CAPSULE_PREFIX = f"capsule{SUFFIX}_"
 CORE_NETWORK_PREFIX = f"net_capsule{SUFFIX}_"
-BRAIN_EGRESS_NETWORK_SUFFIX = ".brain-egress"
 APP_WORKLOAD_DELIMITER = ".app."
 DOCKER_RESOURCE_NAME_MAX = 255
 DOCKER_NETWORK_NAME_MAX = DOCKER_RESOURCE_NAME_MAX
 TMPFS_MOUNT_PATH = f"{os.sep}tmp"
 
 CORE_KIND = "core"
-BRAIN_EGRESS_KIND = "brain-egress"
-NETWORK_KINDS = frozenset({CORE_KIND, BRAIN_EGRESS_KIND})
+NETWORK_KINDS = frozenset({CORE_KIND})
 
 # The hostile-tenant runtime is a name-to-binary binding, not merely a Docker registry key. Keep the
 # path in the SDK-free policy module so lifecycle admission and the raw-Engine healthcheck evaluate
@@ -41,7 +39,6 @@ CONFIG_VOLUME_KIND = "config"
 WORKSPACE_VOLUME_KIND = "workspace"
 VOLUME_KINDS = frozenset({CONFIG_VOLUME_KIND, WORKSPACE_VOLUME_KIND})
 
-EGRESS_CONTAINER = os.environ.get("SHIMPZ_EGRESS_PROXY_CONTAINER", f"egress-proxy{SUFFIX}")
 POSTGRES_CONTAINER = os.environ.get("SHIMPZ_POSTGRES_CONTAINER", f"shimpz-postgres{SUFFIX}")
 APP_EGRESS_CONTAINER = os.environ.get("SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{SUFFIX}")
 
@@ -51,9 +48,8 @@ SHARED_MANAGED_LABEL = "shimpz.capsule.shared"
 SHARED_ROLE_LABEL = "shimpz.capsule.shared.role"
 POSTGRES_ROLE = "postgres"
 APP_EGRESS_ROLE = "app-egress"
-BRAIN_EGRESS_ROLE = "brain-egress"
-SHARED_ROLES = frozenset({POSTGRES_ROLE, APP_EGRESS_ROLE, BRAIN_EGRESS_ROLE})
-RESERVED_SERVICE_ALIASES = frozenset({"postgres", "app-egress-proxy", "egress-proxy"})
+SHARED_ROLES = frozenset({POSTGRES_ROLE, APP_EGRESS_ROLE})
+RESERVED_SERVICE_ALIASES = frozenset({"postgres", "app-egress-proxy"})
 
 
 def _normalized_capabilities(values: object) -> set[str]:
@@ -153,16 +149,9 @@ def volume_identity_valid(metadata: Mapping, cid: str, kind: str) -> bool:
 
 
 def network_name(cid: str, kind: str) -> str:
-    core_name = f"{CORE_NETWORK_PREFIX}{cid}"
-    if kind == CORE_KIND:
-        name = core_name
-    elif kind == BRAIN_EGRESS_KIND:
-        # Dot is outside the validated CID alphabet, making (cid, kind) -> name injective. A prefix
-        # such as ``brain_egress_`` would collide with a legitimate core CID of that shape.
-        name = f"{core_name}{BRAIN_EGRESS_NETWORK_SUFFIX}"
-    else:
+    if kind != CORE_KIND:
         raise ValueError(f"unknown Capsule network kind: {kind!r}")
-    return _bounded_resource_name(name, "network")
+    return _bounded_resource_name(f"{CORE_NETWORK_PREFIX}{cid}", "network")
 
 
 def network_labels(cid: str, kind: str) -> dict[str, str]:
@@ -244,12 +233,10 @@ def app_identity_valid(metadata: Mapping, cid: str, app_id: str) -> bool:
 
 
 def workload_network_kinds(metadata: Mapping, cid: str) -> frozenset[str] | None:
-    """Return the exact planes this trusted workload identity must join."""
+    """Return the single core network this trusted workload identity must join."""
     role = _workload_role(metadata, cid)
     if role is None:
         return None
-    if role[0] == "brain":
-        return frozenset({CORE_KIND, BRAIN_EGRESS_KIND})
     return frozenset({CORE_KIND})
 
 
@@ -270,7 +257,6 @@ def _shared_role_for_name(name: str) -> str | None:
     return {
         POSTGRES_CONTAINER: POSTGRES_ROLE,
         APP_EGRESS_CONTAINER: APP_EGRESS_ROLE,
-        EGRESS_CONTAINER: BRAIN_EGRESS_ROLE,
     }.get(name)
 
 
@@ -291,34 +277,24 @@ def shared_service_role_for_name(name: str) -> str | None:
 
 
 def _member_role(metadata: Mapping, cid: str, kind: str) -> tuple[str, str] | None:
-    name = _container_name(metadata)
-    if kind == CORE_KIND:
-        if name == POSTGRES_CONTAINER and shared_service_identity_valid(metadata, POSTGRES_ROLE):
-            return POSTGRES_ROLE, ""
-        if name == APP_EGRESS_CONTAINER and shared_service_identity_valid(metadata, APP_EGRESS_ROLE):
-            return APP_EGRESS_ROLE, ""
-    elif (
-        kind == BRAIN_EGRESS_KIND
-        and name == EGRESS_CONTAINER
-        and shared_service_identity_valid(metadata, BRAIN_EGRESS_ROLE)
-    ):
-        return BRAIN_EGRESS_ROLE, ""
-    role = _workload_role(metadata, cid)
-    if role is None:
+    if kind != CORE_KIND:
         return None
-    if role[0] == "brain" or (kind == CORE_KIND and role[0] == "app"):
-        return role
-    return None
+    name = _container_name(metadata)
+    if name == POSTGRES_CONTAINER and shared_service_identity_valid(metadata, POSTGRES_ROLE):
+        return POSTGRES_ROLE, ""
+    if name == APP_EGRESS_CONTAINER and shared_service_identity_valid(metadata, APP_EGRESS_ROLE):
+        return APP_EGRESS_ROLE, ""
+    return _workload_role(metadata, cid)
 
 
 def network_member_managed(metadata: Mapping, cid: str, kind: str) -> bool:
-    """Whether teardown may disconnect this exact member from this Capsule plane.
+    """Whether teardown may disconnect this exact member from this Capsule network.
 
-    Admission is plane-specific, but cleanup must also remove an exact configured shared service
-    that drifted onto the wrong managed plane. Otherwise the broad Brain proxy could remain on the
-    core/data plane after a fail-closed create or destroy. Capsule workloads stay CID-bound and
-    unknown identities are never disconnected.
+    Cleanup removes only exact configured shared services or CID-bound Capsule workloads. Unknown
+    identities are never disconnected.
     """
+    if kind != CORE_KIND:
+        return False
     if shared_service_identity_valid(metadata):
         return True
     return _workload_role(metadata, cid) is not None
@@ -330,8 +306,6 @@ def _required_aliases(role: tuple[str, str]) -> frozenset[str]:
         return frozenset({"postgres"})
     if name == "app-egress":
         return frozenset({"app-egress-proxy"})
-    if name == "brain-egress":
-        return frozenset({"egress-proxy"})
     if name == "app":
         return frozenset({value, f"{value}.capsule"})
     return frozenset()
@@ -498,8 +472,7 @@ def network_members_valid(
             return False
     if require_brain and seen.get("brain") != 1:
         return False
-    required_dependency = "postgres" if kind == CORE_KIND else "brain-egress"
-    return not require_dependencies or seen.get(required_dependency) == 1
+    return not require_dependencies or seen.get("postgres") == 1
 
 
 def _security_options_valid(host_config: Mapping) -> bool:
@@ -635,7 +608,7 @@ def workload_security_valid(
     expected_image_ref: str,
     expected_image_id: str,
 ) -> bool:
-    """Validate immutable hostile-workload posture plus its exact two-plane attachment."""
+    """Validate immutable hostile-workload posture plus its exact core attachment."""
     role = _workload_role(metadata, cid)
     if role is None:
         return False

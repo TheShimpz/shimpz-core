@@ -8,6 +8,7 @@ CAPSULE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CAPSULE))
 
 import manifests
+import network_policy
 
 
 class CapsuleAnchorContractTests(unittest.TestCase):
@@ -27,6 +28,8 @@ class CapsuleAnchorContractTests(unittest.TestCase):
         self.assertEqual(kwargs["cap_add"], [])
         self.assertEqual(kwargs["mounts"], [])
         self.assertNotIn("healthcheck", kwargs)
+        self.assertEqual(kwargs["network"], network_policy.network_name("capsule_1", network_policy.CORE_KIND))
+        self.assertEqual(network_policy.NETWORK_KINDS, {network_policy.CORE_KIND})
 
     def test_anchor_reserves_only_a_small_idle_envelope(self) -> None:
         self.assertEqual(manifests.MEM_LIMIT_BYTES, 64 * 1024 * 1024)

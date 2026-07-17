@@ -392,52 +392,44 @@ def _require_capsule_isolation_mode(container, *, require_running: bool) -> None
             "Capsule isolation is blocked: workload security or network attachment drifted; "
             "destroy and recreate the Capsule",
         )
-    expected_kinds = network_policy.workload_network_kinds(container.attrs, cid)
-    if expected_kinds is None:
-        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule isolation is blocked: invalid workload role")
-    is_brain = network_policy.BRAIN_EGRESS_KIND in expected_kinds
-    for kind in (network_policy.CORE_KIND, network_policy.BRAIN_EGRESS_KIND):
-        try:
-            network = _docker.networks.get(network_policy.network_name(cid, kind))
-        except docker.errors.DockerException as exc:
-            raise ApiError(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Capsule isolation is blocked: required network is missing",
-            ) from exc
-        _require_network_policy(
-            network,
-            cid,
-            kind,
-            # Engine 29 omits created/stopped endpoints from network inspect while preserving their
-            # exact attachments in container inspect. Static workload posture above proves those
-            # endpoints; a running Brain must additionally be visible as the plane's live Brain role.
-            require_brain=running and is_brain,
-            require_dependencies=True,
+    kind = network_policy.CORE_KIND
+    try:
+        network = _docker.networks.get(network_policy.network_name(cid, kind))
+    except docker.errors.DockerException as exc:
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Capsule isolation is blocked: required network is missing",
+        ) from exc
+    _require_network_policy(
+        network,
+        cid,
+        kind,
+        # Engine 29 omits created/stopped endpoints from network inspect while preserving their
+        # exact attachments in container inspect. Static workload posture above proves those
+        # endpoints; a running anchor must additionally be visible as the live Brain role.
+        require_brain=running and network_policy.brain_identity_valid(container.attrs, cid),
+        require_dependencies=True,
+    )
+    if not network_policy.workload_endpoint_valid(
+        network.attrs,
+        container.attrs,
+        cid,
+        kind,
+    ):
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Capsule isolation is blocked: workload endpoint identity or aliases drifted",
         )
-        if kind in expected_kinds and not network_policy.workload_endpoint_valid(
-            network.attrs,
-            container.attrs,
-            cid,
-            kind,
-        ):
-            raise ApiError(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Capsule isolation is blocked: workload endpoint identity or aliases drifted",
-            )
-        if (
-            running
-            and kind in expected_kinds
-            and not network_policy.workload_live_membership_valid(
-                network.attrs,
-                container.attrs,
-                cid,
-                kind,
-            )
-        ):
-            raise ApiError(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Capsule isolation is blocked: running workload is missing from its network inventory",
-            )
+    if running and not network_policy.workload_live_membership_valid(
+        network.attrs,
+        container.attrs,
+        cid,
+        kind,
+    ):
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Capsule isolation is blocked: running workload is missing from its network inventory",
+        )
 
 
 def _require_capsule_isolation(container) -> None:
@@ -446,7 +438,7 @@ def _require_capsule_isolation(container) -> None:
 
 
 def _require_running_capsule_isolation(container) -> None:
-    """Require a running workload and its complete live two-plane membership."""
+    """Require a running workload and its complete live core-network membership."""
     _require_capsule_isolation_mode(container, require_running=True)
 
 
@@ -776,10 +768,6 @@ def _ensure_capsule_network(cid: str):
     return _ensure_capsule_network_kind(cid, network_policy.CORE_KIND)
 
 
-def _ensure_brain_egress_network(cid: str):
-    return _ensure_capsule_network_kind(cid, network_policy.BRAIN_EGRESS_KIND)
-
-
 def _already_connected(exc: docker.errors.APIError) -> bool:
     """True only for the ONE idempotent case: this container is already on this network (403)."""
     resp = exc.response
@@ -872,11 +860,7 @@ def _teardown_capsule_network_kind(cid: str, kind: str) -> bool:
 
 
 def _teardown_capsule_networks(cid: str) -> bool:
-    results = [
-        _teardown_capsule_network_kind(cid, kind)
-        for kind in (network_policy.BRAIN_EGRESS_KIND, network_policy.CORE_KIND)
-    ]
-    return all(results)
+    return _teardown_capsule_network_kind(cid, network_policy.CORE_KIND)
 
 
 def _describe(container) -> dict:
@@ -2083,20 +2067,11 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                 except r2driver_client.R2DriverError as exc:
                     raise ApiError(exc.status, exc.message) from exc
                 network = _ensure_capsule_network(cid)
-                egress_network = _ensure_brain_egress_network(cid)
                 _wire_network_deps(network, manifests.core_deps())
-                _wire_network_deps(egress_network, manifests.brain_egress_deps())
                 _require_network_policy(
                     network,
                     cid,
                     network_policy.CORE_KIND,
-                    require_brain=False,
-                    require_dependencies=True,
-                )
-                _require_network_policy(
-                    egress_network,
-                    cid,
-                    network_policy.BRAIN_EGRESS_KIND,
                     require_brain=False,
                     require_dependencies=True,
                 )
@@ -2110,7 +2085,6 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                 )
                 _require_capsule_runtime()
                 container = _docker.containers.create(**kwargs)
-                _safe_connect(egress_network, container.name, required=True)
                 _start_capsule_with_isolation(container)
                 _inference_store.save(cid, inference)
             except Exception as exc:

@@ -3,7 +3,7 @@
 The ONE place that decides what a Capsule container actually gets. Every security-relevant field
 (security_opt, network, mounts, limits, Telegram/browser OFF) is a hardcoded constant here; the caller
 never carries any of them, so there is nothing to override. A Capsule is a `shimpz-brain` with:
-its OWN internal networks and resource envelope, but no provider runtime, credential, Docker socket,
+its OWN internal network and resource envelope, but no provider runtime, credential, Docker socket,
 filesystem, browser, or application authority. Inference runs in the separate LangGraph service.
 """
 
@@ -65,10 +65,8 @@ def build_inbox_tar(filename: str, data: bytes) -> bytes:
     return buf.getvalue()
 
 
-# Shared-plane identities are suffix-aware and intentionally split. Postgres plus installed Apps live
-# on the Capsule core/data network. The broad Brain proxy lives only on the separate Brain-egress
-# network, so an App can never use it as an unauthenticated confused deputy.
-EGRESS_CONTAINER = network_policy.EGRESS_CONTAINER
+# Shared-service identities are suffix-aware. Postgres and installed Apps live on the Capsule core
+# network; inference egress belongs to the separate shared LangGraph runtime.
 POSTGRES_CONTAINER = network_policy.POSTGRES_CONTAINER
 
 CAPSULE_PREFIX = network_policy.CAPSULE_PREFIX
@@ -131,8 +129,8 @@ APP_MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_APP_MEM_LIMIT", "1g")
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_APP_PIDS_LIMIT", "256"))
 APP_MEM_LIMIT_BYTES = hard_memory_bytes(APP_MEM_LIMIT, setting="SHIMPZ_CAPSULE_APP_MEM_LIMIT")
-# The MANY-tenant egress proxy (per-app token-gated) — connected into a capsule's net only when an
-# installed app actually declares egress; the capsule brain itself keeps using the brain-grade egress-proxy.
+# The MANY-tenant egress proxy (per-app token-gated) is connected into a Capsule's core network only
+# when an installed App declares egress.
 APP_EGRESS_CONTAINER = network_policy.APP_EGRESS_CONTAINER
 
 # Vector reads Docker's json-file logs and derives the capsule from the line's own label (no Docker API).
@@ -156,10 +154,6 @@ def capsule_container_name(cid: str) -> str:
 
 def capsule_network_name(cid: str) -> str:
     return network_policy.network_name(cid, network_policy.CORE_KIND)
-
-
-def capsule_brain_egress_network_name(cid: str) -> str:
-    return network_policy.network_name(cid, network_policy.BRAIN_EGRESS_KIND)
 
 
 def capsule_network_labels(cid: str, kind: str) -> dict[str, str]:
@@ -203,11 +197,6 @@ def core_deps() -> list[tuple[str, list[str]]]:
     return [(POSTGRES_CONTAINER, ["postgres"])]
 
 
-def brain_egress_deps() -> list[tuple[str, list[str]]]:
-    """The broad proxy allowed only on a Capsule Brain's separate egress plane."""
-    return [(EGRESS_CONTAINER, ["egress-proxy"])]
-
-
 def build_capsule_kwargs(
     cid: str,
     name: str,
@@ -241,8 +230,7 @@ def build_capsule_kwargs(
         "cgroupns": "private",
         "cap_drop": ["ALL"],
         "cap_add": [],
-        # Create on the Capsule core network. app.py then attaches only this Brain to its separate
-        # Brain-egress network; broad egress-proxy is never a core-network member.
+        # The anchor and installed Apps share only the Capsule's internal core network.
         "network": capsule_network_name(cid),
         "mounts": [],
         "tmpfs": {CONTAINER_TMP: "size=16m,mode=1777"},
