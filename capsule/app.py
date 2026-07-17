@@ -37,11 +37,14 @@ import accounts_client
 import assistant_chat
 import audit
 import brain_credentials_client
+import brain_runtime_client
 import capsule_storage
+import chat_orchestrator
 import cleanup_state
 import docker
 import docker.errors
 import docker.utils.socket as docker_socket
+import inference_config
 import manifests
 import marketplace
 import marketplace_image
@@ -133,6 +136,8 @@ _verified_brains: dict[str, tuple[str, str]] = {}
 _capacity_lock = threading.Lock()
 _storage_lock = threading.Lock()
 _storage_instance: capsule_storage.CapsuleStorage | None = None
+_brain_runtime = brain_runtime_client.BrainRuntimeClient()
+_inference_store = inference_config.InferenceConfigStore()
 
 
 def _storage() -> capsule_storage.CapsuleStorage:
@@ -348,11 +353,7 @@ def _request_chat_stop(cid: str, container) -> tuple[str | None, bool]:
 
 @contextlib.contextmanager
 def _exclusive_chat_turn(cid: str, lease: _AuthorizationLease):
-    """Hold the one active brain-turn slot for `cid`, or fail immediately with 409.
-
-    This lock is deliberately separate from lifecycle/app mutation locks. In particular, Stop never
-    takes it: a Captain must always be able to terminate the turn that currently owns the slot.
-    """
+    """Hold one Controller-owned agent turn without creating a process in the Capsule."""
     lock = _chat_lock_for(cid)
     if not lock.acquire(blocking=False):
         raise ApiError(HTTPStatus.CONFLICT, f"capsule {cid!r} already has an active chat turn")
@@ -366,53 +367,17 @@ def _exclusive_chat_turn(cid: str, lease: _AuthorizationLease):
         raise
     token = secrets.token_hex(16)
     with _active_chat_guard:
-        if cid in _blocked_chat_capsules:
-            lock.release()
-            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule chat cleanup requires a lifecycle restart")
-        if cid in _credential_mutations:
-            lock.release()
-            raise ApiError(HTTPStatus.CONFLICT, "Brain credential change is still in progress")
-    try:
-        _claim_durable_chat_turn(container, token)
-    except BaseException:
-        lock.release()
-        raise
-    with _active_chat_guard:
         _active_chat_tokens[cid] = token
         _active_chat_container_ids[cid] = container.id
     try:
         yield token, container
     finally:
-        cleanup_ok = True
-        try:
-            try:
-                container.reload()
-            except docker.errors.DockerException:
-                cleanup_ok = False
-            else:
-                if container.status == "running":
-                    try:
-                        result = container.exec_run(["shimpz-chat-stop", "clear", token], user=_CHAT_CONTROL_USER)
-                        cleanup_ok = result.exit_code == 0
-                    except docker.errors.DockerException:
-                        cleanup_ok = False
-                    if not cleanup_ok:
-                        try:
-                            _fail_stop_capsule(container)
-                            cleanup_ok = True
-                        except ApiError:
-                            cleanup_ok = False
-        finally:
-            with _active_chat_guard:
-                _active_chat_tokens.pop(cid, None)
-                _active_chat_container_ids.pop(cid, None)
-                _active_power_container_ids.pop(cid, None)
-                _cancelled_chat_tokens.discard(token)
-                if cleanup_ok:
-                    _blocked_chat_capsules.discard(cid)
-                else:
-                    _blocked_chat_capsules.add(cid)
-            lock.release()
+        with _active_chat_guard:
+            _active_chat_tokens.pop(cid, None)
+            _active_chat_container_ids.pop(cid, None)
+            _active_power_container_ids.pop(cid, None)
+            _cancelled_chat_tokens.discard(token)
+        lock.release()
 
 
 # ── docker helpers ───────────────────────────────────────────────────────────
@@ -2861,6 +2826,30 @@ def _run_brain_once(container, message: str, *, resume: bool, token: str) -> tup
     return rc, stdout if rc == 0 else f"{stdout}\n{stderr}"
 
 
+def _model_credential(owner: str, provider: str) -> tuple[str, int]:
+    if not owner:
+        raise ApiError(HTTPStatus.CONFLICT, "this Capsule has no account owner for model credentials")
+    try:
+        credential = brain_credentials_client.resolve(owner, provider)
+    except brain_credentials_client.BrainCredentialError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "model credential service is unavailable") from exc
+    if credential is None:
+        raise ApiError(HTTPStatus.CONFLICT, f"configure the {provider!r} API key before chatting")
+    auth_type, api_key, generation = credential
+    if auth_type != "api_key":
+        raise ApiError(HTTPStatus.CONFLICT, "the selected model provider requires an API key")
+    return api_key, generation
+
+
+def _require_model_credential_current(owner: str, provider: str, generation: int) -> None:
+    try:
+        current = brain_credentials_client.generation_is_current(owner, provider, generation)
+    except brain_credentials_client.BrainCredentialError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "model credential could not be verified") from exc
+    if not current:
+        raise ApiError(HTTPStatus.CONFLICT, "model credential changed or was revoked; retry")
+
+
 def _chat_in_turn(
     cid: str,
     assistant: object,
@@ -2868,60 +2857,91 @@ def _chat_in_turn(
     file_ids: object,
     token: str,
     container,
+    owner: str,
 ) -> dict:
     assistant_id, contract, assistant_container = _installed_assistant(cid, assistant)
     files = _chat_file_metadata(cid, file_ids)
-    prompt = _assistant_chat_prompt(assistant_id, contract, message, files)
-    _clear_brain_authentication(cid)
-    _require_brain_configured(cid, container)
-    rc, out = _run_brain_once(container, prompt, resume=False, token=token)
-    if rc == 124:
-        raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, f"the brain did not answer within {CHAT_TIMEOUT_SECONDS}s")
-    if rc != 0:
-        if _token_cancelled(token) or rc in {130, 137, 143}:
-            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
-        lowered = out.lower()
-        if rc == _CHAT_BUSY_EXIT and _CHAT_BUSY_MARKER in lowered:
-            raise ApiError(HTTPStatus.CONFLICT, "capsule already has an active chat turn")
-        if any(marker in lowered for marker in _AUTH_MARKERS):
-            raise ApiError(
-                HTTPStatus.CONFLICT,
-                "brain not authenticated — configure or refresh the account Brain credential",
+    try:
+        config = _inference_store.load(cid)
+    except inference_config.InferenceConfigError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "configure this Capsule's model provider before chatting") from exc
+    api_key, generation = _model_credential(owner, config.provider)
+
+    def require_current_credential() -> None:
+        _require_model_credential_current(owner, config.provider, generation)
+
+    require_current_credential()
+    runtime_context = brain_runtime_client.RuntimeContext(
+        thread_id=f"{cid}:{assistant_id}:default",
+        assistant_id=assistant_id,
+        rules=contract.rules,
+        powers=tuple(
+            brain_runtime_client.RuntimePower(
+                id=power_id,
+                summary=power.summary,
+                input_schema=power.input_schema,
+                approval=power.approval,
             )
-        raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"brain execution failed (rc={rc})")
-    kind, direct_message, power, power_input = _assistant_decision(out.strip())
-    _mark_brain_authenticated(cid, container)
-    if kind == "message":
-        if not _commit_chat_terminal(cid, token):
-            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
-        return {
-            "capsule": cid,
-            "assistant": assistant_id,
-            "reply": direct_message[:CHAT_OUTPUT_CAP],
-            "power": None,
-        }
-    invocation = _invoke_assistant_power(
-        cid,
-        token,
-        assistant_id,
-        contract,
-        assistant_container,
-        power,
-        power_input,
+            for power_id, power in sorted(contract.powers.items())
+        ),
+        provider=config.provider,
+        model=config.model,
+        api_key=api_key,
     )
-    result = invocation["result"]
-    reply = result.get("message") if isinstance(result, dict) else None
-    if not isinstance(reply, str) or not reply.strip():
-        reply = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+    prompt = assistant_chat.build_prompt(
+        assistant_id,
+        contract.rules,
+        {power_id: power.summary for power_id, power in contract.powers.items()},
+        message,
+        files,
+    )
+    last_invocation: dict[str, object] | None = None
+
+    def invoke_power(power: str, power_input) -> object:
+        nonlocal last_invocation
+        require_current_credential()
+        last_invocation = _invoke_assistant_power(
+            cid,
+            token,
+            assistant_id,
+            contract,
+            assistant_container,
+            power,
+            power_input,
+        )
+        return last_invocation["result"]
+
+    try:
+        outcome = chat_orchestrator.run(
+            _brain_runtime,
+            runtime_context,
+            prompt,
+            invoke_power,
+            cancelled=lambda: _token_cancelled(token),
+        )
+    except chat_orchestrator.ChatStoppedError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped") from exc
+    except chat_orchestrator.ApprovalRequiredError as exc:
+        raise ApiError(
+            HTTPStatus.CONFLICT,
+            f"Power {exc.request.power!r} requires Captain approval",
+        ) from exc
+    except chat_orchestrator.ChatOrchestrationError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "Brain could not complete the Assistant turn") from exc
+    except brain_runtime_client.BrainRuntimeError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "Brain runtime is unavailable") from exc
+    require_current_credential()
     if not _commit_chat_terminal(cid, token):
         raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
-    return {
+    response = {
         "capsule": cid,
         "assistant": assistant_id,
-        "reply": reply[:CHAT_OUTPUT_CAP],
-        "power": power,
-        "result": result,
+        "reply": outcome.reply[:CHAT_OUTPUT_CAP],
+        "power": outcome.powers[-1] if outcome.powers else None,
     }
+    if last_invocation is not None:
+        response["result"] = last_invocation["result"]
+    return response
 
 
 def _chat(
@@ -2935,7 +2955,7 @@ def _chat(
     # The slot comes first. A losing concurrent request must not run even the local credential probe,
     # much less provider status or a second provider CLI.
     with _exclusive_chat_turn(cid, lease) as (token, container):
-        return _chat_in_turn(cid, assistant, message, file_ids, token, container)
+        return _chat_in_turn(cid, assistant, message, file_ids, token, container, lease.owner)
 
 
 def _stream_events(container, message: str, *, resume: bool, token: str):
@@ -3238,64 +3258,29 @@ def _stop_active_power(cid: str, token: str | None) -> bool:
 
 
 def _stop_chat(cid: str, lease: _AuthorizationLease) -> dict:
-    """Kill this Capsule's one allowed in-flight provider process (the Stop button)."""
-    # Stop cannot take the chat lock (that would deadlock behind the turn it must terminate). The
-    # lifecycle lock protects the authorization recheck + termination as one operation; the active
-    # token's immutable container id additionally prevents a stale Stop from targeting a replacement.
+    """Cancel one Controller-owned turn and fail-stop a Power already executing."""
     with _lock_for(cid):
         container = _require_current_authorization(cid, lease)
         container.reload()
         if container.status != "running":
             raise ApiError(HTTPStatus.CONFLICT, f"capsule {cid!r} is not running (status={container.status})")
-        try:
-            token, recovered = _request_chat_stop(cid, container)
-        except ApiError as state_error:
-            if state_error.status != HTTPStatus.SERVICE_UNAVAILABLE:
-                raise
-            # Corrupt/lost control state cannot identify a token safely. An authenticated owner Stop
-            # therefore proves extinction at the exact authorized container boundary; a failed stop
-            # remains unavailable instead of pretending success.
-            try:
-                forced_restart = _fail_stop_chat_container(container, cid)
-            except ApiError as stop_error:
-                raise ApiError(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "Capsule chat state is ambiguous and the Capsule stop could not be proved",
-                ) from stop_error
-            audit.log("chat_stop", cid, result="ok", recovery="fail-stop")
-            return {
-                "capsule": cid,
-                "requested": True,
-                "accepted": True,
-                "confirmed": True,
-                "forced_restart": forced_restart,
-            }
-        try:
-            power_stopped = _stop_active_power(cid, token)
-            accepted, confirmed, forced_restart = _terminate_chat_token(
-                container,
-                cid,
-                token,
-                durable_recovered=recovered,
-            )
-            accepted = accepted or power_stopped
-            confirmed = confirmed or power_stopped
-        finally:
-            if recovered and token is not None:
-                with _active_chat_guard:
-                    # Recovery can race a just-claimed same-driver turn before it publishes its
-                    # in-memory mapping. If that mapping appeared meanwhile, the turn itself must
-                    # consume the cancellation and emit `stopped`; only an unmapped recovered token
-                    # is safe to retire here.
-                    if _active_chat_tokens.get(cid) != token and not _chat_lock_for(cid).locked():
-                        _cancelled_chat_tokens.discard(token)
-    audit.log("chat_stop", cid, result="ok" if token is not None and accepted else "denied")
+        with _active_chat_guard:
+            token = _active_chat_tokens.get(cid)
+            if token is not None and _active_chat_container_ids.get(cid) != container.id:
+                raise ApiError(HTTPStatus.NOT_FOUND, f"capsule {cid!r} not found")
+            if token is not None:
+                _cancelled_chat_tokens.add(token)
+        power_stopped = _stop_active_power(cid, token)
+    accepted = token is not None
+    audit.log("chat_stop", cid, result="ok" if accepted else "denied")
     return {
         "capsule": cid,
-        "requested": token is not None,
+        "requested": accepted,
         "accepted": accepted,
-        "confirmed": confirmed,
-        "forced_restart": forced_restart,
+        # An executing Power is synchronously terminated. A provider HTTP request is only marked
+        # cancelled; its result is discarded before any subsequent Power or terminal reply.
+        "confirmed": power_stopped,
+        "forced_restart": False,
     }
 
 
@@ -3460,6 +3445,14 @@ def _teardown_storage(cid: str) -> bool:
     return True
 
 
+def _teardown_inference(cid: str) -> bool:
+    try:
+        _inference_store.delete(cid)
+    except inference_config.InferenceConfigError:
+        return False
+    return True
+
+
 def _retire_teardown_r2(cid: str) -> bool:
     """Cut off every new Capsule R2 operation before deleting any tenant artifact."""
     try:
@@ -3524,7 +3517,12 @@ def _teardown(cid: str, *, owner: str, brain_id: str) -> _CleanupResult:
         return _CleanupResult(False, record.db_dropped)
     if not _purge_teardown_credentials(brain):
         return _CleanupResult(False, record.db_dropped)
-    if not _teardown_apps(cid) or not _teardown_storage(cid) or not _teardown_network_planes(cid):
+    if (
+        not _teardown_apps(cid)
+        or not _teardown_storage(cid)
+        or not _teardown_inference(cid)
+        or not _teardown_network_planes(cid)
+    ):
         return _CleanupResult(False, record.db_dropped)
     if not _remove_teardown_brain(brain) or not _teardown_volumes(cid):
         return _CleanupResult(False, record.db_dropped)
@@ -3859,15 +3857,14 @@ def _replace_brain(existing, cid: str, name: str, owner: str, brain: str, model:
 
 def _create(cid: str, body: dict, owner: str = "") -> dict:
     name = str(body.get("name") or cid).strip() or cid
-    brain = str(body.get("brain") or manifests.DEFAULT_BRAIN).strip()
-    if brain not in manifests.BRAINS:
-        raise ApiError(
-            HTTPStatus.BAD_REQUEST, f"unknown brain {brain!r} — this Space accepts: {sorted(manifests.BRAINS)}"
-        )
     try:
-        model = manifests.model_for_brain(brain, body.get("model"))
-    except ValueError as exc:
+        inference = inference_config.normalize(body.get("provider"), body.get("model"))
+    except inference_config.InferenceConfigError as exc:
         raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+    # The current hosted Capsule identity remains a sandboxed lifecycle anchor. Model inference is
+    # now a separate service, so changing provider/model never replaces this container.
+    anchor_brain = manifests.DEFAULT_BRAIN
+    anchor_model = manifests.model_for_brain(anchor_brain)
     with _lock_for(cid):
         pending_cleanup = _cleanup_record(cid)
         if pending_cleanup is not None:
@@ -3888,15 +3885,12 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
             # data can be destroyed/recreated; production migration must be an explicit release step.
             _require_capsule_runtime()
             _require_capsule_isolation(existing)
-            existing_brain = _brain_id(existing)
-            existing_model = _brain_model(existing, existing_brain)
-            if existing_brain != brain or existing_model != model:
-                return _replace_brain(existing, cid, name, existing_owner, brain, model)
+            _inference_store.save(cid, inference)
             return {
                 "capsule": cid,
                 "name": name,
-                "brain": existing_brain,
-                "model": existing_model,
+                "provider": inference.provider,
+                "model": inference.model,
                 "status": existing.status,
                 "created": False,
             }
@@ -3912,10 +3906,6 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
             # 429 even while the hostile-tenant runtime is unavailable. A different owner reaches this
             # independent fail-closed host gate and still cannot provision without the required runtime.
             _require_capsule_runtime()
-            try:
-                credential = brain_credentials_client.resolve(owner, brain) if owner else None
-            except brain_credentials_client.BrainCredentialError as exc:
-                raise ApiError(HTTPStatus.BAD_GATEWAY, str(exc)) from exc
             # Transactional: on ANY failure, roll back everything partially created before surfacing —
             # never leak an orphan DB/role, network, or volume for an operator to hunt down later.
             container = None
@@ -3952,18 +3942,15 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                     name,
                     database_url=db["database_url"],
                     owner=owner,
-                    brain=brain,
-                    model=model,
+                    brain=anchor_brain,
+                    model=anchor_model,
                 )
                 _require_capsule_runtime()
                 container = _docker.containers.create(**kwargs)
                 _safe_connect(egress_network, container.name, required=True)
                 _start_capsule_with_isolation(container)
-                _wait_brain_ready(container, brain)
-                if credential is not None:
-                    auth_type, secret, generation = credential
-                    _BRAIN_ADAPTERS[brain].configure(container, auth_type, secret)
-                    _assert_credential_generation(container, owner, brain, generation)
+                _wait_brain_ready(container, anchor_brain)
+                _inference_store.save(cid, inference)
             except Exception as exc:
                 cleanup = _teardown(
                     cid,
@@ -3981,12 +3968,11 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
         return {
             "capsule": cid,
             "name": name,
-            "brain": brain,
-            "model": model,
+            "provider": inference.provider,
+            "model": inference.model,
             "status": "running",
             "created": True,
             "database": manifests.capsule_db_project(cid),
-            "brain_configured": credential is not None,
         }
 
 
@@ -4187,7 +4173,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
 
             try:
-                result = _chat_in_turn(cid, assistant, message, file_ids, token, container)
+                result = _chat_in_turn(cid, assistant, message, file_ids, token, container, lease.owner)
                 terminal = {
                     "type": "done",
                     "reply": result["reply"],
