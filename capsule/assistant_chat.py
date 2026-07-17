@@ -23,10 +23,7 @@ def build_prompt(
         "assistant": {
             "id": assistant_id,
             "rules": rules,
-            "powers": [
-                {"id": power_id, "summary": summary}
-                for power_id, summary in sorted(powers.items())
-            ],
+            "powers": [{"id": power_id, "summary": summary} for power_id, summary in sorted(powers.items())],
         },
         "files": [
             {

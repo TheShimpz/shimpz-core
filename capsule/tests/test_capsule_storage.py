@@ -143,9 +143,7 @@ class CapsuleStorageTests(unittest.TestCase):
         stored = storage.put("alpha", "safe.bin", b"safe")
         with closing(storage._connect("alpha", create=False)) as connection:
             page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
-            expected = (
-                64 + capsule_storage.DATABASE_HEADROOM_BYTES + page_size - 1
-            ) // page_size
+            expected = (64 + capsule_storage.DATABASE_HEADROOM_BYTES + page_size - 1) // page_size
             self.assertEqual(int(connection.execute("PRAGMA max_page_count").fetchone()[0]), expected)
             connection.execute("UPDATE files SET content=? WHERE id=?", (b"evil", stored["id"]))
 

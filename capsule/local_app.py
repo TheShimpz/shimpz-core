@@ -1173,9 +1173,7 @@ class Handler(BaseHTTPRequestHandler):
             return HTTPStatus.OK, controller.reset_space(), "space-reset", None, None
         return None
 
-    def _file_route(
-        self, parts: list[str]
-    ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
+    def _file_route(self, parts: list[str]) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
         if len(parts) not in {4, 5} or parts[:2] != ["v1", "capsules"] or parts[3] != "files":
             return None
         controller = self.server.controller

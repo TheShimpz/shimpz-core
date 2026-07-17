@@ -133,11 +133,7 @@ class CapsuleStorage:
             info = directory.lstat()
         except FileNotFoundError as exc:
             raise StorageNotFoundError("Capsule storage not found") from exc
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-        ):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
             raise StorageError("Capsule storage has unsafe ownership or permissions")
         return directory
 
@@ -373,11 +369,7 @@ class CapsuleStorage:
             info = directory.lstat()
         except FileNotFoundError:
             return False
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-        ):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
             raise StorageError("Capsule storage has unsafe ownership or permissions")
         shutil.rmtree(directory)
         return True
