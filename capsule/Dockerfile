@@ -41,6 +41,8 @@ ARG SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID=10012
 ARG SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID=10013
 # R2 lifecycle capability only. This is deliberately distinct from the legacy R2 operational token.
 ARG SHIMPZ_R2PROVISIONER_TOKEN_GID=10015
+# Controller-owned token shared read-only with the isolated Brain runtime.
+ARG SHIMPZ_BRAIN_RUNTIME_TOKEN_GID=10016
 
 # Downloaded + hash-checked BEFORE execution — never `curl | sh` (SECURITY_ENGINEERING_PLAN.md item 6).
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
@@ -61,8 +63,9 @@ RUN groupadd -g "${DOCKER_GID}" dockersock \
     && groupadd -g "${SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID}" shimpzbraincred-unseal-token \
     && groupadd -g "${SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID}" shimpzbrain-resolve \
     && groupadd -g "${SHIMPZ_R2PROVISIONER_TOKEN_GID}" shimpzr2provisioner-token \
+    && groupadd -g "${SHIMPZ_BRAIN_RUNTIME_TOKEN_GID}" shimpzbrain-runtime-token \
     && useradd -u 10001 -g dockersock \
-        -G shimpzcapsuledriver-token,shimpzpgdriver-token,shimpzbraincred-unseal-token,shimpzbrain-resolve,shimpzr2provisioner-token \
+        -G shimpzcapsuledriver-token,shimpzpgdriver-token,shimpzbraincred-unseal-token,shimpzbrain-resolve,shimpzr2provisioner-token,shimpzbrain-runtime-token \
         -M -s /usr/sbin/nologin capsuledriver
 
 WORKDIR /app
@@ -72,7 +75,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py network_policy.py marketplace.py marketplace_image.py cleanup_state.py audit.py token_store.py \
-     assistant_chat.py capsule_storage.py \
+     assistant_chat.py capsule_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py inference_config.py \
      pgdriver_client.py r2driver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
@@ -83,10 +86,13 @@ RUN mkdir -p /run/shimpz-capsuledriver /var/log/capsule-driver /var/lib/capsule-
         /var/lib/capsule-driver/storage \
         /var/lib/capsule-driver/cleanup \
         /app-egress-policy /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
+        /run/shimpz-brain-runtime \
     && chown capsuledriver:shimpzcapsuledriver-token /run/shimpz-capsuledriver && chmod 750 /run/shimpz-capsuledriver \
     && chown capsuledriver:shimpzbraincred-unseal-token /run/shimpz-braincred-unseal \
     && chown capsuledriver:shimpzbrain-resolve /run/shimpz-accounts-brain-resolve \
     && chmod 0750 /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
+    && chown capsuledriver:shimpzbrain-runtime-token /run/shimpz-brain-runtime \
+    && chmod 0750 /run/shimpz-brain-runtime \
     && chown -R capsuledriver:dockersock /var/log/capsule-driver /var/lib/capsule-driver \
     && chmod 0700 /var/lib/capsule-driver/pg-principals /var/lib/capsule-driver/r2-principals \
         /var/lib/capsule-driver/storage \
