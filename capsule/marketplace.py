@@ -66,8 +66,8 @@ APPS: dict[str, AppSpec] = {
         port=8080,
         health_path="/health",
     ),
-    # First Assistant Spec v1 adapter for the hosted Capsule controller. The browser supplies only this
-    # ID; the controller owns the digest, runtime envelope and identity labels below.
+    # First closed Rules/Powers adapter for the hosted Capsule controller. The browser supplies only
+    # this ID; the controller owns the digest, runtime envelope and identity labels below.
     "hello-pulse": AppSpec(
         image=HELLO_PULSE_IMAGE,
         port=8080,
