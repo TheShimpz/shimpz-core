@@ -78,6 +78,14 @@ class MarketplaceImageTests(unittest.TestCase):
         self.assertEqual(set(spec.assistant.powers), {"hello"})
         self.assertEqual(spec.assistant.powers["hello"].path, "/v1/operations/hello")
 
+    def test_hello_power_exposes_the_runtime_schema_and_approval_policy(self) -> None:
+        power = marketplace.APPS["hello-pulse"].assistant.powers["hello"]
+
+        self.assertEqual(power.approval, "none")
+        self.assertEqual(power.input_schema["type"], "object")
+        self.assertFalse(power.input_schema["additionalProperties"])
+        self.assertEqual(power.output_schema["required"], ["message"])
+
     def test_missing_digest_is_pulled_by_the_exact_registry_reference_then_rechecked(self) -> None:
         spec = marketplace.APPS["hello-pulse"]
         images = _Images(_hello_image(), missing_once=True)

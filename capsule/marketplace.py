@@ -10,7 +10,9 @@ here, rebuilt like any other. Packaging contract: sdk/docs/build-a-shimpz-app.md
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, Literal
 
 import network_policy
 
@@ -33,6 +35,9 @@ class PowerSpec:
     method: str
     path: str
     summary: str
+    input_schema: Mapping[str, Any]
+    output_schema: Mapping[str, Any]
+    approval: Literal["none", "once", "each-run"] = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +96,30 @@ APPS: dict[str, AppSpec] = {
                     method="POST",
                     path="/v1/operations/hello",
                     summary="Return a friendly greeting for an optional name of 1 to 80 characters.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 80,
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                    output_schema={
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            }
+                        },
+                        "required": ["message"],
+                        "additionalProperties": False,
+                    },
+                    approval="none",
                 )
             },
         ),
