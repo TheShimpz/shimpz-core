@@ -74,6 +74,9 @@ class MarketplaceImageTests(unittest.TestCase):
             dict(spec.required_image_labels),
             {"org.shimpz.assistant.id": "hello-pulse", "org.shimpz.assistant.api": "1"},
         )
+        self.assertIsNotNone(spec.assistant)
+        self.assertEqual(set(spec.assistant.powers), {"hello"})
+        self.assertEqual(spec.assistant.powers["hello"].path, "/v1/operations/hello")
 
     def test_missing_digest_is_pulled_by_the_exact_registry_reference_then_rechecked(self) -> None:
         spec = marketplace.APPS["hello-pulse"]
@@ -107,6 +110,21 @@ class MarketplaceImageTests(unittest.TestCase):
             marketplace_image.ensure_digest_artifact(images, spec)
         self.assertEqual(images.gets, [])
         self.assertEqual(images.pulls, [])
+
+    def test_hello_power_input_and_output_contracts_are_closed(self) -> None:
+        self.assertEqual(
+            marketplace.validate_power_input("hello-pulse", "hello", {"name": "Ada"}),
+            {"name": "Ada"},
+        )
+        self.assertEqual(
+            marketplace.validate_power_output("hello-pulse", "hello", {"message": "Hello, Ada."}),
+            {"message": "Hello, Ada."},
+        )
+        for payload in ({"name": ""}, {"name": " Ada"}, {"shell": "id"}, []):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                marketplace.validate_power_input("hello-pulse", "hello", payload)
+        with self.assertRaises(ValueError):
+            marketplace.validate_power_output("hello-pulse", "hello", {"message": "ok", "path": "/host/x"})
 
 
 if __name__ == "__main__":

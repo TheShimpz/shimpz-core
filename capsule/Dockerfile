@@ -72,7 +72,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py network_policy.py marketplace.py marketplace_image.py cleanup_state.py audit.py token_store.py \
-     capsule_storage.py \
+     assistant_chat.py capsule_storage.py \
      pgdriver_client.py r2driver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the

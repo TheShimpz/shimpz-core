@@ -28,6 +28,20 @@ class MarketplaceError(Exception):
     """The requested app id is malformed or not in this Space's registry — nothing was touched."""
 
 
+@dataclass(frozen=True, slots=True)
+class PowerSpec:
+    method: str
+    path: str
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantContract:
+    rules: str
+    rpc_command: str
+    powers: dict[str, PowerSpec]
+
+
 @dataclass(frozen=True)
 class AppSpec:
     image: str  # the pinned artifact — an image this Space can resolve locally or pull
@@ -40,6 +54,7 @@ class AppSpec:
     # (e.g. the Chrome browser) can't deploy onto an arm64 Capsule — mirrors the storefront's `archs`.
 
     required_image_labels: tuple[tuple[str, str], ...] = ()  # Proven after an exact digest get/pull.
+    assistant: AssistantContract | None = None
 
 
 APPS: dict[str, AppSpec] = {
@@ -63,6 +78,21 @@ APPS: dict[str, AppSpec] = {
         required_image_labels=(
             ("org.shimpz.assistant.id", "hello-pulse"),
             ("org.shimpz.assistant.api", "1"),
+        ),
+        assistant=AssistantContract(
+            rules=(
+                "Return a friendly greeting when useful. Use only the declared hello Power. "
+                "Never infer additional authority, install dependencies, access files, or send data "
+                "outside the Capsule."
+            ),
+            rpc_command="/usr/local/bin/shimpz-assistant-rpc",
+            powers={
+                "hello": PowerSpec(
+                    method="POST",
+                    path="/v1/operations/hello",
+                    summary="Return a friendly greeting for an optional name of 1 to 80 characters.",
+                )
+            },
         ),
     ),
 }
@@ -95,3 +125,34 @@ def resolve(app_id: object) -> tuple[str, AppSpec]:
     if spec is None:
         raise MarketplaceError(f"app {aid!r} is not deployable from this Space's registry")
     return aid, spec
+
+
+def validate_power_input(assistant_id: str, power: str, payload: object) -> dict[str, str]:
+    if assistant_id != "hello-pulse" or power != "hello":
+        raise ValueError("the Power has no declared input contract")
+    if not isinstance(payload, dict) or not set(payload).issubset({"name"}):
+        raise ValueError("hello accepts only an optional name")
+    name = payload.get("name", "Shimpz")
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= 80
+        or name.strip() != name
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
+        raise ValueError("name must contain 1 to 80 trimmed characters")
+    return {"name": name}
+
+
+def validate_power_output(assistant_id: str, power: str, payload: object) -> dict[str, str]:
+    if assistant_id != "hello-pulse" or power != "hello":
+        raise ValueError("the Power has no declared output contract")
+    if not isinstance(payload, dict) or set(payload) != {"message"}:
+        raise ValueError("the Assistant returned an invalid result")
+    message = payload["message"]
+    if (
+        not isinstance(message, str)
+        or not 1 <= len(message) <= 256
+        or any(ord(character) < 32 and character not in "\t\n" for character in message)
+    ):
+        raise ValueError("the Assistant returned an invalid result")
+    return {"message": message}

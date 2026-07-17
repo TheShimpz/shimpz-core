@@ -19,7 +19,9 @@ import json
 import math
 import os
 import secrets
+import select
 import socket
+import struct
 import threading
 import time
 import weakref
@@ -32,8 +34,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import accounts_client
+import assistant_chat
 import audit
 import brain_credentials_client
+import capsule_storage
 import cleanup_state
 import docker
 import docker.errors
@@ -86,11 +90,14 @@ INSTALL_RATE_LIMIT = _positive_int_env("SHIMPZ_CAPSULE_INSTALL_RATE_LIMIT", 20)
 INSTALL_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_CAPSULE_INSTALL_RATE_WINDOW_SECONDS", 3600)
 CHAT_RATE_LIMIT = _positive_int_env("SHIMPZ_CAPSULE_CHAT_RATE_LIMIT", 30)
 CHAT_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_CAPSULE_CHAT_RATE_WINDOW_SECONDS", 60)
+FILE_UPLOAD_RATE_LIMIT = _positive_int_env("SHIMPZ_CAPSULE_FILE_UPLOAD_RATE_LIMIT", 60)
+FILE_UPLOAD_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_CAPSULE_FILE_UPLOAD_RATE_WINDOW_SECONDS", 3600)
 MAX_HTTP_CONCURRENCY = _positive_int_env("SHIMPZ_CAPSULE_MAX_HTTP_CONCURRENCY", 64)
 HTTP_CONNECTION_TIMEOUT_SECONDS = _positive_int_env("SHIMPZ_CAPSULE_HTTP_CONNECTION_TIMEOUT_SECONDS", 30)
 # Same volume app-egress-proxy reads (<token>.json allowlists) — shared with shimpz-driver by design:
 # ONE proxy serves every token-gated app, capsule-scoped or not, each confined to its own hosts.
 APP_EGRESS_POLICY_DIR = Path(os.environ.get("SHIMPZ_APP_EGRESS_POLICY_DIR", "/app-egress-policy"))
+CAPSULE_STORAGE_ROOT = Path("/var/lib/capsule-driver/storage")
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
@@ -108,6 +115,8 @@ _chat_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValu
 _active_chat_guard = threading.Lock()
 _active_chat_tokens: dict[str, str] = {}
 _active_chat_container_ids: dict[str, str] = {}
+_active_power_container_ids: dict[str, tuple[str, str]] = {}
+_blocked_power_workloads: set[tuple[str, str]] = set()
 _cancelled_chat_tokens: set[str] = set()
 _blocked_chat_capsules: set[str] = set()
 _credential_mutations: set[str] = set()
@@ -122,6 +131,16 @@ _verified_brains: dict[str, tuple[str, str]] = {}
 # The capacity lock protects only inventory + reservation mutations. Slow provisioning is represented
 # by `_capacity_reservations` and runs after this lock is released.
 _capacity_lock = threading.Lock()
+_storage_lock = threading.Lock()
+_storage_instance: capsule_storage.CapsuleStorage | None = None
+
+
+def _storage() -> capsule_storage.CapsuleStorage:
+    global _storage_instance
+    with _storage_lock:
+        if _storage_instance is None:
+            _storage_instance = capsule_storage.CapsuleStorage(CAPSULE_STORAGE_ROOT)
+        return _storage_instance
 
 
 def _lock_for(cid: str) -> threading.Lock:
@@ -178,7 +197,10 @@ _rate_limiters = {
     "stop": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
     "asks": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
     "answer": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
+    "file_upload": _FixedWindowRateLimiter(FILE_UPLOAD_RATE_LIMIT, FILE_UPLOAD_RATE_WINDOW_SECONDS),
 }
+
+_file_upload_slots = threading.BoundedSemaphore(2)
 
 
 def _rate_key(principal: tuple[str, str | None]) -> str:
@@ -230,6 +252,10 @@ def _clear_cid_runtime_state(cid: str) -> None:
     with _active_chat_guard:
         token = _active_chat_tokens.pop(cid, None)
         _active_chat_container_ids.pop(cid, None)
+        _active_power_container_ids.pop(cid, None)
+        for blocked in tuple(_blocked_power_workloads):
+            if blocked[0] == cid:
+                _blocked_power_workloads.discard(blocked)
         if token is not None:
             _cancelled_chat_tokens.discard(token)
         _blocked_chat_capsules.discard(cid)
@@ -380,6 +406,7 @@ def _exclusive_chat_turn(cid: str, lease: _AuthorizationLease):
             with _active_chat_guard:
                 _active_chat_tokens.pop(cid, None)
                 _active_chat_container_ids.pop(cid, None)
+                _active_power_container_ids.pop(cid, None)
                 _cancelled_chat_tokens.discard(token)
                 if cleanup_ok:
                     _blocked_chat_capsules.discard(cid)
@@ -1471,11 +1498,14 @@ def _list_apps(cid: str, lease: _AuthorizationLease) -> dict:
         _require_current_authorization(cid, lease, require_isolation=False)
         apps = [
             {
-                "app": c.labels.get("capsule.app"),
+                "app": app_id,
                 "status": c.status,
                 "container": c.name,
+                "powers": sorted(spec.assistant.powers) if spec is not None and spec.assistant is not None else [],
             }
             for c in _capsule_app_containers(cid)
+            for app_id in [c.labels.get("capsule.app")]
+            for spec in [marketplace.APPS.get(app_id) if isinstance(app_id, str) else None]
         ]
         return {"capsule": cid, "apps": apps}
 
@@ -1487,10 +1517,13 @@ CHAT_TIMEOUT_SECONDS = int(os.environ.get("SHIMPZ_CAPSULE_CHAT_TIMEOUT", "170"))
 CHAT_OUTPUT_CAP = 60000
 MAX_STREAM_LINE_BYTES = 256 * 1024
 MAX_STREAM_RAW_BYTES = 2 * 1024 * 1024
-INBOX_DIR = "/config/workspace/inbox"
-MAX_INBOX_FILE_BYTES = 30 * 1024 * 1024  # the store caps uploads well below Cloudflare's 100 MB
+MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024
 # Base64 expands by 4/3; leave a small fixed envelope for the JSON keys and filename.
 MAX_FILE_BODY_BYTES = 4 * ((MAX_INBOX_FILE_BYTES + 2) // 3) + 8192
+MAX_ASSISTANT_RPC_INPUT_BYTES = 16 * 1024
+MAX_ASSISTANT_RPC_OUTPUT_BYTES = 32 * 1024
+ASSISTANT_RPC_TIMEOUT_SECONDS = 8
+MAX_CHAT_FILES = 8
 _BRAIN_USER = "abc"  # every provider image's fixed runtime user (uid 1000)
 _CHAT_CONTROL_USER = "root"  # root subreaper; provider child is dropped to abc before exec
 _AUTH_MARKERS = (
@@ -1724,6 +1757,244 @@ def _bounded_exec_output(exec_id: str, stream) -> tuple[int | None, str, str]:
     if truncated:
         return _EXEC_OUTPUT_LIMIT_EXIT, "", "Capsule exec output exceeded its capture limit"
     return rc, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace")
+
+
+def _installed_assistant(cid: str, assistant_id: object):
+    assistant_id, spec = marketplace.resolve(assistant_id)
+    contract = spec.assistant
+    if contract is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, f"{assistant_id!r} is not an Assistant")
+    container = _get_container(manifests.capsule_app_container_name(cid, assistant_id))
+    if container is None:
+        raise ApiError(HTTPStatus.CONFLICT, f"Assistant {assistant_id!r} is not installed in this Capsule")
+    with _active_chat_guard:
+        if (cid, container.id) in _blocked_power_workloads:
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Assistant Power execution is blocked until this Assistant is reinstalled",
+            )
+    try:
+        container.reload()
+    except docker.errors.DockerException as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "installed Assistant could not be verified") from exc
+    if (
+        not network_policy.app_identity_valid(container.attrs, cid, assistant_id)
+        or str(container.attrs.get("Config", {}).get("Image", "")) != spec.image
+    ):
+        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant failed its identity contract")
+    _require_running_capsule_isolation(container)
+    return assistant_id, contract, container
+
+
+def _read_rpc_exact(raw_socket: socket.socket, amount: int, deadline: float) -> bytes:
+    output = bytearray()
+    while len(output) < amount:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([raw_socket], [], [], remaining)[0]:
+            raise TimeoutError
+        chunk = raw_socket.recv(amount - len(output))
+        if not chunk:
+            raise EOFError
+        output.extend(chunk)
+    return bytes(output)
+
+
+def _read_rpc_frames(raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
+    stdout = bytearray()
+    stderr = bytearray()
+    while True:
+        try:
+            header = _read_rpc_exact(raw_socket, 8, deadline)
+        except EOFError:
+            break
+        stream_id, length = struct.unpack(">BxxxL", header)
+        if stream_id not in {docker_socket.STDOUT, docker_socket.STDERR}:
+            raise ValueError("invalid Assistant RPC stream")
+        if length > MAX_ASSISTANT_RPC_OUTPUT_BYTES + 1:
+            raise ValueError("oversized Assistant RPC frame")
+        chunk = _read_rpc_exact(raw_socket, length, deadline)
+        target = stdout if stream_id == docker_socket.STDOUT else stderr
+        target.extend(chunk)
+        if len(stdout) + len(stderr) > MAX_ASSISTANT_RPC_OUTPUT_BYTES:
+            raise ValueError("oversized Assistant RPC response")
+    return bytes(stdout), bytes(stderr)
+
+
+def _register_active_power(cid: str, token: str, container) -> None:
+    with _active_chat_guard:
+        if _active_chat_tokens.get(cid) != token or token in _cancelled_chat_tokens:
+            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+        if cid in _active_power_container_ids:
+            raise ApiError(HTTPStatus.CONFLICT, "Capsule already has an active Assistant Power")
+        _active_power_container_ids[cid] = (token, container.id)
+
+
+def _release_active_power(cid: str, token: str, container_id: str) -> None:
+    with _active_chat_guard:
+        if _active_power_container_ids.get(cid) == (token, container_id):
+            _active_power_container_ids.pop(cid, None)
+
+
+def _fail_stop_power(cid: str, container) -> None:
+    """Prove an ambiguous Assistant RPC can no longer execute before returning an error."""
+    try:
+        _fail_stop_capsule(container, timeout=3)
+    except ApiError as exc:
+        with _active_chat_guard:
+            _blocked_power_workloads.add((cid, container.id))
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Assistant Power termination could not be proved; reinstall the Assistant",
+        ) from exc
+
+
+def _assistant_rpc(
+    cid: str,
+    token: str,
+    container,
+    command: str,
+    method: str,
+    path: str,
+    payload: dict,
+) -> object:
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    if len(encoded) > MAX_ASSISTANT_RPC_INPUT_BYTES:
+        raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Power input is too large")
+    _register_active_power(cid, token, container)
+    stream = None
+    try:
+        try:
+            created = _docker.api.exec_create(
+                container.id,
+                [command, method, path],
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                privileged=False,
+                user="10001:10001",
+                workdir=manifests.CONTAINER_TMP,
+                environment={},
+            )
+            exec_id = created["Id"]
+            stream = _docker.api.exec_start(exec_id, socket=True)
+            raw_socket = getattr(stream, "_sock", None)
+            if raw_socket is None:
+                raise OSError("Docker attach socket cannot half-close stdin")
+            raw_socket.sendall(encoded)
+            raw_socket.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + ASSISTANT_RPC_TIMEOUT_SECONDS
+            stdout, stderr = _read_rpc_frames(raw_socket, deadline)
+        except TimeoutError as exc:
+            _fail_stop_power(cid, container)
+            if _token_cancelled(token):
+                raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped") from exc
+            raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "Assistant Power timed out") from exc
+        except (docker.errors.DockerException, OSError, ValueError, KeyError) as exc:
+            _fail_stop_power(cid, container)
+            if _token_cancelled(token):
+                raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped") from exc
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power failed") from exc
+        finally:
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    _close_exec_stream(stream)
+
+        try:
+            details = _docker.api.exec_inspect(exec_id)
+        except docker.errors.DockerException as exc:
+            _fail_stop_power(cid, container)
+            if _token_cancelled(token):
+                raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped") from exc
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power status is ambiguous") from exc
+        if not isinstance(details.get("ExitCode"), int):
+            _fail_stop_power(cid, container)
+            if _token_cancelled(token):
+                raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power status is ambiguous")
+        if details["ExitCode"] != 0 or stderr:
+            if _token_cancelled(token):
+                raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power failed")
+        try:
+            return json.loads(bytes(stdout))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power returned an invalid result") from exc
+    finally:
+        _release_active_power(cid, token, container.id)
+
+
+def _invoke_assistant_power(
+    cid: str,
+    token: str,
+    assistant_id: str,
+    contract: marketplace.AssistantContract,
+    container,
+    power: object,
+    payload: object,
+) -> dict[str, object]:
+    if (
+        not isinstance(power, str)
+        or assistant_chat.POWER_ID_RE.fullmatch(power) is None
+        or power not in contract.powers
+    ):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "Assistant requested an undeclared Power")
+    try:
+        safe_input = marketplace.validate_power_input(assistant_id, power, payload)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc)) from exc
+    _current_id, _current_contract, current_container = _installed_assistant(cid, assistant_id)
+    if current_container.id != container.id:
+        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant changed during the chat turn")
+    power_spec = contract.powers[power]
+    audit.log(
+        "assistant_power",
+        cid,
+        result="ok",
+        phase="started",
+        assistant=assistant_id,
+        power=power,
+    )
+    try:
+        raw_result = _assistant_rpc(
+            cid,
+            token,
+            container,
+            contract.rpc_command,
+            power_spec.method,
+            power_spec.path,
+            safe_input,
+        )
+    except ApiError as exc:
+        audit.log(
+            "assistant_power",
+            cid,
+            result="error",
+            assistant=assistant_id,
+            power=power,
+            status=int(exc.status),
+        )
+        raise
+    try:
+        result = marketplace.validate_power_output(assistant_id, power, raw_result)
+    except ValueError as exc:
+        audit.log(
+            "assistant_power",
+            cid,
+            result="error",
+            assistant=assistant_id,
+            power=power,
+            reason="invalid-output",
+        )
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power returned an invalid result") from exc
+    audit.log(
+        "assistant_power",
+        cid,
+        result="ok",
+        phase="completed",
+        assistant=assistant_id,
+        power=power,
+    )
+    return {"assistant": assistant_id, "power": power, "result": result}
 
 
 def _open_brain_exec_stdin(container, cmd: list[str], payload: bytes, *, user: str = _BRAIN_USER):
@@ -2536,6 +2807,47 @@ def _brain_invocation(container, message: str, *, resume: bool, stream: bool) ->
     return adapter.invocation(message, resume, stream, _brain_model(container, brain))
 
 
+def _chat_file_metadata(cid: str, file_ids: object) -> list[dict[str, object]]:
+    if file_ids is None:
+        return []
+    if not isinstance(file_ids, list) or len(file_ids) > MAX_CHAT_FILES:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"files must contain at most {MAX_CHAT_FILES} opaque ids")
+    try:
+        return _storage().metadata(cid, file_ids)
+    except capsule_storage.StorageNotFoundError as exc:
+        raise ApiError(HTTPStatus.NOT_FOUND, "selected file not found in this Capsule") from exc
+    except capsule_storage.StorageInputError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+    except capsule_storage.StorageError as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule storage failed its safety checks") from exc
+
+
+def _assistant_chat_prompt(
+    assistant_id: str,
+    contract: marketplace.AssistantContract,
+    message: str,
+    files: list[dict[str, object]],
+) -> str:
+    return assistant_chat.build_prompt(
+        assistant_id,
+        contract.rules,
+        {power_id: power.summary for power_id, power in contract.powers.items()},
+        message,
+        files,
+    )
+
+
+def _assistant_decision(raw: str) -> tuple[str, str, str, dict[str, object]]:
+    try:
+        return assistant_chat.parse_decision(
+            raw,
+            max_message_chars=CHAT_OUTPUT_CAP,
+            max_input_bytes=MAX_ASSISTANT_RPC_INPUT_BYTES,
+        )
+    except assistant_chat.ChatContractError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, f"Brain returned an {exc}") from exc
+
+
 def _chat_command(container, command: list[str], token: str) -> list[str]:
     return ["shimpz-chat-exec", token, container.id, *command]
 
@@ -2549,37 +2861,81 @@ def _run_brain_once(container, message: str, *, resume: bool, token: str) -> tup
     return rc, stdout if rc == 0 else f"{stdout}\n{stderr}"
 
 
-def _chat(cid: str, message: str, lease: _AuthorizationLease) -> dict:
-    """One provider-adapted Captain exchange; first configured turn verifies authentication."""
+def _chat_in_turn(
+    cid: str,
+    assistant: object,
+    message: str,
+    file_ids: object,
+    token: str,
+    container,
+) -> dict:
+    assistant_id, contract, assistant_container = _installed_assistant(cid, assistant)
+    files = _chat_file_metadata(cid, file_ids)
+    prompt = _assistant_chat_prompt(assistant_id, contract, message, files)
+    _clear_brain_authentication(cid)
+    _require_brain_configured(cid, container)
+    rc, out = _run_brain_once(container, prompt, resume=False, token=token)
+    if rc == 124:
+        raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, f"the brain did not answer within {CHAT_TIMEOUT_SECONDS}s")
+    if rc != 0:
+        if _token_cancelled(token) or rc in {130, 137, 143}:
+            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+        lowered = out.lower()
+        if rc == _CHAT_BUSY_EXIT and _CHAT_BUSY_MARKER in lowered:
+            raise ApiError(HTTPStatus.CONFLICT, "capsule already has an active chat turn")
+        if any(marker in lowered for marker in _AUTH_MARKERS):
+            raise ApiError(
+                HTTPStatus.CONFLICT,
+                "brain not authenticated — configure or refresh the account Brain credential",
+            )
+        raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"brain execution failed (rc={rc})")
+    kind, direct_message, power, power_input = _assistant_decision(out.strip())
+    _mark_brain_authenticated(cid, container)
+    if kind == "message":
+        if not _commit_chat_terminal(cid, token):
+            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+        return {
+            "capsule": cid,
+            "assistant": assistant_id,
+            "reply": direct_message[:CHAT_OUTPUT_CAP],
+            "power": None,
+        }
+    invocation = _invoke_assistant_power(
+        cid,
+        token,
+        assistant_id,
+        contract,
+        assistant_container,
+        power,
+        power_input,
+    )
+    result = invocation["result"]
+    reply = result.get("message") if isinstance(result, dict) else None
+    if not isinstance(reply, str) or not reply.strip():
+        reply = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+    if not _commit_chat_terminal(cid, token):
+        raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
+    return {
+        "capsule": cid,
+        "assistant": assistant_id,
+        "reply": reply[:CHAT_OUTPUT_CAP],
+        "power": power,
+        "result": result,
+    }
+
+
+def _chat(
+    cid: str,
+    assistant: object,
+    message: str,
+    file_ids: object,
+    lease: _AuthorizationLease,
+) -> dict:
+    """One tool-free model decision followed by at most one controller-brokered Power."""
     # The slot comes first. A losing concurrent request must not run even the local credential probe,
     # much less provider status or a second provider CLI.
     with _exclusive_chat_turn(cid, lease) as (token, container):
-        _brain, adapter = _adapter_for(container)
-        _clear_brain_authentication(cid)
-        _require_brain_configured(cid, container)
-        rc, out = _run_brain_once(container, message, resume=True, token=token)
-        if (
-            rc not in {130, 137, 143}
-            and not _token_cancelled(token)
-            and any(marker in out.lower() for marker in adapter.no_session_markers)
-        ):
-            rc, out = _run_brain_once(container, message, resume=False, token=token)
-        if not _commit_chat_terminal(cid, token):
-            raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
-        if rc == 124:
-            raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, f"the brain did not answer within {CHAT_TIMEOUT_SECONDS}s")
-        if rc != 0:
-            lowered = out.lower()
-            if rc == _CHAT_BUSY_EXIT and _CHAT_BUSY_MARKER in lowered:
-                raise ApiError(HTTPStatus.CONFLICT, "capsule already has an active chat turn")
-            if any(marker in lowered for marker in _AUTH_MARKERS):
-                raise ApiError(
-                    HTTPStatus.CONFLICT,
-                    "brain not authenticated — configure or refresh the account Brain credential",
-                )
-            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"brain execution failed (rc={rc})")
-        _mark_brain_authenticated(cid, container)
-        return {"capsule": cid, "reply": out.strip()[:CHAT_OUTPUT_CAP]}
+        return _chat_in_turn(cid, assistant, message, file_ids, token, container)
 
 
 def _stream_events(container, message: str, *, resume: bool, token: str):
@@ -2864,6 +3220,23 @@ def _abort_chat(container, cid: str, token: str) -> None:
     audit.log("chat_abort", cid, result="ok" if accepted else "error")
 
 
+def _stop_active_power(cid: str, token: str | None) -> bool:
+    if token is None:
+        return False
+    with _active_chat_guard:
+        active = _active_power_container_ids.get(cid)
+    if active is None or active[0] != token:
+        return False
+    try:
+        assistant_container = _docker.containers.get(active[1])
+    except docker.errors.NotFound:
+        return True
+    except docker.errors.DockerException as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "active Assistant Power could not be inspected") from exc
+    _fail_stop_power(cid, assistant_container)
+    return True
+
+
 def _stop_chat(cid: str, lease: _AuthorizationLease) -> dict:
     """Kill this Capsule's one allowed in-flight provider process (the Stop button)."""
     # Stop cannot take the chat lock (that would deadlock behind the turn it must terminate). The
@@ -2898,12 +3271,15 @@ def _stop_chat(cid: str, lease: _AuthorizationLease) -> dict:
                 "forced_restart": forced_restart,
             }
         try:
+            power_stopped = _stop_active_power(cid, token)
             accepted, confirmed, forced_restart = _terminate_chat_token(
                 container,
                 cid,
                 token,
                 durable_recovered=recovered,
             )
+            accepted = accepted or power_stopped
+            confirmed = confirmed or power_stopped
         finally:
             if recovered and token is not None:
                 with _active_chat_guard:
@@ -2925,26 +3301,53 @@ def _stop_chat(cid: str, lease: _AuthorizationLease) -> dict:
 
 def _put_inbox_file(
     cid: str,
-    filename: str,
-    content_b64: str,
+    filename: object,
+    content_b64: object,
+    media_type: object,
     lease: _AuthorizationLease,
 ) -> dict:
-    """Land an uploaded file in the capsule's OWN workspace inbox (chat references it by path)."""
-    safe_name = validate.validate_inbox_filename(filename)
+    """Store an opaque object outside every Brain and Assistant filesystem."""
+    if not isinstance(content_b64, str):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid base64 content")
     try:
         data = base64.b64decode(content_b64 or "", validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid base64 content: {exc}") from exc
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid base64 content") from exc
     if not data or len(data) > MAX_INBOX_FILE_BYTES:
         raise ApiError(HTTPStatus.BAD_REQUEST, f"file must be 1..{MAX_INBOX_FILE_BYTES} bytes")
     with _lock_for(cid):
-        container = _require_current_authorization(cid, lease)
-        container.reload()
-        if container.status != "running":
-            raise ApiError(HTTPStatus.CONFLICT, f"capsule {cid!r} is not running (status={container.status})")
-        _brain_exec(container, ["mkdir", "-p", INBOX_DIR])
-        container.put_archive(INBOX_DIR, manifests.build_inbox_tar(safe_name, data))
-        return {"capsule": cid, "path": f"{INBOX_DIR}/{safe_name}", "bytes": len(data)}
+        _require_current_authorization(cid, lease, require_isolation=False)
+        try:
+            stored = _storage().put(cid, filename, data, media_type)
+        except capsule_storage.StorageQuotaError as exc:
+            raise ApiError(HTTPStatus.INSUFFICIENT_STORAGE, str(exc)) from exc
+        except capsule_storage.StorageInputError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except capsule_storage.StorageError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule storage failed its safety checks") from exc
+        return {"capsule": cid, "file": stored}
+
+
+def _list_capsule_files(cid: str, lease: _AuthorizationLease) -> dict:
+    with _lock_for(cid):
+        _require_current_authorization(cid, lease, require_isolation=False)
+        try:
+            listing = _storage().list(cid)
+        except capsule_storage.StorageError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule storage failed its safety checks") from exc
+        return {"capsule": cid, **listing}
+
+
+def _delete_capsule_file(cid: str, file_id: object, lease: _AuthorizationLease) -> dict:
+    with _lock_for(cid):
+        _require_current_authorization(cid, lease, require_isolation=False)
+        try:
+            result = _storage().delete(cid, file_id)
+        except capsule_storage.StorageNotFoundError as exc:
+            raise ApiError(HTTPStatus.NOT_FOUND, "file not found") from exc
+        except capsule_storage.StorageError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule storage failed its safety checks") from exc
+        return {"capsule": cid, **result}
 
 
 # ── operations ───────────────────────────────────────────────────────────────
@@ -3047,6 +3450,16 @@ def _teardown_volumes(cid: str) -> bool:
     return all(results)
 
 
+def _teardown_storage(cid: str) -> bool:
+    if _storage_instance is None and not CAPSULE_STORAGE_ROOT.exists():
+        return True
+    try:
+        _storage().destroy(cid)
+    except capsule_storage.StorageError:
+        return False
+    return True
+
+
 def _retire_teardown_r2(cid: str) -> bool:
     """Cut off every new Capsule R2 operation before deleting any tenant artifact."""
     try:
@@ -3111,7 +3524,7 @@ def _teardown(cid: str, *, owner: str, brain_id: str) -> _CleanupResult:
         return _CleanupResult(False, record.db_dropped)
     if not _purge_teardown_credentials(brain):
         return _CleanupResult(False, record.db_dropped)
-    if not _teardown_apps(cid) or not _teardown_network_planes(cid):
+    if not _teardown_apps(cid) or not _teardown_storage(cid) or not _teardown_network_planes(cid):
         return _CleanupResult(False, record.db_dropped)
     if not _remove_teardown_brain(brain) or not _teardown_volumes(cid):
         return _CleanupResult(False, record.db_dropped)
@@ -3487,6 +3900,11 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                 "status": existing.status,
                 "created": False,
             }
+        if not _teardown_storage(cid):
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "stale Capsule storage could not be cleared before creation",
+            )
         # Reserve count + memory atomically, then let unrelated Capsules enter admission while the
         # runtime check, credential service, Postgres, Docker start and health work proceed.
         with _reserve_capacity(f"capsule:{cid}", owner, manifests.MEM_LIMIT_BYTES, capsule_slot=True):
@@ -3745,17 +4163,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _stream_chat(self, cid: str, message: str, lease: _AuthorizationLease) -> None:
-        """Chunked NDJSON stream of a live brain turn — one JSON event per line, flushed as it happens.
-
-        The store reads this line-by-line and relays each event over the Captain's WebSocket. On the
-        first-message case (no session to --continue) the brain emits a 'no conversation' error with no
-        text; we transparently restart fresh so the Captain never sees that internal retry.
-        """
+    def _stream_chat(
+        self,
+        cid: str,
+        assistant: object,
+        message: str,
+        file_ids: object,
+        lease: _AuthorizationLease,
+    ) -> None:
+        """Preserve the NDJSON transport while exposing only the validated terminal reply."""
+        terminal: dict[str, object]
+        stream_error = None
         with _exclusive_chat_turn(cid, lease) as (token, container):
-            _brain, adapter = _adapter_for(container)
-            _clear_brain_authentication(cid)
-            _require_brain_configured(cid, container)
+            # The durable token is claimed before a 200 or any response byte reaches the client.
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-ndjson")
             self.send_header("Transfer-Encoding", "chunked")
@@ -3766,56 +4186,42 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(f"{len(line):X}\r\n".encode() + line + b"\r\n")
                 self.wfile.flush()
 
-            produced = False
-            end = None
-            terminal = {"type": "error", "status": 500, "detail": "brain stream failed"}
-            stream_error = None
             try:
-                for resume in (True, False):
-                    end = None
-                    events = _stream_events(container, message, resume=resume, token=token)
-                    try:
-                        for evt in events:
-                            if evt.get("t") == "_end":
-                                end = evt
-                                break
-                            produced = True
-                            emit({"type": evt["t"], **{k: v for k, v in evt.items() if k != "t"}})
-                    finally:
-                        events.close()
-                    no_session = end and any(
-                        marker in str(end.get("tail", "")).lower() for marker in adapter.no_session_markers
-                    )
-                    stopped = end and (end.get("cancelled") or end.get("rc") in {130, 137, 143})
-                    if produced or not no_session or stopped or (end and end.get("protocol_error")):
-                        break  # got output, or a real (non-first-message) failure — don't retry
-                terminal = _stream_terminal_event(end) if _commit_chat_terminal(cid, token) else {"type": "stopped"}
-                if terminal["type"] == "done":
-                    _mark_brain_authenticated(cid, container)
+                result = _chat_in_turn(cid, assistant, message, file_ids, token, container)
+                terminal = {
+                    "type": "done",
+                    "reply": result["reply"],
+                    "assistant": result["assistant"],
+                    "power": result["power"],
+                }
                 emit(terminal)
-            except (docker.errors.APIError, OSError) as exc:
-                stream_error = type(exc).__name__
-                _abort_chat(container, cid, token)
+            except ApiError as exc:
                 terminal = (
-                    {"type": "error", "status": 500, "detail": "brain stream failed"}
-                    if _commit_chat_terminal(cid, token)
-                    else {"type": "stopped"}
+                    {"type": "stopped"}
+                    if exc.status == HTTPStatus.CONFLICT and exc.message == "brain turn stopped"
+                    else {"type": "error", "status": int(exc.status), "detail": exc.message}
                 )
-                if not isinstance(exc, OSError):
-                    with contextlib.suppress(OSError):
-                        emit(terminal)
+                with contextlib.suppress(OSError):
+                    emit(terminal)
+            except (docker.errors.DockerException, OSError) as exc:
+                stream_error = type(exc).__name__
+                terminal = {"type": "error", "status": 500, "detail": "brain stream failed"}
+                with contextlib.suppress(OSError):
+                    emit(terminal)
             finally:
                 with contextlib.suppress(OSError):
-                    self.wfile.write(b"0\r\n\r\n")  # terminating chunk
+                    self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
-            audit.log(
-                "chat",
-                cid,
-                result="ok" if terminal["type"] in {"done", "stopped"} else "error",
-                streamed=True,
-                status=terminal.get("status"),
-                reason=stream_error,
-            )
+        audit.log(
+            "chat",
+            cid,
+            result="ok" if terminal["type"] == "done" else "error",
+            streamed=True,
+            assistant=assistant if isinstance(assistant, str) else "invalid",
+            power=terminal.get("power"),
+            status=terminal.get("status"),
+            reason=stream_error,
+        )
 
     def _read_body(self, *, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict:
         raw_length = self.headers.get("Content-Length", "0") or "0"
@@ -3928,11 +4334,8 @@ class Handler(BaseHTTPRequestHandler):
             if sub == "chat":
                 self._route_chat(method, parts, cid, principal, lease)
                 return
-            if method == "POST" and sub == "files":
-                body = self._read_body(max_bytes=MAX_FILE_BODY_BYTES)
-                result = _put_inbox_file(cid, body.get("filename"), body.get("content_b64"), lease)
-                trace = audit.log("inbox_file", cid, result="ok", path=result["path"], bytes=result["bytes"])
-                self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
+            if sub == "files":
+                self._route_files(method, parts, cid, lease, principal)
                 return
             if method == "GET" and sub == "status":
                 self._send_json(HTTPStatus.OK, _status(cid, lease))
@@ -3947,6 +4350,62 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
         raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} {path}")
+
+    def _route_files(
+        self,
+        method: str,
+        parts: list[str],
+        cid: str,
+        lease: _AuthorizationLease,
+        principal: tuple[str, str | None],
+    ) -> None:
+        if method == "GET" and len(parts) == 4:
+            self._send_json(HTTPStatus.OK, _list_capsule_files(cid, lease))
+            return
+        if method == "POST" and len(parts) == 4:
+            _enforce_rate("file_upload", principal)
+            if not _file_upload_slots.acquire(blocking=False):
+                raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "another Capsule file upload is in progress")
+            try:
+                body = self._read_body(max_bytes=MAX_FILE_BODY_BYTES)
+                if not isinstance(body, dict) or set(body) not in (
+                    {"filename", "content_b64"},
+                    {"filename", "content_b64", "media_type"},
+                ):
+                    raise ApiError(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        "file upload requires filename, content_b64, and optional media_type",
+                    )
+                result = _put_inbox_file(
+                    cid,
+                    body["filename"],
+                    body["content_b64"],
+                    body.get("media_type"),
+                    lease,
+                )
+            finally:
+                _file_upload_slots.release()
+            trace = audit.log(
+                "capsule_file_upload",
+                cid,
+                result="ok",
+                file_id=result["file"]["id"],
+                bytes=result["file"]["size"],
+            )
+            self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
+            return
+        if method == "DELETE" and len(parts) == 5:
+            result = _delete_capsule_file(cid, parts[4], lease)
+            trace = audit.log(
+                "capsule_file_delete",
+                cid,
+                result="ok",
+                file_id=result["id"],
+                deleted=result["deleted"],
+            )
+            self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
+            return
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} /{'/'.join(parts)}")
 
     def _route_driver(
         self,
@@ -4084,16 +4543,35 @@ class Handler(BaseHTTPRequestHandler):
         `chat/stream` is the live NDJSON turn; the rest are the shimpz-ask surface + the Stop control.
         """
         sub2 = parts[4] if len(parts) > 4 else ""
-        if method == "POST" and not sub2:
+        if method == "POST" and sub2 in {"", "stream"}:
+            body = self._read_body()
+            if not isinstance(body, dict) or set(body) not in (
+                {"assistant", "message"},
+                {"assistant", "message", "files"},
+            ):
+                raise ApiError(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    "chat requires assistant, message, and optional files",
+                )
+            assistant = body["assistant"]
+            message = validate.validate_chat_message(body["message"])
+            file_ids = body.get("files")
+            if sub2 == "stream":
+                _enforce_rate("stream", principal)
+                self._stream_chat(cid, assistant, message, file_ids, lease)
+                return
             _enforce_rate("chat", principal)
-            message = validate.validate_chat_message(self._read_body().get("message"))
-            result = _chat(cid, message, lease)
-            audit.log("chat", cid, result="ok", chars_in=len(message), chars_out=len(result["reply"]))
+            result = _chat(cid, assistant, message, file_ids, lease)
+            audit.log(
+                "chat",
+                cid,
+                result="ok",
+                assistant=result["assistant"],
+                power=result["power"],
+                chars_in=len(message),
+                chars_out=len(result["reply"]),
+            )
             self._send_json(HTTPStatus.OK, result)
-            return
-        if method == "POST" and sub2 == "stream":
-            _enforce_rate("stream", principal)
-            self._stream_chat(cid, validate.validate_chat_message(self._read_body().get("message")), lease)
             return
         if method == "POST" and sub2 == "stop":
             _enforce_rate("stop", principal)
