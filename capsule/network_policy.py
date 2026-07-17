@@ -46,7 +46,7 @@ POSTGRES_CONTAINER = os.environ.get("SHIMPZ_POSTGRES_CONTAINER", f"shimpz-postgr
 APP_EGRESS_CONTAINER = os.environ.get("SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{SUFFIX}")
 
 APP_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$")
-EXPECTED_BRAIN_CAP_ADD = frozenset({"CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"})
+EXPECTED_BRAIN_CAP_ADD = frozenset()
 SHARED_MANAGED_LABEL = "shimpz.capsule.shared"
 SHARED_ROLE_LABEL = "shimpz.capsule.shared.role"
 POSTGRES_ROLE = "postgres"
@@ -80,13 +80,13 @@ def _memory_bytes(value: str, setting: str) -> int:
     return int(parsed)
 
 
-BRAIN_MEMORY_BYTES = _memory_bytes(os.environ.get("SHIMPZ_CAPSULE_MEM_LIMIT", "2g"), "SHIMPZ_CAPSULE_MEM_LIMIT")
+BRAIN_MEMORY_BYTES = _memory_bytes(os.environ.get("SHIMPZ_CAPSULE_MEM_LIMIT", "64m"), "SHIMPZ_CAPSULE_MEM_LIMIT")
 BRAIN_MEMORY_RESERVATION_BYTES = _memory_bytes(
-    os.environ.get("SHIMPZ_CAPSULE_MEM_RESERVATION", "384m"),
+    os.environ.get("SHIMPZ_CAPSULE_MEM_RESERVATION", "16m"),
     "SHIMPZ_CAPSULE_MEM_RESERVATION",
 )
-BRAIN_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_NANO_CPUS", str(4_000_000_000)))
-BRAIN_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "2048"))
+BRAIN_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_NANO_CPUS", str(100_000_000)))
+BRAIN_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "32"))
 APP_MEMORY_BYTES = _memory_bytes(os.environ.get("SHIMPZ_CAPSULE_APP_MEM_LIMIT", "1g"), "SHIMPZ_CAPSULE_APP_MEM_LIMIT")
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_APP_PIDS_LIMIT", "256"))
@@ -584,8 +584,8 @@ def _resource_and_namespace_posture_valid(host_config: Mapping, role: str) -> bo
             BRAIN_NANO_CPUS,
             BRAIN_PIDS_LIMIT,
         )
-        tmpfs_size = 2 * 1024**3
-        nofile = 65536
+        tmpfs_size = 16 * 1024**2
+        nofile = 256
     else:
         expected = (APP_MEMORY_BYTES, 0, APP_NANO_CPUS, APP_PIDS_LIMIT)
         tmpfs_size = 256 * 1024**2
@@ -669,16 +669,7 @@ def workload_security_valid(
     if not isinstance(mounts, list):
         return False
     if role[0] == "brain":
-        expected_mounts = {
-            ("/config", "volume", volume_name(cid, CONFIG_VOLUME_KIND), True),
-            ("/config/workspace", "volume", volume_name(cid, WORKSPACE_VOLUME_KIND), True),
-        }
-        actual_mounts = {
-            (mount.get("Destination"), mount.get("Type"), mount.get("Name"), mount.get("RW"))
-            for mount in mounts
-            if isinstance(mount, Mapping)
-        }
-        return cap_drop == {"ALL"} and cap_add == EXPECTED_BRAIN_CAP_ADD and actual_mounts == expected_mounts
+        return host_config.get("ReadonlyRootfs") is True and cap_drop == {"ALL"} and not cap_add and not mounts
     return (
         config.get("User") == "10001:10001"
         and host_config.get("ReadonlyRootfs") is True

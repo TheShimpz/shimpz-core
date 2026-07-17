@@ -1,11 +1,10 @@
-"""Turn a validated capsule id into docker-py container kwargs for an isolated brain.
+"""Turn a validated capsule id into docker-py kwargs for an isolated Capsule anchor.
 
 The ONE place that decides what a Capsule container actually gets. Every security-relevant field
 (security_opt, network, mounts, limits, Telegram/browser OFF) is a hardcoded constant here; the caller
 never carries any of them, so there is nothing to override. A Capsule is a `shimpz-brain` with:
-its OWN internal core and Brain-egress networks, its OWN config+workspace volumes, a SCOPED Postgres
-DSN, no docker.sock, no secrets keyring, no browser, and no Telegram. Only the Brain reaches the broad
-egress-proxy; installed Apps remain on core and use the token-gated app proxy when declared.
+its OWN internal networks and resource envelope, but no provider runtime, credential, Docker socket,
+filesystem, browser, or application authority. Inference runs in the separate LangGraph service.
 """
 
 from __future__ import annotations
@@ -26,8 +25,10 @@ from marketplace import AppSpec
 
 # Multi-instance (R137): SHIMPZ_SUFFIX names this Space's resources; empty (the default) is prod.
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")
-IMAGE = os.environ.get("SHIMPZ_CAPSULE_IMAGE", "shimpz-brain:shimpz-local")
-CODEX_IMAGE = os.environ.get("SHIMPZ_CODEX_CAPSULE_IMAGE", "shimpz-brain-codex:shimpz-local")
+IMAGE = os.environ.get(
+    "SHIMPZ_CAPSULE_IMAGE",
+    "registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c",
+)
 # Hostile-tenant Capsules are unconditionally locked to gVisor. This is deliberately not an
 # environment setting: Docker rejects create when runsc is unavailable, and the driver refuses
 # lifecycle mutations until the daemon registry preserves its exact handler path, built-in security
@@ -37,29 +38,16 @@ RUNTIME_PATH = network_policy.CAPSULE_RUNTIME_PATH
 CONTAINER_ALL_INTERFACES = str(ipaddress.IPv4Address(0))
 CONTAINER_TMP = str(PurePosixPath("/") / "tmp")
 
-# ── Brains (ADR-0004): the agent RUNTIME a Capsule boots, a per-Capsule choice ──────────────────
-# The same trusted-registry pattern as the marketplace: the store forwards only a brain id; THIS map
-# decides the image. Only brains that actually boot are listed (the storefront-honesty rule). The
-# Codex image is registered because its real build/boot/auth proof is shipped in
-# ``tests/test-codex-brain-live.py``. Credentials are always account-owned and land only in the
-# Capsule's private /config; no provider receives a platform-global key.
+# The lifecycle identity is intentionally not a model provider. Keeping this small trusted registry
+# lets existing isolation code resolve the exact immutable image while provider/model live elsewhere.
 BRAINS: dict[str, dict[str, str]] = {
-    "claude-code": {
+    "runtime": {
         "image": IMAGE,
-        "title": "Claude Code",
-        "default_model": "claude-sonnet-5",
-        "healthcheck": "claude --version >/dev/null",
-        "readycheck": "claude --version >/dev/null",
-    },
-    "codex": {
-        "image": CODEX_IMAGE,
-        "title": "Codex",
+        "title": "Capsule runtime",
         "default_model": "",
-        "healthcheck": "codex --version >/dev/null && shimpz-codex-auth status >/dev/null",
-        "readycheck": "test -s /config/.codex/config.toml && codex --version >/dev/null",
     },
 }
-DEFAULT_BRAIN = "claude-code"
+DEFAULT_BRAIN = "runtime"
 
 
 def build_inbox_tar(filename: str, data: bytes) -> bytes:
@@ -90,10 +78,10 @@ NET_PREFIX = network_policy.CORE_NETWORK_PREFIX
 # admission budget before Docker provisioning begins; the lower cgroup reservation is only runtime
 # reclaim protection, never the capacity-accounting unit. cgroup v2: mem_reservation ≈ memory.low,
 # mem_limit ≈ memory.max.
-MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_MEM_LIMIT", "2g")
-MEM_RESERVATION = os.environ.get("SHIMPZ_CAPSULE_MEM_RESERVATION", "384m")
-NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_NANO_CPUS", str(4_000_000_000)))  # 4 vCPU ceiling; idle ≈ 0
-PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "2048"))
+MEM_LIMIT = os.environ.get("SHIMPZ_CAPSULE_MEM_LIMIT", "64m")
+MEM_RESERVATION = os.environ.get("SHIMPZ_CAPSULE_MEM_RESERVATION", "16m")
+NANO_CPUS = int(os.environ.get("SHIMPZ_CAPSULE_NANO_CPUS", str(100_000_000)))
+PIDS_LIMIT = int(os.environ.get("SHIMPZ_CAPSULE_PIDS_LIMIT", "32"))
 
 
 def hard_memory_bytes(value: str | int | float, *, setting: str) -> int:
@@ -237,73 +225,27 @@ def build_capsule_kwargs(
     """
     selected_model = model_for_brain(brain, model)
     env = {
-        "PUID": "1000",
-        "PGID": "1000",
-        "TZ": "America/Sao_Paulo",
-        "TITLE": f"Capsule {name}",
-        "SHIMPZ_HOME": "/config/.shimpz",
         "SHIMPZ_CAPSULE_ID": cid,
         "SHIMPZ_CAPSULE_NAME": name,
-        # The core network has no default route. Only this Brain also joins its private egress network,
-        # where the broad/audited CONNECT proxy is its sole outbound path. NO_PROXY lists core services;
-        # `.capsule` is the SUFFIX every installed app also answers on (<app-id>.capsule) — app names
-        # aren't knowable at capsule create, a suffix is, so http://<app-id>.capsule:<port> bypasses
-        # the proxy in every NO_PROXY-honoring client (curl/python/node all tail-match entries).
-        "HTTPS_PROXY": "http://egress-proxy:8888",
-        "HTTP_PROXY": "http://egress-proxy:8888",
-        "https_proxy": "http://egress-proxy:8888",
-        "http_proxy": "http://egress-proxy:8888",
-        "NO_PROXY": "localhost,127.0.0.1,::1,egress-proxy,postgres,.capsule",
-        "no_proxy": "localhost,127.0.0.1,::1,egress-proxy,postgres,.capsule",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        # The capsule's OWN scoped database — a least-privilege proj_ role, never the superuser.
-        "DATABASE_URL": database_url,
-        # Infinity-memory + run knobs (mirror the main brain).
-        "SHIMPZ_MEMORY_DIR": "/config/.shimpz/memory",
-        "SHIMPZ_MEM_TTL_DAYS": "90",
-        "SHIMPZ_RECENT_TURNS": "6",
-        "SHIMPZ_PONYTAIL": "1",
-        "SHIMPZ_CTX_MAX_BYTES": "1500000",
-        "SHIMPZ_THINKING_TOKENS": "10000",
-        "SHIMPZ_MAX_TURNS": "80",
-        "SHIMPZ_AUTO_CONTINUE": "3",
-        # Thread caps sized to this capsule's CPU envelope (the kernel still shows all 96 host cores).
-        "LP_NUM_THREADS": "4",
-        "OMP_NUM_THREADS": "4",
-        "OPENBLAS_NUM_THREADS": "4",
-        "MKL_NUM_THREADS": "4",
-        "NUMEXPR_NUM_THREADS": "4",
-        # Telegram OFF — a Capsule is not the owner's phone-facing brain (empty = gateway off).
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_ALLOWED_USERS": "",
     }
-    if brain == "claude-code":
-        env["SHIMPZ_MODEL"] = selected_model
     return {
         "image": BRAINS[brain]["image"],
         "name": capsule_container_name(cid),
         "hostname": cid,
         "runtime": RUNTIME,
         "environment": env,
-        # Hardened, identical to the main brain minus the browser's elevated caps: no new privileges,
-        # not privileged, no docker.sock, no secrets keyring.
         "security_opt": ["no-new-privileges:true", "apparmor=docker-default"],
         "privileged": False,
+        "read_only": True,
         "ipc_mode": "private",
         "cgroupns": "private",
-        # Boot-minimized against the shipping LSIO/s6 Brain images: CHOWN + DAC_OVERRIDE are required
-        # for supervised init, SETGID + SETUID for the abc transition, and KILL for clean shutdown.
-        # Removing any required member was exercised independently; no other default capability stays.
         "cap_drop": ["ALL"],
-        "cap_add": ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+        "cap_add": [],
         # Create on the Capsule core network. app.py then attaches only this Brain to its separate
         # Brain-egress network; broad egress-proxy is never a core-network member.
         "network": capsule_network_name(cid),
-        "mounts": [
-            docker.types.Mount(target="/config", source=capsule_config_volume(cid), type="volume"),
-            docker.types.Mount(target="/config/workspace", source=capsule_workspace_volume(cid), type="volume"),
-        ],
-        "tmpfs": {CONTAINER_TMP: "size=2g,mode=1777"},
+        "mounts": [],
+        "tmpfs": {CONTAINER_TMP: "size=16m,mode=1777"},
         "mem_limit": MEM_LIMIT,
         # Equal memory and memory+swap ceilings disable swap for this hostile workload. Leaving
         # MemorySwap unset lets Docker grant an additional swap allowance on swap-enabled hosts.
@@ -311,17 +253,10 @@ def build_capsule_kwargs(
         "mem_reservation": MEM_RESERVATION,
         "nano_cpus": NANO_CPUS,
         "pids_limit": PIDS_LIMIT,
-        "ulimits": [docker.types.Ulimit(name="nofile", soft=65536, hard=65536)],
+        "ulimits": [docker.types.Ulimit(name="nofile", soft=256, hard=256)],
         # Hostile workloads may only become runnable through the driver's static+live proof. Docker
         # daemon startup or a natural process crash must never auto-start them behind that gate.
         "restart_policy": {"Name": "no"},
-        "healthcheck": docker.types.Healthcheck(
-            test=["CMD-SHELL", BRAINS[brain]["healthcheck"]],
-            interval=30 * 10**9,
-            timeout=10 * 10**9,
-            retries=3,
-            start_period=60 * 10**9,
-        ),
         "labels": {
             "capsule.driver": "1",
             "capsule.id": cid,

@@ -499,7 +499,6 @@ def _require_capsule_isolation_mode(container, *, require_running: bool) -> None
     if expected_kinds is None:
         raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Capsule isolation is blocked: invalid workload role")
     is_brain = network_policy.BRAIN_EGRESS_KIND in expected_kinds
-    _require_capsule_volumes(cid)
     for kind in (network_policy.CORE_KIND, network_policy.BRAIN_EGRESS_KIND):
         try:
             network = _docker.networks.get(network_policy.network_name(cid, kind))
@@ -3418,17 +3417,6 @@ def _remove_teardown_brain(brain) -> bool:
     return _remove_capsule_container(brain, timeout=30)
 
 
-def _purge_teardown_credentials(brain) -> bool:
-    """Purge every supported provider artifact and swap quarantine before releasing the Brain."""
-    if brain is None:
-        return True
-    try:
-        _provider_volume_action(brain, "purge-all", manifests.DEFAULT_BRAIN)
-    except ApiError:
-        return False
-    return True
-
-
 def _teardown_volumes(cid: str) -> bool:
     results = [
         _remove_volume(cid, kind) for kind in (network_policy.CONFIG_VOLUME_KIND, network_policy.WORKSPACE_VOLUME_KIND)
@@ -3515,8 +3503,6 @@ def _teardown(cid: str, *, owner: str, brain_id: str) -> _CleanupResult:
     # Fail closed while the durable cleanup record and stopped Brain still exist. No credential,
     # volume, network or database artifact is removed until R2 has revoked this Capsule principal.
     if not _retire_teardown_r2(cid):
-        return _CleanupResult(False, record.db_dropped)
-    if not _purge_teardown_credentials(brain):
         return _CleanupResult(False, record.db_dropped)
     if (
         not _teardown_apps(cid)
@@ -3918,8 +3904,6 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                     r2driver_client.provision_capsule(cid)
                 except r2driver_client.R2DriverError as exc:
                     raise ApiError(exc.status, exc.message) from exc
-                _ensure_capsule_volume(cid, network_policy.CONFIG_VOLUME_KIND)
-                _ensure_capsule_volume(cid, network_policy.WORKSPACE_VOLUME_KIND)
                 network = _ensure_capsule_network(cid)
                 egress_network = _ensure_brain_egress_network(cid)
                 _wire_network_deps(network, manifests.core_deps())
@@ -3950,7 +3934,6 @@ def _create(cid: str, body: dict, owner: str = "") -> dict:
                 container = _docker.containers.create(**kwargs)
                 _safe_connect(egress_network, container.name, required=True)
                 _start_capsule_with_isolation(container)
-                _wait_brain_ready(container, anchor_brain)
                 _inference_store.save(cid, inference)
             except Exception as exc:
                 cleanup = _teardown(
