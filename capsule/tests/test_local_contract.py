@@ -111,6 +111,19 @@ class LocalContractTests(unittest.TestCase):
         self.assertFalse(local_app._is_replaceable_readiness_failure("future-stateful-assistant", readiness))
         self.assertFalse(local_app._is_replaceable_readiness_failure("hello-pulse", ownership))
 
+    def test_local_controller_owns_private_runtime_token_bootstrap(self) -> None:
+        source = (CAPSULE / "local_app.py").read_text(encoding="utf-8")
+        dockerfile = (CAPSULE / "Dockerfile.local").read_text(encoding="utf-8")
+        self.assertIn("brain_runtime_token_store.ensure()", source)
+        for marker in (
+            "brain_runtime_token_store.py",
+            "groupadd --gid 10016 shimpzbrain-runtime-token",
+            "--groups 10010,10016",
+            "/run/shimpz-brain-runtime",
+            "chmod 0750 /run/shimpz-brain-runtime",
+        ):
+            self.assertIn(marker, dockerfile)
+
     def test_ambiguous_power_rpc_is_fail_stopped_or_permanently_blocked(self) -> None:
         controller = object.__new__(local_app.LocalController)
         controller._blocked_power_workloads = set()

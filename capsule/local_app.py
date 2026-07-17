@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 
 import assistant_chat
 import brain_runtime_client
+import brain_runtime_token_store
 import capsule_storage
 import chat_orchestrator
 import docker
@@ -1796,6 +1797,7 @@ def main() -> int:
         space_id = os.environ["SHIMPZ_SPACE_ID"]
         registry = load_registry()
         token = local_token_store.ensure_token()
+        brain_runtime_token_store.ensure()
         client = docker.from_env(timeout=REQUEST_TIMEOUT_SECONDS)
         storage = capsule_storage.CapsuleStorage(STORAGE_ROOT)
         controller = LocalController(client, space_id, registry, storage)
