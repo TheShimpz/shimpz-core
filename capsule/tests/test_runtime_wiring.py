@@ -54,6 +54,10 @@ class RuntimeWiringTests(unittest.TestCase):
         self.assertNotIn("_request_chat_stop", calls)
         self.assertNotIn("_terminate_chat_token", calls)
 
+    def test_controller_owns_runtime_token_bootstrap(self) -> None:
+        calls = _calls(_function("main"))
+        self.assertIn("brain_runtime_token_store.ensure", calls)
+
 
 if __name__ == "__main__":
     unittest.main()

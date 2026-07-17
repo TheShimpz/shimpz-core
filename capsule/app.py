@@ -38,6 +38,7 @@ import assistant_chat
 import audit
 import brain_credentials_client
 import brain_runtime_client
+import brain_runtime_token_store
 import capsule_storage
 import chat_orchestrator
 import cleanup_state
@@ -4611,6 +4612,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # The Controller owns this bearer. The runtime receives the same named volume read-only and
+    # cannot rotate or replace its authority.
+    brain_runtime_token_store.ensure()
     _BoundedThreadingHTTPServer((ALL_INTERFACES, LISTEN_PORT), Handler).serve_forever()
 
 
