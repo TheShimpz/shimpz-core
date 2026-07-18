@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CAPSULE = Path(__file__).resolve().parents[1]
@@ -27,6 +30,34 @@ LOCAL_PROFILE = "single-owner-local-v1"
 
 sys.path.insert(0, str(CAPSULE))
 from local_app import half_cpu_set
+
+
+class _BrainLifecycleHandler(BaseHTTPRequestHandler):
+    """Minimal real HTTP peer for the controller's closed thread-deletion contract."""
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        try:
+            document = json.loads(body)
+        except UnicodeError, json.JSONDecodeError:
+            document = None
+        valid = (
+            self.path == "/v1/threads/delete"
+            and isinstance(document, dict)
+            and set(document) == {"thread_id"}
+            and isinstance(document["thread_id"], str)
+        )
+        response = json.dumps({"status": "deleted"} if valid else {"error": "invalid request"}).encode()
+        self.send_response(200 if valid else 400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(response)
 
 
 class DockerFlowTests(unittest.TestCase):
@@ -179,6 +210,18 @@ class DockerFlowTests(unittest.TestCase):
         trusted_ref = ""
         daemon_processors = int(self._run("info", "--format", "{{.NCPU}}").stdout.strip())
         test_cpuset = half_cpu_set(daemon_processors)
+        bridge_gateway = ipaddress.IPv4Address(
+            self._run(
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{(index .IPAM.Config 0).Gateway}}",
+            ).stdout.strip()
+        )
+        brain_server = ThreadingHTTPServer((str(bridge_gateway), 0), _BrainLifecycleHandler)
+        brain_thread = threading.Thread(target=brain_server.serve_forever, daemon=True)
+        brain_thread.start()
 
         try:
             self._run(
@@ -309,6 +352,8 @@ class DockerFlowTests(unittest.TestCase):
                 f"{power_journal_volume}:/var/lib/shimpz-local/power-journal",
                 "--env",
                 f"SHIMPZ_SPACE_ID={space_id}",
+                "--env",
+                f"SHIMPZ_BRAIN_RUNTIME_URL=http://{bridge_gateway}:{brain_server.server_port}",
                 "--publish",
                 "127.0.0.1::7077",
                 controller_tag,
@@ -669,6 +714,9 @@ class DockerFlowTests(unittest.TestCase):
             self.assertEqual(len(self._owned_ids("container", space_id, "assistant")), 1)
             self.assertEqual(len(self._owned_ids("network", space_id, "capsule")), 1)
         finally:
+            brain_server.shutdown()
+            brain_server.server_close()
+            brain_thread.join(timeout=2)
             # Cleanup remains strictly scoped to this test's unique names/labels.
             self._cleanup_owned_space(space_id)
             owned_containers = self._owned_ids("container", space_id, "assistant")
