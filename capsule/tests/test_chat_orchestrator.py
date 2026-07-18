@@ -93,8 +93,7 @@ class ChatOrchestratorTests(unittest.TestCase):
             runtime,
             context(),
             "Greet Ada",
-            lambda assistant, power, payload: invoked.append((assistant, power, payload))
-            or {"message": "Hello, Ada."},
+            lambda assistant, power, payload: invoked.append((assistant, power, payload)) or {"message": "Hello, Ada."},
         )
 
         self.assertEqual(invoked, [("hello-pulse", "hello", {"name": "Ada"})])

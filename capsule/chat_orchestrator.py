@@ -59,11 +59,7 @@ def run(
     validate_context()
     turn = runtime.start(context, message)
     invoked: list[InvokedPower] = []
-    declared = {
-        (assistant.id, power.id): power
-        for assistant in context.assistants
-        for power in assistant.powers
-    }
+    declared = {(assistant.id, power.id): power for assistant in context.assistants for power in assistant.powers}
 
     for _round in range(MAX_POWER_ROUNDS + 1):
         if cancelled():
