@@ -2024,7 +2024,12 @@ class Handler(BaseHTTPRequestHandler):
                 assistant=assistant_id,
                 detail=exc.code,
             )
-            self._send(exc.status, {"error": exc.message, "trace_id": trace_id})
+            # The authenticated Admin receives the stable machine code for diagnosis. Browser-facing
+            # gateways map only an allowlisted code to fixed public text and never relay this prose.
+            self._send(
+                exc.status,
+                {"error": exc.message, "code": exc.code, "trace_id": trace_id},
+            )
         except DockerException:
             trace_id = local_audit.record(operation, result="error", detail="docker-error")
             self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Docker is unavailable", "trace_id": trace_id})
