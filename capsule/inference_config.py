@@ -9,13 +9,29 @@ import re
 import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 ROOT = Path(os.environ.get("SHIMPZ_CAPSULE_INFERENCE_DIR", "/var/lib/capsule-driver/inference"))
 SCHEMA = 1
-PROVIDERS: dict[str, dict[str, str]] = {
-    "openai": {"title": "OpenAI", "default_model": "gpt-5.5"},
-    "anthropic": {"title": "Anthropic", "default_model": "claude-sonnet-5"},
+
+
+class ProviderDefinition(TypedDict):
+    title: str
+    default_model: str
+    models: frozenset[str]
+
+
+PROVIDERS: dict[str, ProviderDefinition] = {
+    "openai": {
+        "title": "OpenAI",
+        "default_model": "gpt-5.6-terra",
+        "models": frozenset({"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}),
+    },
+    "anthropic": {
+        "title": "Anthropic",
+        "default_model": "claude-sonnet-5",
+        "models": frozenset({"claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"}),
+    },
 }
 DEFAULT_PROVIDER = "openai"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
@@ -37,8 +53,8 @@ def normalize(provider: object = None, model: object = None) -> InferenceConfig:
     if selected not in PROVIDERS:
         raise InferenceConfigError(f"provider must be one of {sorted(PROVIDERS)}")
     selected_model = str(model or PROVIDERS[selected]["default_model"]).strip()
-    if MODEL_RE.fullmatch(selected_model) is None:
-        raise InferenceConfigError("model must be a safe identifier of at most 128 characters")
+    if MODEL_RE.fullmatch(selected_model) is None or selected_model not in PROVIDERS[selected]["models"]:
+        raise InferenceConfigError("model is not supported by the selected provider")
     return InferenceConfig(provider=selected, model=selected_model)
 
 
