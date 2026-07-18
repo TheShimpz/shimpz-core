@@ -1,4 +1,4 @@
-"""Encrypted Capsule-scoped credential sets for the R2 Driver Spec v1 form."""
+"""Encrypted Team-scoped credential sets for the R2 Driver Spec v1 form."""
 
 from __future__ import annotations
 
@@ -48,12 +48,12 @@ STATE_VERSION = 2
 MAX_STATE_BYTES = 8 * 1024 * 1024
 MAX_CREDENTIALS = 4096
 
-_CAPSULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+_TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 _CREDENTIAL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-_ROOT_KEYS = {"version", "driver_id", "schema_version", "capsules"}
+_ROOT_KEYS = {"version", "driver_id", "schema_version", "teams"}
 _RECORD_KEYS = {
     "profile_id",
     "label",
@@ -77,7 +77,7 @@ class CredentialValidationError(CredentialStoreError):
 
 
 class CredentialNotFoundError(CredentialStoreError):
-    """The exact Capsule-scoped credential does not exist."""
+    """The exact Team-scoped credential does not exist."""
 
 
 class CredentialConflictError(CredentialStoreError):
@@ -90,7 +90,7 @@ class CredentialRevokedError(CredentialStoreError):
 
 @dataclass(frozen=True)
 class CredentialMetadata:
-    capsule_id: str
+    team_id: str
     credential_id: str
     profile_id: str
     label: str
@@ -102,7 +102,7 @@ class CredentialMetadata:
     def public(self) -> dict[str, object]:
         """Return metadata only; values, nonce, tag, and ciphertext are impossible here."""
         return {
-            "capsule_id": self.capsule_id,
+            "team_id": self.team_id,
             "credential_id": self.credential_id,
             "profile_id": self.profile_id,
             "label": self.label,
@@ -136,9 +136,9 @@ class ResolvedCredential:
         return f"ResolvedCredential(metadata={self.metadata!r}, values=<redacted>)"
 
 
-def _validate_capsule_id(value: object) -> str:
-    if not isinstance(value, str) or _CAPSULE_ID_RE.fullmatch(value) is None:
-        raise CredentialValidationError("capsule_id must match [a-z0-9_]{1,40}")
+def _validate_team_id(value: object) -> str:
+    if not isinstance(value, str) or _TEAM_ID_RE.fullmatch(value) is None:
+        raise CredentialValidationError("team_id must match [a-z0-9_]{1,40}")
     return value
 
 
@@ -187,13 +187,13 @@ def _canonical(values: Mapping[str, str]) -> bytes:
     return json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _aad(capsule_id: str, credential_id: str, profile_id: str, generation: int) -> bytes:
+def _aad(team_id: str, credential_id: str, profile_id: str, generation: int) -> bytes:
     return json.dumps(
         [
             "shimpz-driver-credential",
             DRIVER.id,
             CREDENTIAL_SCHEMA.schema_version,
-            capsule_id,
+            team_id,
             credential_id,
             profile_id,
             generation,
@@ -207,7 +207,7 @@ def _empty_state() -> dict[str, object]:
         "version": STATE_VERSION,
         "driver_id": DRIVER.id,
         "schema_version": CREDENTIAL_SCHEMA.schema_version,
-        "capsules": {},
+        "teams": {},
     }
 
 
@@ -318,7 +318,7 @@ def _decode_part(value: object, expected_length: int | None = None) -> bytes:
     return decoded
 
 
-def _validate_record(capsule_id: str, credential_id: str, value: object) -> dict[str, object]:
+def _validate_record(team_id: str, credential_id: str, value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _RECORD_KEYS:
         raise CredentialStoreError("credential state contains a malformed record")
     profile_id = value.get("profile_id")
@@ -351,7 +351,7 @@ def _validate_record(capsule_id: str, credential_id: str, value: object) -> dict
         _decode_part(envelope.get("nonce"), 12)
         if len(_decode_part(envelope.get("ciphertext"))) < 16:
             raise CredentialStoreError("credential envelope is malformed")
-    _validate_capsule_id(capsule_id)
+    _validate_team_id(team_id)
     _validate_credential_id(credential_id)
     return value
 
@@ -365,25 +365,25 @@ def _validate_state(value: object) -> dict[str, object]:
         or value.get("schema_version") != CREDENTIAL_SCHEMA.schema_version
     ):
         raise CredentialStoreError("credential state version or driver identity is invalid")
-    capsules = value.get("capsules")
-    if not isinstance(capsules, dict):
-        raise CredentialStoreError("credential state capsules must be an object")
+    teams = value.get("teams")
+    if not isinstance(teams, dict):
+        raise CredentialStoreError("credential state teams must be an object")
     count = 0
-    for capsule_id, records in capsules.items():
-        _validate_capsule_id(capsule_id)
+    for team_id, records in teams.items():
+        _validate_team_id(team_id)
         if not isinstance(records, dict) or not records:
-            raise CredentialStoreError("credential state contains an empty or malformed Capsule set")
+            raise CredentialStoreError("credential state contains an empty or malformed Team set")
         for credential_id, record in records.items():
-            _validate_record(capsule_id, credential_id, record)
+            _validate_record(team_id, credential_id, record)
             count += 1
     if count > MAX_CREDENTIALS:
         raise CredentialStoreError("credential state exceeds its fixed record limit")
     return value
 
 
-def _metadata(capsule_id: str, credential_id: str, record: Mapping[str, object]) -> CredentialMetadata:
+def _metadata(team_id: str, credential_id: str, record: Mapping[str, object]) -> CredentialMetadata:
     return CredentialMetadata(
-        capsule_id=capsule_id,
+        team_id=team_id,
         credential_id=credential_id,
         profile_id=str(record["profile_id"]),
         label=str(record["label"]),
@@ -437,7 +437,7 @@ class CredentialStore:
     def _encrypt(
         self,
         values: Mapping[str, str],
-        capsule_id: str,
+        team_id: str,
         credential_id: str,
         profile_id: str,
         generation: int,
@@ -447,7 +447,7 @@ class CredentialStore:
         ciphertext = AESGCM(key if key is not None else self._key()).encrypt(
             nonce,
             _canonical(values),
-            _aad(capsule_id, credential_id, profile_id, generation),
+            _aad(team_id, credential_id, profile_id, generation),
         )
         return {
             "algorithm": "AES-256-GCM",
@@ -457,7 +457,7 @@ class CredentialStore:
 
     def _create_fingerprint(
         self,
-        capsule_id: str,
+        team_id: str,
         credential_id: str,
         profile_id: str,
         label: str,
@@ -465,7 +465,7 @@ class CredentialStore:
         key: bytes,
     ) -> str:
         request = json.dumps(
-            [capsule_id, credential_id, profile_id, label, values],
+            [team_id, credential_id, profile_id, label, values],
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -477,7 +477,7 @@ class CredentialStore:
         return hmac.new(fingerprint_key, request, hashlib.sha256).hexdigest()
 
     @staticmethod
-    def _idempotency_hash(capsule_id: str, idempotency_key: str, key: bytes) -> str:
+    def _idempotency_hash(team_id: str, idempotency_key: str, key: bytes) -> str:
         digest_key = hmac.new(
             key,
             b"shimpz-r2-idempotency-hash-key-v1",
@@ -485,13 +485,13 @@ class CredentialStore:
         ).digest()
         return hmac.new(
             digest_key,
-            json.dumps([capsule_id, idempotency_key], separators=(",", ":")).encode(),
+            json.dumps([team_id, idempotency_key], separators=(",", ":")).encode(),
             hashlib.sha256,
         ).hexdigest()
 
-    def credential_id(self, capsule_id: object, idempotency_key: object) -> str:
+    def credential_id(self, team_id: object, idempotency_key: object) -> str:
         """Derive a stable opaque identifier without exposing the caller's idempotency key."""
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         idempotency = _validate_idempotency_key(idempotency_key)
         with self._lock:
             key = self._key(allow_create=not self.state_path.exists())
@@ -502,14 +502,14 @@ class CredentialStore:
             ).digest()
             digest = hmac.new(
                 identifier_key,
-                f"{capsule}\0{idempotency}".encode(),
+                f"{team}\0{idempotency}".encode(),
                 hashlib.sha256,
             ).hexdigest()
         return f"r2-{digest[:48]}"
 
     def preflight_create(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         profile_id: object,
         label: object,
@@ -517,7 +517,7 @@ class CredentialStore:
         idempotency_key: object,
     ) -> CredentialMetadata | None:
         """Return an exact prior create, reject conflicts, or admit a new provider probe."""
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         selected_profile = _profile(profile_id).id
         selected_label = _validate_label(label)
@@ -526,13 +526,13 @@ class CredentialStore:
         with self._lock:
             state = self._read_state()
             key = self._key() if self.state_path.exists() else self._key(allow_create=True)
-            idempotency_hash = self._idempotency_hash(capsule, idempotency, key)
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state capsules are malformed")
-            records = capsules.get(capsule)
+            idempotency_hash = self._idempotency_hash(team, idempotency, key)
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state teams are malformed")
+            records = teams.get(team)
             if records is not None and not isinstance(records, dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
+                raise CredentialStoreError("credential state Team set is malformed")
             if isinstance(records, dict):
                 for existing_id, existing_record in records.items():
                     if not isinstance(existing_record, dict):
@@ -541,9 +541,9 @@ class CredentialStore:
                         raise CredentialConflictError("idempotency key is already bound to another credential")
             if not isinstance(records, dict) or credential not in records:
                 return None
-            existing = self._record(state, capsule, credential)
+            existing = self._record(state, team, credential)
             fingerprint = self._create_fingerprint(
-                capsule,
+                team,
                 credential,
                 selected_profile,
                 selected_label,
@@ -553,12 +553,12 @@ class CredentialStore:
             if secrets.compare_digest(
                 str(existing.get("idempotency_hash")), idempotency_hash
             ) and secrets.compare_digest(str(existing.get("create_fingerprint")), fingerprint):
-                return _metadata(capsule, credential, existing)
+                return _metadata(team, credential, existing)
             raise CredentialConflictError("credential identity or idempotency request conflicts")
 
     def preflight_rotate(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         expected_generation: object,
         profile_id: object,
@@ -566,14 +566,14 @@ class CredentialStore:
         values: object,
     ) -> None:
         """Validate identity, CAS, profile, label, and bundle before a provider network probe."""
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         selected_profile = _profile(profile_id).id
         _validate_label(label)
         validate_bundle(selected_profile, values)
         with self._lock:
             state = self._read_state()
-            record = self._record(state, capsule, credential)
+            record = self._record(state, team, credential)
             if record.get("status") != "active":
                 raise CredentialRevokedError("credential is revoked")
             self._expected_generation(record, expected_generation)
@@ -583,7 +583,7 @@ class CredentialStore:
     def _decrypt(
         self,
         record: Mapping[str, object],
-        capsule_id: str,
+        team_id: str,
         credential_id: str,
         key: bytes | None = None,
     ) -> dict[str, str]:
@@ -597,7 +597,7 @@ class CredentialStore:
                 nonce,
                 ciphertext,
                 _aad(
-                    capsule_id,
+                    team_id,
                     credential_id,
                     str(record["profile_id"]),
                     int(record["generation"]),
@@ -612,13 +612,13 @@ class CredentialStore:
             raise CredentialStoreError("decrypted credential bundle is malformed") from exc
 
     @staticmethod
-    def _record(state: Mapping[str, object], capsule_id: str, credential_id: str) -> dict[str, object]:
-        capsules = state["capsules"]
-        if not isinstance(capsules, dict):
-            raise CredentialStoreError("credential state capsules are malformed")
-        records = capsules.get(capsule_id)
+    def _record(state: Mapping[str, object], team_id: str, credential_id: str) -> dict[str, object]:
+        teams = state["teams"]
+        if not isinstance(teams, dict):
+            raise CredentialStoreError("credential state teams are malformed")
+        records = teams.get(team_id)
         if not isinstance(records, dict) or credential_id not in records:
-            raise CredentialNotFoundError("credential does not exist in this Capsule")
+            raise CredentialNotFoundError("credential does not exist in this Team")
         record = records[credential_id]
         if not isinstance(record, dict):
             raise CredentialStoreError("credential state record is malformed")
@@ -634,14 +634,14 @@ class CredentialStore:
 
     def create(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         profile_id: object,
         label: object,
         values: object,
         idempotency_key: object,
     ) -> CredentialMetadata:
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         selected_profile = _profile(profile_id).id
         selected_label = _validate_label(label)
@@ -650,21 +650,21 @@ class CredentialStore:
         with self._lock:
             state = self._read_state()
             key = self._key(allow_create=not self.state_path.exists())
-            idempotency_hash = self._idempotency_hash(capsule, idempotency, key)
+            idempotency_hash = self._idempotency_hash(team, idempotency, key)
             fingerprint = self._create_fingerprint(
-                capsule,
+                team,
                 credential,
                 selected_profile,
                 selected_label,
                 bundle,
                 key,
             )
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state capsules are malformed")
-            records = capsules.get(capsule)
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state teams are malformed")
+            records = teams.get(team)
             if records is not None and not isinstance(records, dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
+                raise CredentialStoreError("credential state Team set is malformed")
             if isinstance(records, dict):
                 for existing_id, existing_record in records.items():
                     if not isinstance(existing_record, dict):
@@ -672,7 +672,7 @@ class CredentialStore:
                     if existing_record.get("idempotency_hash") == idempotency_hash and existing_id != credential:
                         raise CredentialConflictError("idempotency key is already bound to another credential")
             if isinstance(records, dict) and credential in records:
-                existing = self._record(state, capsule, credential)
+                existing = self._record(state, team, credential)
                 same_idempotency_key = secrets.compare_digest(
                     str(existing.get("idempotency_hash")),
                     idempotency_hash,
@@ -682,9 +682,9 @@ class CredentialStore:
                     fingerprint,
                 )
                 if same_idempotency_key and same_request:
-                    return _metadata(capsule, credential, existing)
+                    return _metadata(team, credential, existing)
                 raise CredentialConflictError("credential identity or idempotency request conflicts")
-            count = sum(len(value) for value in capsules.values() if isinstance(value, dict))
+            count = sum(len(value) for value in teams.values() if isinstance(value, dict))
             if count >= MAX_CREDENTIALS:
                 raise CredentialConflictError("credential capacity is exhausted")
             now = _timestamp()
@@ -697,90 +697,90 @@ class CredentialStore:
                 "updated_at": now,
                 "idempotency_hash": idempotency_hash,
                 "create_fingerprint": fingerprint,
-                "envelope": self._encrypt(bundle, capsule, credential, selected_profile, 1, key),
+                "envelope": self._encrypt(bundle, team, credential, selected_profile, 1, key),
             }
             if records is None:
                 records = {}
-                capsules[capsule] = records
+                teams[team] = records
             records[credential] = record
             self._write_state(state)
-            return _metadata(capsule, credential, record)
+            return _metadata(team, credential, record)
 
-    def list_metadata(self, capsule_id: object) -> tuple[CredentialMetadata, ...]:
-        capsule = _validate_capsule_id(capsule_id)
+    def list_metadata(self, team_id: object) -> tuple[CredentialMetadata, ...]:
+        team = _validate_team_id(team_id)
         with self._lock:
             state = self._read_state()
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state capsules are malformed")
-            records = capsules.get(capsule, {})
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state teams are malformed")
+            records = teams.get(team, {})
             if not isinstance(records, dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
+                raise CredentialStoreError("credential state Team set is malformed")
             return tuple(
-                _metadata(capsule, credential_id, records[credential_id])
+                _metadata(team, credential_id, records[credential_id])
                 for credential_id in sorted(records)
                 if records[credential_id].get("status") == "active"
             )
 
-    def capsule_record_count(self, capsule_id: object) -> int:
-        """Count active records and tombstones toward the bounded per-Capsule inventory."""
-        capsule = _validate_capsule_id(capsule_id)
+    def team_record_count(self, team_id: object) -> int:
+        """Count active records and tombstones toward the bounded per-Team inventory."""
+        team = _validate_team_id(team_id)
         with self._lock:
             state = self._read_state()
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state capsules are malformed")
-            records = capsules.get(capsule, {})
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state teams are malformed")
+            records = teams.get(team, {})
             if not isinstance(records, dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
+                raise CredentialStoreError("credential state Team set is malformed")
             return len(records)
 
     def check_health(self) -> None:
         """Authenticate all active envelopes and fail if non-empty state lost its keyring."""
         with self._lock:
             state = self._read_state()
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state capsules are malformed")
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state teams are malformed")
             records = [
-                (capsule_id, credential_id, record)
-                for capsule_id, capsule_records in capsules.items()
-                for credential_id, record in capsule_records.items()
+                (team_id, credential_id, record)
+                for team_id, team_records in teams.items()
+                for credential_id, record in team_records.items()
             ]
             if not records and not self.state_path.exists():
                 return
             key = self._key()
-            for capsule_id, credential_id, record in records:
+            for team_id, credential_id, record in records:
                 if record.get("status") == "active":
-                    self._decrypt(record, capsule_id, credential_id, key)
+                    self._decrypt(record, team_id, credential_id, key)
 
-    def resolve(self, capsule_id: object, credential_id: object) -> ResolvedCredential:
-        capsule = _validate_capsule_id(capsule_id)
+    def resolve(self, team_id: object, credential_id: object) -> ResolvedCredential:
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         with self._lock:
             state = self._read_state()
-            record = self._record(state, capsule, credential)
+            record = self._record(state, team, credential)
             if record.get("status") != "active":
                 raise CredentialRevokedError("credential is revoked")
             return ResolvedCredential(
-                _metadata(capsule, credential, record),
-                self._decrypt(record, capsule, credential),
+                _metadata(team, credential, record),
+                self._decrypt(record, team, credential),
             )
 
     def rotate(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         expected_generation: object,
         profile_id: object,
         label: object,
         values: object,
     ) -> CredentialMetadata:
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         with self._lock:
             state = self._read_state()
-            record = self._record(state, capsule, credential)
+            record = self._record(state, team, credential)
             if record.get("status") != "active":
                 raise CredentialRevokedError("credential is revoked")
             generation = self._expected_generation(record, expected_generation) + 1
@@ -794,62 +794,62 @@ class CredentialStore:
             record["updated_at"] = _timestamp()
             record["envelope"] = self._encrypt(
                 bundle,
-                capsule,
+                team,
                 credential,
                 str(record["profile_id"]),
                 generation,
             )
             self._write_state(state)
-            return _metadata(capsule, credential, record)
+            return _metadata(team, credential, record)
 
     def remove(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         expected_generation: object,
     ) -> CredentialMetadata:
         """Destroy the envelope with CAS and retain an idempotent, non-public tombstone."""
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         with self._lock:
             state = self._read_state()
-            record = self._record(state, capsule, credential)
+            record = self._record(state, team, credential)
             if type(expected_generation) is not int or expected_generation < 1:
                 raise CredentialValidationError("expected_generation must be a positive integer")
             if record.get("status") == "revoked" and record.get("generation") in {
                 expected_generation,
                 expected_generation + 1,
             }:
-                return _metadata(capsule, credential, record)
+                return _metadata(team, credential, record)
             self._expected_generation(record, expected_generation)
             record["generation"] = expected_generation + 1
             record["status"] = "revoked"
             record["updated_at"] = _timestamp()
             record["envelope"] = None
             self._write_state(state)
-            return _metadata(capsule, credential, record)
+            return _metadata(team, credential, record)
 
     def revoke(
         self,
-        capsule_id: object,
+        team_id: object,
         credential_id: object,
         expected_generation: object,
     ) -> CredentialMetadata:
-        return self.remove(capsule_id, credential_id, expected_generation)
+        return self.remove(team_id, credential_id, expected_generation)
 
-    def revoke_capsule(self, capsule_id: object) -> None:
-        """Atomically destroy every active envelope for one Capsule, retry-safe."""
-        capsule = _validate_capsule_id(capsule_id)
+    def revoke_team(self, team_id: object) -> None:
+        """Atomically destroy every active envelope for one Team, retry-safe."""
+        team = _validate_team_id(team_id)
         with self._lock:
             state = self._read_state()
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state Capsules are malformed")
-            records = capsules.get(capsule)
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state Teams are malformed")
+            records = teams.get(team)
             if records is None:
                 return
             if not isinstance(records, dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
+                raise CredentialStoreError("credential state Team set is malformed")
             changed = False
             now = _timestamp()
             for record in records.values():
@@ -864,40 +864,40 @@ class CredentialStore:
             if changed:
                 self._write_state(state)
 
-    def purge_revoked(self, capsule_id: object, credential_id: object, expected_generation: object) -> None:
+    def purge_revoked(self, team_id: object, credential_id: object, expected_generation: object) -> None:
         """Physically remove one exact tombstone during an authorized teardown."""
-        capsule = _validate_capsule_id(capsule_id)
+        team = _validate_team_id(team_id)
         credential = _validate_credential_id(credential_id)
         with self._lock:
             state = self._read_state()
-            record = self._record(state, capsule, credential)
+            record = self._record(state, team, credential)
             self._expected_generation(record, expected_generation)
             if record.get("status") != "revoked" or record.get("envelope") is not None:
                 raise CredentialConflictError("only a revoked credential can be purged")
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict) or not isinstance(capsules.get(capsule), dict):
-                raise CredentialStoreError("credential state Capsule set is malformed")
-            del capsules[capsule][credential]
-            if not capsules[capsule]:
-                del capsules[capsule]
+            teams = state["teams"]
+            if not isinstance(teams, dict) or not isinstance(teams.get(team), dict):
+                raise CredentialStoreError("credential state Team set is malformed")
+            del teams[team][credential]
+            if not teams[team]:
+                del teams[team]
             self._write_state(state)
 
-    def purge_capsule(self, capsule_id: object) -> None:
-        """Remove all tombstones only after every Capsule credential has been revoked."""
-        capsule = _validate_capsule_id(capsule_id)
+    def purge_team(self, team_id: object) -> None:
+        """Remove all tombstones only after every Team credential has been revoked."""
+        team = _validate_team_id(team_id)
         with self._lock:
             state = self._read_state()
-            capsules = state["capsules"]
-            if not isinstance(capsules, dict):
-                raise CredentialStoreError("credential state Capsules are malformed")
-            records = capsules.get(capsule)
+            teams = state["teams"]
+            if not isinstance(teams, dict):
+                raise CredentialStoreError("credential state Teams are malformed")
+            records = teams.get(team)
             if records is None:
                 return
             if not isinstance(records, dict) or any(
                 record.get("status") != "revoked" or record.get("envelope") is not None for record in records.values()
             ):
-                raise CredentialConflictError("Capsule still has active credentials")
-            del capsules[capsule]
+                raise CredentialConflictError("Team still has active credentials")
+            del teams[team]
             self._write_state(state)
 
 

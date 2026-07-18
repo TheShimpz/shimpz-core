@@ -75,19 +75,19 @@ _BACKUP_CREATED_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:
 _BACKUP_SPOOL_PREFIX = ".shimpz-r2backup-"
 _MAX_JSON_BODY = 64 * 1024
 _MAX_JSON_RESPONSE = 256 * 1024
-_MAX_CAPSULE_CREDENTIALS = 256
-_CAPSULE_CREDENTIAL_PATH_RE = re.compile(
-    r"^/v1/capsules/(?P<capsule>[a-z0-9_]{1,40})/credentials"
+_MAX_TEAM_CREDENTIALS = 256
+_TEAM_CREDENTIAL_PATH_RE = re.compile(
+    r"^/v1/teams/(?P<team_id>[a-z0-9_]{1,40})/credentials"
     r"(?:/(?P<credential>[a-z0-9][a-z0-9-]{0,63})(?:/(?P<action>verify))?)?$"
 )
 _LIFECYCLE_PATHS = {
-    "/v1/capsules/provision",
-    "/v1/capsules/retire",
-    "/v1/capsules/finalize",
+    "/v1/teams/provision",
+    "/v1/teams/retire",
+    "/v1/teams/finalize",
 }
 BACKUP_SPOOL_DIR = Path(os.environ.get("SHIMPZ_R2DRIVER_BACKUP_SPOOL_DIR", "/var/lib/shimpz-r2backup"))
 _backup_transfer_gate = backup_gate.BackupTransferGate()
-_capsule_lifecycle_gate = threading.RLock()
+_team_lifecycle_gate = threading.RLock()
 
 
 def _fsync_directory(path: Path) -> None:
@@ -243,10 +243,10 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("Authorization", "")
         return len(supplied) == 71 and hmac.compare_digest(supplied, f"Bearer {expected}")
 
-    def _capsule_bearer(self) -> str:
+    def _team_bearer(self) -> str:
         supplied = self.headers.get("Authorization", "")
         if not re.fullmatch(r"Bearer [0-9a-f]{64}", supplied):
-            raise ApiError(HTTPStatus.FORBIDDEN, "invalid or missing Capsule bearer token")
+            raise ApiError(HTTPStatus.FORBIDDEN, "invalid or missing Team bearer token")
         return supplied[7:]
 
     def _read_json(self) -> dict[str, object]:
@@ -355,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == DRIVER.credential_schema_path:
             self._send_json(HTTPStatus.OK, CREDENTIALS.public())
             return
-        if self._dispatch_capsule_api(method, path):
+        if self._dispatch_team_api(method, path):
             return
         if not self._authed():
             # 127.0.0.1 = this container's own Docker HEALTHCHECK proving the 403 gate is live
@@ -388,29 +388,29 @@ class Handler(BaseHTTPRequestHandler):
             audit.log(method.lower(), self.path, result="error", reason=type(exc).__name__)
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal driver error"})
 
-    def _dispatch_capsule_api(self, method: str, path: str) -> bool:
-        match = _CAPSULE_CREDENTIAL_PATH_RE.fullmatch(path)
+    def _dispatch_team_api(self, method: str, path: str) -> bool:
+        match = _TEAM_CREDENTIAL_PATH_RE.fullmatch(path)
         if path not in _LIFECYCLE_PATHS and match is None:
             return False
         try:
             if path in _LIFECYCLE_PATHS:
                 if not self._bearer_matches(_provisioner_token):
                     raise ApiError(HTTPStatus.FORBIDDEN, "invalid or missing provisioner token")
-                self._capsule_lifecycle(method, path)
+                self._team_lifecycle(method, path)
             elif match is not None:
-                self._capsule_credentials(method, match)
+                self._team_credentials(method, match)
         except Exception as exc:
-            self._capsule_api_error(method, path, exc)
+            self._team_api_error(method, path, exc)
         return True
 
-    def _capsule_api_error(self, method: str, path: str, exc: Exception) -> None:
+    def _team_api_error(self, method: str, path: str, exc: Exception) -> None:
         status = HTTPStatus.INTERNAL_SERVER_ERROR
         message = "internal driver error"
         reason = type(exc).__name__
         if isinstance(exc, ApiError):
             status, message, reason = exc.status, exc.message, exc.message
         elif isinstance(exc, principal_store.PrincipalError):
-            status, message, reason = HTTPStatus.NOT_FOUND, "Capsule resource was not found", "Capsule scope not found"
+            status, message, reason = HTTPStatus.NOT_FOUND, "Team resource was not found", "Team scope not found"
         elif isinstance(exc, credential_store.CredentialValidationError):
             status, message, reason = (
                 HTTPStatus.BAD_REQUEST,
@@ -428,58 +428,58 @@ class Handler(BaseHTTPRequestHandler):
         audit.log(method.lower(), path, result="denied" if status.value < 500 else "error", reason=reason)
         self._send_json(status, {"error": message})
 
-    def _capsule_lifecycle(self, method: str, path: str) -> None:
+    def _team_lifecycle(self, method: str, path: str) -> None:
         if method != "POST":
             raise ApiError(HTTPStatus.NOT_FOUND, "lifecycle route was not found")
-        if path == "/v1/capsules/provision":
-            body = _closed_json(self._read_json(), {"capsule_id", "principal_token"})
+        if path == "/v1/teams/provision":
+            body = _closed_json(self._read_json(), {"team_id", "principal_token"})
             try:
-                with _capsule_lifecycle_gate:
-                    principal_store.STORE.provision(body["capsule_id"], body["principal_token"])
+                with _team_lifecycle_gate:
+                    principal_store.STORE.provision(body["team_id"], body["principal_token"])
             except principal_store.PrincipalError as exc:
-                raise ApiError(HTTPStatus.CONFLICT, "Capsule principal conflicts with its lifecycle") from exc
-            audit.log("r2.credentials.provision", str(body["capsule_id"]), result="ok")
+                raise ApiError(HTTPStatus.CONFLICT, "Team principal conflicts with its lifecycle") from exc
+            audit.log("r2.credentials.provision", str(body["team_id"]), result="ok")
             self._send_json(HTTPStatus.OK, {"status": "active"})
             return
-        body = _closed_json(self._read_json(), {"capsule_id"})
-        capsule_id = body["capsule_id"]
-        if path == "/v1/capsules/retire":
-            with _capsule_lifecycle_gate:
-                principal_store.STORE.retire_capsule(capsule_id)
-                credential_store.STORE.revoke_capsule(capsule_id)
+        body = _closed_json(self._read_json(), {"team_id"})
+        team_id = body["team_id"]
+        if path == "/v1/teams/retire":
+            with _team_lifecycle_gate:
+                principal_store.STORE.retire_team(team_id)
+                credential_store.STORE.revoke_team(team_id)
             operation, status = "r2.credentials.retire", "retired"
-        elif path == "/v1/capsules/finalize":
+        elif path == "/v1/teams/finalize":
             try:
-                with _capsule_lifecycle_gate:
-                    principal_store.STORE.assert_finalizable(capsule_id)
-                    credential_store.STORE.purge_capsule(capsule_id)
-                    principal_store.STORE.finalize(capsule_id)
+                with _team_lifecycle_gate:
+                    principal_store.STORE.assert_finalizable(team_id)
+                    credential_store.STORE.purge_team(team_id)
+                    principal_store.STORE.finalize(team_id)
             except principal_store.PrincipalError as exc:
-                raise ApiError(HTTPStatus.CONFLICT, "Capsule principal is still active") from exc
+                raise ApiError(HTTPStatus.CONFLICT, "Team principal is still active") from exc
             operation, status = "r2.credentials.finalize", "finalized"
         else:
             raise ApiError(HTTPStatus.NOT_FOUND, "lifecycle route was not found")
-        audit.log(operation, str(capsule_id), result="ok")
+        audit.log(operation, str(team_id), result="ok")
         self._send_json(HTTPStatus.OK, {"status": status})
 
-    def _capsule_credentials(self, method: str, match: re.Match[str]) -> None:
-        capsule_id = match.group("capsule")
+    def _team_credentials(self, method: str, match: re.Match[str]) -> None:
+        team_id = match.group("team_id")
         credential_id = match.group("credential")
         action = match.group("action")
-        bearer = self._capsule_bearer()
+        bearer = self._team_bearer()
         request_body = self._read_json() if method in {"POST", "PUT", "DELETE"} else None
-        with _capsule_lifecycle_gate, principal_store.STORE.authorized(bearer, capsule_id):
+        with _team_lifecycle_gate, principal_store.STORE.authorized(bearer, team_id):
             if method == "GET" and credential_id is None:
-                credentials = credential_store.STORE.list_metadata(capsule_id)
-                if len(credentials) > _MAX_CAPSULE_CREDENTIALS:
+                credentials = credential_store.STORE.list_metadata(team_id)
+                if len(credentials) > _MAX_TEAM_CREDENTIALS:
                     raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "credential inventory exceeds its fixed limit")
                 self._send_json(HTTPStatus.OK, {"credentials": [_public_credential(item) for item in credentials]})
                 return
             if method == "POST" and credential_id is None:
                 body = _closed_json(request_body, {"profile_id", "label", "values", "idempotency_key"})
-                identifier = credential_store.STORE.credential_id(capsule_id, body["idempotency_key"])
+                identifier = credential_store.STORE.credential_id(team_id, body["idempotency_key"])
                 existing = credential_store.STORE.preflight_create(
-                    capsule_id,
+                    team_id,
                     identifier,
                     body["profile_id"],
                     body["label"],
@@ -489,19 +489,19 @@ class Handler(BaseHTTPRequestHandler):
                 if existing is not None:
                     self._send_json(HTTPStatus.OK, _public_credential(existing))
                     return
-                if credential_store.STORE.capsule_record_count(capsule_id) >= _MAX_CAPSULE_CREDENTIALS:
-                    raise credential_store.CredentialConflictError("Capsule credential capacity is exhausted")
+                if credential_store.STORE.team_record_count(team_id) >= _MAX_TEAM_CREDENTIALS:
+                    raise credential_store.CredentialConflictError("Team credential capacity is exhausted")
                 candidate = _candidate_credentials(body["profile_id"], body["values"])
                 _probe_candidate(candidate)
                 metadata = credential_store.STORE.create(
-                    capsule_id,
+                    team_id,
                     identifier,
                     body["profile_id"],
                     body["label"],
                     body["values"],
                     body["idempotency_key"],
                 )
-                audit.log("r2.credentials.create", f"{capsule_id}/{identifier}", result="ok")
+                audit.log("r2.credentials.create", f"{team_id}/{identifier}", result="ok")
                 self._send_json(HTTPStatus.OK, _public_credential(metadata))
                 return
             if credential_id is None:
@@ -509,7 +509,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT" and action is None:
                 body = _closed_json(request_body, {"profile_id", "label", "values", "expected_generation"})
                 credential_store.STORE.preflight_rotate(
-                    capsule_id,
+                    team_id,
                     credential_id,
                     body["expected_generation"],
                     body["profile_id"],
@@ -519,31 +519,31 @@ class Handler(BaseHTTPRequestHandler):
                 candidate = _candidate_credentials(body["profile_id"], body["values"])
                 _probe_candidate(candidate)
                 metadata = credential_store.STORE.rotate(
-                    capsule_id,
+                    team_id,
                     credential_id,
                     body["expected_generation"],
                     body["profile_id"],
                     body["label"],
                     body["values"],
                 )
-                audit.log("r2.credentials.rotate", f"{capsule_id}/{credential_id}", result="ok")
+                audit.log("r2.credentials.rotate", f"{team_id}/{credential_id}", result="ok")
                 self._send_json(HTTPStatus.OK, _public_credential(metadata))
                 return
             if method == "DELETE" and action is None:
                 body = _closed_json(request_body, {"expected_generation"})
                 metadata = credential_store.STORE.remove(
-                    capsule_id,
+                    team_id,
                     credential_id,
                     body["expected_generation"],
                 )
-                audit.log("r2.credentials.remove", f"{capsule_id}/{credential_id}", result="ok")
+                audit.log("r2.credentials.remove", f"{team_id}/{credential_id}", result="ok")
                 self._send_json(HTTPStatus.OK, _public_credential(metadata))
                 return
             if method == "POST" and action == "verify":
                 _closed_json(request_body, set())
-                resolved = credential_store.STORE.resolve(capsule_id, credential_id)
+                resolved = credential_store.STORE.resolve(team_id, credential_id)
                 _probe_candidate(_candidate_credentials(resolved.metadata.profile_id, resolved.values()))
-                trace = audit.log("r2.credentials.verify", f"{capsule_id}/{credential_id}", result="ok")
+                trace = audit.log("r2.credentials.verify", f"{team_id}/{credential_id}", result="ok")
                 self._send_json(
                     HTTPStatus.OK,
                     {

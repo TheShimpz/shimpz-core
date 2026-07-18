@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 #
-# egress-proxy — the platform Brain's and Capsule Brains' ONLY internet route (security-plan item 8/12).
+# egress-proxy — the platform Brain's and Team Brains' ONLY internet route (security-plan item 8/12).
 # A CONNECT-only, broad+audited-by-default proxy, optionally narrowed by SHIMPZ_EGRESS_ALLOW. It joins
-# only Brain-egress networks, never a Capsule core/App/data plane; Apps use the separate token-gated
+# only Brain-egress networks, never a Team core/App/data plane; Apps use the separate token-gated
 # app-egress-proxy. Holds no credential or docker.sock. stdlib-only — zero third-party dependencies.
 # Pinned by digest (not the movable `3.14-slim` tag) — SECURITY_ENGINEERING_PLAN.md item 6. Same digest
 # as the other driver sidecars; bump all together.

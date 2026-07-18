@@ -26,7 +26,7 @@ connection = http.client.HTTPConnection("127.0.0.1", manifest.port, timeout=3)
 try:
     connection.request(
         "POST",
-        "/v1/capsules/provision",
+        "/v1/teams/provision",
         body=b"{}",
         headers={"Content-Type": "application/json"},
     )

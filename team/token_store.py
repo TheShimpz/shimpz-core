@@ -1,6 +1,7 @@
-"""The local provisioner bearer token team-driver uses to call this driver.
+"""The local, single-scope bearer token the control plane uses to call team-driver.
 
-Generated once on first boot, on a volume shared only between team-driver and this sidecar; never stored in .env.
+Generated once on first boot, on a volume shared only between the caller (the admin panel) and this
+sidecar; never stored in .env. Same 0440 + shared-group scheme as every other driver's token.
 """
 
 from __future__ import annotations
@@ -10,8 +11,10 @@ import os
 import secrets
 from pathlib import Path
 
-TOKEN_PATH = Path(os.environ.get("SHIMPZ_PGDRIVER_TOKEN_FILE", "/run/shimpz-pgdriver/token"))
-TOKEN_GROUP = os.environ.get("SHIMPZ_PGDRIVER_TOKEN_GROUP", "shimpzpgdriver-token")
+TOKEN_PATH = Path(os.environ.get("SHIMPZ_TEAMDRIVER_TOKEN_FILE", "/run/shimpz-teamdriver/token"))
+# Group the CALLER (the admin panel's uid 1000 — not this driver's own uid 10001) is a member of, so it
+# can read the token without owning it (a 0400 owner-only token was unreadable by the caller).
+TOKEN_GROUP = os.environ.get("SHIMPZ_TEAMDRIVER_TOKEN_GROUP", "shimpzteamdriver-token")
 
 
 def _group_readable(path: Path) -> None:

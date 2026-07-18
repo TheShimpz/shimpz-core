@@ -1,4 +1,4 @@
-"""Hashed R2 driver principals scoped to exactly one Capsule."""
+"""Hashed R2 driver principals scoped to exactly one Team."""
 
 from __future__ import annotations
 
@@ -22,25 +22,25 @@ STATE_VERSION = 2
 MAX_STATE_BYTES = 1024 * 1024
 MAX_PRINCIPALS = 4096
 
-_CAPSULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+_TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 _TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _ROOT_KEYS = {"version", "principals"}
-_RECORD_KEYS = {"capsule_id", "status"}
+_RECORD_KEYS = {"team_id", "status"}
 _STATUSES = {"active", "retired", "finalized"}
 
 
 class PrincipalError(Exception):
-    """A bearer is unknown, retired, or outside its exact Capsule scope."""
+    """A bearer is unknown, retired, or outside its exact Team scope."""
 
 
 class PrincipalStoreError(Exception):
     """The hashed principal registry could not be safely read or committed."""
 
 
-def _capsule_id(value: object) -> str:
-    if not isinstance(value, str) or _CAPSULE_ID_RE.fullmatch(value) is None:
-        raise PrincipalError("capsule_id must match [a-z0-9_]{1,40}")
+def _team_id(value: object) -> str:
+    if not isinstance(value, str) or _TEAM_ID_RE.fullmatch(value) is None:
+        raise PrincipalError("team_id must match [a-z0-9_]{1,40}")
     return value
 
 
@@ -82,24 +82,24 @@ def _validate_state(value: object) -> dict[str, object]:
     principals = value.get("principals")
     if not isinstance(principals, dict) or len(principals) > MAX_PRINCIPALS:
         raise PrincipalStoreError("principal registry set is malformed")
-    live_capsules: set[str] = set()
+    live_teams: set[str] = set()
     for digest, record in principals.items():
         if not isinstance(digest, str) or _DIGEST_RE.fullmatch(digest) is None:
             raise PrincipalStoreError("principal registry contains an invalid digest")
         if not isinstance(record, dict) or set(record) != _RECORD_KEYS:
             raise PrincipalStoreError("principal registry contains an invalid record")
-        capsule = record.get("capsule_id")
+        team = record.get("team_id")
         try:
-            capsule = _capsule_id(capsule)
+            team = _team_id(team)
         except PrincipalError as exc:
-            raise PrincipalStoreError("principal registry contains an invalid Capsule") from exc
+            raise PrincipalStoreError("principal registry contains an invalid Team") from exc
         status = record.get("status")
         if status not in _STATUSES:
             raise PrincipalStoreError("principal registry contains an invalid lifecycle status")
         if status != "finalized":
-            if capsule in live_capsules:
-                raise PrincipalStoreError("principal registry contains duplicate live Capsule records")
-            live_capsules.add(capsule)
+            if team in live_teams:
+                raise PrincipalStoreError("principal registry contains duplicate live Team records")
+            live_teams.add(team)
     return value
 
 
@@ -185,13 +185,13 @@ class PrincipalStore:
                 temporary.unlink(missing_ok=True)
 
     def check_health(self) -> None:
-        """Fail closed when the durable Capsule-principal registry cannot be trusted."""
+        """Fail closed when the durable Team-principal registry cannot be trusted."""
         with self._lock:
             self._read()
 
-    def provision(self, capsule_id: object, token: object) -> None:
+    def provision(self, team_id: object, token: object) -> None:
         """Register or retry one lifecycle principal; cleartext is never persisted."""
-        capsule = _capsule_id(capsule_id)
+        team = _team_id(team_id)
         digest = _digest(token)
         with self._lock:
             state = self._read()
@@ -200,21 +200,21 @@ class PrincipalStore:
                 raise PrincipalStoreError("principal registry set is malformed")
             existing_for_digest = principals.get(digest)
             if isinstance(existing_for_digest, dict):
-                if existing_for_digest.get("capsule_id") != capsule:
-                    raise PrincipalError("principal token is already scoped to another Capsule")
+                if existing_for_digest.get("team_id") != team:
+                    raise PrincipalError("principal token is already scoped to another Team")
                 if existing_for_digest.get("status") == "active":
                     return
                 raise PrincipalError("principal token lifecycle cannot be replayed")
-            matching = [key for key, record in principals.items() if record.get("capsule_id") == capsule]
+            matching = [key for key, record in principals.items() if record.get("team_id") == team]
             if any(principals[key].get("status") != "finalized" for key in matching):
-                raise PrincipalError("Capsule already has a live principal lifecycle")
+                raise PrincipalError("Team already has a live principal lifecycle")
             if len(principals) >= MAX_PRINCIPALS:
                 raise PrincipalStoreError("principal registry capacity is exhausted")
-            principals[digest] = {"capsule_id": capsule, "status": "active"}
+            principals[digest] = {"team_id": team, "status": "active"}
             self._write(state)
 
-    def resolve(self, token: object, capsule_id: object, *, allow_retired: bool = False) -> str:
-        capsule = _capsule_id(capsule_id)
+    def resolve(self, token: object, team_id: object, *, allow_retired: bool = False) -> str:
+        team = _team_id(team_id)
         digest = _digest(token)
         with self._lock:
             state = self._read()
@@ -222,16 +222,16 @@ class PrincipalStore:
             if not isinstance(principals, dict):
                 raise PrincipalStoreError("principal registry set is malformed")
             record = principals.get(digest)
-            if not isinstance(record, dict) or record.get("capsule_id") != capsule:
-                raise PrincipalError("unknown principal or Capsule scope mismatch")
+            if not isinstance(record, dict) or record.get("team_id") != team:
+                raise PrincipalError("unknown principal or Team scope mismatch")
             if record.get("status") == "finalized" or (record.get("status") == "retired" and not allow_retired):
-                raise PrincipalError("Capsule principal is retired")
-            return capsule
+                raise PrincipalError("Team principal is retired")
+            return team
 
     @contextlib.contextmanager
-    def authorized(self, token: object, capsule_id: object):
+    def authorized(self, token: object, team_id: object):
         """Hold the lifecycle gate so retire cannot complete while a scoped use starts or runs."""
-        capsule = _capsule_id(capsule_id)
+        team = _team_id(team_id)
         digest = _digest(token)
         with self._lock:
             state = self._read()
@@ -239,12 +239,12 @@ class PrincipalStore:
             if not isinstance(principals, dict):
                 raise PrincipalStoreError("principal registry set is malformed")
             record = principals.get(digest)
-            if not isinstance(record, dict) or record.get("capsule_id") != capsule or record.get("status") != "active":
-                raise PrincipalError("unknown, retired, or Capsule-mismatched principal")
-            yield capsule
+            if not isinstance(record, dict) or record.get("team_id") != team or record.get("status") != "active":
+                raise PrincipalError("unknown, retired, or Team-mismatched principal")
+            yield team
 
-    def retire(self, token: object, capsule_id: object) -> None:
-        capsule = _capsule_id(capsule_id)
+    def retire(self, token: object, team_id: object) -> None:
+        team = _team_id(team_id)
         digest = _digest(token)
         with self._lock:
             state = self._read()
@@ -252,18 +252,18 @@ class PrincipalStore:
             if not isinstance(principals, dict):
                 raise PrincipalStoreError("principal registry set is malformed")
             record = principals.get(digest)
-            if not isinstance(record, dict) or record.get("capsule_id") != capsule:
-                raise PrincipalError("unknown principal or Capsule scope mismatch")
+            if not isinstance(record, dict) or record.get("team_id") != team:
+                raise PrincipalError("unknown principal or Team scope mismatch")
             if record.get("status") == "finalized":
-                raise PrincipalError("Capsule principal lifecycle is finalized")
+                raise PrincipalError("Team principal lifecycle is finalized")
             if record.get("status") == "retired":
                 return
             record["status"] = "retired"
             self._write(state)
 
-    def retire_capsule(self, capsule_id: object) -> None:
-        """Retire the principal by provisioner-authorized Capsule identity, retry-safe."""
-        capsule = _capsule_id(capsule_id)
+    def retire_team(self, team_id: object) -> None:
+        """Retire the principal by provisioner-authorized Team identity, retry-safe."""
+        team = _team_id(team_id)
         with self._lock:
             state = self._read()
             principals = state["principals"]
@@ -272,7 +272,7 @@ class PrincipalStore:
             matching = [
                 record
                 for record in principals.values()
-                if record.get("capsule_id") == capsule and record.get("status") != "finalized"
+                if record.get("team_id") == team and record.get("status") != "finalized"
             ]
             if not matching or all(record.get("status") == "retired" for record in matching):
                 return
@@ -280,22 +280,22 @@ class PrincipalStore:
                 record["status"] = "retired"
             self._write(state)
 
-    def assert_finalizable(self, capsule_id: object) -> None:
+    def assert_finalizable(self, team_id: object) -> None:
         """Reject an active lifecycle without mutating its replay history."""
-        capsule = _capsule_id(capsule_id)
+        team = _team_id(team_id)
         with self._lock:
             state = self._read()
             principals = state["principals"]
             if not isinstance(principals, dict):
                 raise PrincipalStoreError("principal registry set is malformed")
             if any(
-                record.get("capsule_id") == capsule and record.get("status") == "active"
+                record.get("team_id") == team and record.get("status") == "active"
                 for record in principals.values()
             ):
-                raise PrincipalError("Capsule principal is still active")
+                raise PrincipalError("Team principal is still active")
 
-    def finalize(self, capsule_id: object) -> None:
-        capsule = _capsule_id(capsule_id)
+    def finalize(self, team_id: object) -> None:
+        team = _team_id(team_id)
         with self._lock:
             state = self._read()
             principals = state["principals"]
@@ -304,10 +304,10 @@ class PrincipalStore:
             matching = [
                 key
                 for key, record in principals.items()
-                if record.get("capsule_id") == capsule and record.get("status") != "finalized"
+                if record.get("team_id") == team and record.get("status") != "finalized"
             ]
             if any(principals[key].get("status") != "retired" for key in matching):
-                raise PrincipalError("Capsule principal is still active")
+                raise PrincipalError("Team principal is still active")
             if matching:
                 for key in matching:
                     principals[key]["status"] = "finalized"

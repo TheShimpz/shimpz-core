@@ -1,5 +1,5 @@
 #!/opt/venv/bin/python
-"""Tenant-scoped pg-driver: one hashed principal and exact DB set per Capsule."""
+"""Tenant-scoped pg-driver: one hashed principal and exact DB set per Team."""
 
 from __future__ import annotations
 
@@ -32,14 +32,14 @@ class ApiError(Exception):
         self.message = message
 
 
-def _provision_capsule(body: dict) -> dict:
-    capsule_id = validate.validate_capsule_id(body.get("capsule_id"))
+def _provision_team(body: dict) -> dict:
+    team_id = validate.validate_team_id(body.get("team_id"))
     principal_token = validate.validate_principal_token(body.get("principal_token"))
-    project = validate.capsule_project(capsule_id)
+    project = validate.team_project(team_id)
     with pg_client.mutation_lock():
         result = pg_client.create_db_and_role(project)
         try:
-            principal_store.register(capsule_id, principal_token, pg_client.dbname(project))
+            principal_store.register(team_id, principal_token, pg_client.dbname(project))
         except (principal_store.PrincipalError, principal_store.PrincipalStoreError) as registry_error:
             try:
                 pg_client.rollback_provision(project, result)
@@ -54,14 +54,14 @@ def _provision_capsule(body: dict) -> dict:
 
 
 def _create_app(body: dict, token: str) -> dict:
-    capsule_id = validate.validate_capsule_id(body.get("capsule_id"))
+    team_id = validate.validate_team_id(body.get("team_id"))
     app_id = validate.validate_app_id(body.get("app_id"))
-    project = validate.capsule_app_project(capsule_id, app_id)
+    project = validate.team_app_project(team_id, app_id)
     with pg_client.mutation_lock():
-        principal_store.databases(token, capsule_id)
+        principal_store.databases(token, team_id)
         result = pg_client.create_db_and_role(project)
         try:
-            principal_store.add_database(token, capsule_id, pg_client.dbname(project))
+            principal_store.add_database(token, team_id, pg_client.dbname(project))
         except (principal_store.PrincipalError, principal_store.PrincipalStoreError) as registry_error:
             try:
                 pg_client.rollback_provision(project, result)
@@ -76,39 +76,39 @@ def _create_app(body: dict, token: str) -> dict:
 
 
 def _drop_app(body: dict, token: str) -> dict:
-    capsule_id = validate.validate_capsule_id(body.get("capsule_id"))
+    team_id = validate.validate_team_id(body.get("team_id"))
     app_id = validate.validate_app_id(body.get("app_id"))
-    project = validate.capsule_app_project(capsule_id, app_id)
+    project = validate.team_app_project(team_id, app_id)
     database = pg_client.dbname(project)
     with pg_client.mutation_lock():
-        if database not in principal_store.databases(token, capsule_id):
+        if database not in principal_store.databases(token, team_id):
             # A response-lost retry and a declared no-DB App both reach this branch. Succeed only
             # after Postgres itself proves neither exact artifact exists; registry drift fails closed.
             if pg_client.project_resources_exist(project):
                 raise principal_store.PrincipalError("unregistered App database artifacts still exist")
             return {"dropped": database, "already_absent": True}
         result = pg_client.drop_db_and_role(project)
-        principal_store.remove_database(token, capsule_id, database)
+        principal_store.remove_database(token, team_id, database)
         return result
 
 
-def _drop_capsule(body: dict, token: str) -> dict:
-    capsule_id = validate.validate_capsule_id(body.get("capsule_id"))
+def _drop_team(body: dict, token: str) -> dict:
+    team_id = validate.validate_team_id(body.get("team_id"))
     with pg_client.mutation_lock():
-        scoped = principal_store.databases(token, capsule_id, allow_retired=True)
+        scoped = principal_store.databases(token, team_id, allow_retired=True)
         dropped: list[str] = []
-        for database in sorted(scoped, key=lambda value: value.startswith("proj_capsule_")):
+        for database in sorted(scoped, key=lambda value: value.startswith("proj_team_")):
             project = database.removeprefix("proj_")
             pg_client.drop_db_and_role(project)
-            principal_store.remove_database(token, capsule_id, database)
+            principal_store.remove_database(token, team_id, database)
             dropped.append(database)
-        principal_store.retire(token, capsule_id)
+        principal_store.retire(token, team_id)
         return {"dropped": dropped}
 
 
-def _finalize_capsule(body: dict) -> dict:
-    capsule_id = validate.validate_capsule_id(body.get("capsule_id"))
-    principal_store.finalize(capsule_id)
+def _finalize_team(body: dict) -> dict:
+    team_id = validate.validate_team_id(body.get("team_id"))
+    principal_store.finalize(team_id)
     return {"finalized": True}
 
 
@@ -185,29 +185,29 @@ class Handler(BaseHTTPRequestHandler):
         if method != "POST":
             raise ApiError(HTTPStatus.NOT_FOUND, f"no route for {method} {path}")
         body = self._body()
-        if path in {"/v1/capsules/provision", "/v1/capsules/finalize"}:
+        if path in {"/v1/teams/provision", "/v1/teams/finalize"}:
             if not self._is_provisioner():
                 raise ApiError(HTTPStatus.FORBIDDEN, "provisioner bearer required")
-            if path == "/v1/capsules/provision":
-                result = _provision_capsule(body)
-                operation = "capsule.provision"
+            if path == "/v1/teams/provision":
+                result = _provision_team(body)
+                operation = "team.provision"
             else:
-                result = _finalize_capsule(body)
-                operation = "capsule.finalize"
-            trace = audit.log(operation, body.get("capsule_id", "?"), result="ok")
+                result = _finalize_team(body)
+                operation = "team.finalize"
+            trace = audit.log(operation, body.get("team_id", "?"), result="ok")
         else:
             token = self._bearer()
             if not token:
                 raise ApiError(HTTPStatus.FORBIDDEN, "tenant bearer required")
-            if path == "/v1/capsules/apps/create":
+            if path == "/v1/teams/apps/create":
                 result = _create_app(body, token)
-                trace = audit.log("capsule.app.create", body.get("capsule_id", "?"), result="ok")
-            elif path == "/v1/capsules/apps/drop":
+                trace = audit.log("team.app.create", body.get("team_id", "?"), result="ok")
+            elif path == "/v1/teams/apps/drop":
                 result = _drop_app(body, token)
-                trace = audit.log("capsule.app.drop", body.get("capsule_id", "?"), result="ok")
-            elif path == "/v1/capsules/drop":
-                result = _drop_capsule(body, token)
-                trace = audit.log("capsule.drop", body.get("capsule_id", "?"), result="ok")
+                trace = audit.log("team.app.drop", body.get("team_id", "?"), result="ok")
+            elif path == "/v1/teams/drop":
+                result = _drop_team(body, token)
+                trace = audit.log("team.drop", body.get("team_id", "?"), result="ok")
             else:
                 raise ApiError(HTTPStatus.NOT_FOUND, f"no route for {method} {path}")
         self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})

@@ -2,8 +2,8 @@
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/*_TOKEN_* ARGs here hold numeric group IDs and file paths, never secret values
 #
 # pg-driver — the ONLY container that holds SHIMPZ_PG_DSN (the Postgres superuser DSN).
-# Neither the platform Brain nor a Capsule sees it. Capsule-driver provisions a random hashed principal,
-# and each Capsule principal can mutate only its exact registered database set. This sidecar deliberately
+# Neither the platform Brain nor a Team sees it. Team-driver provisions a random hashed principal,
+# and each Team principal can mutate only its exact registered database set. This sidecar deliberately
 # holds no Cloudflare, Redpanda, Docker, or account credential.
 # The only third-party piece is postgresql-client (psql/createdb/dropdb); no Python DB driver is needed.
 # Pinned by digest (not just the `3.14-slim` tag, which can move) — SECURITY_ENGINEERING_PLAN.md
@@ -27,8 +27,8 @@ RUN set -eux; \
     test "$(grep -Fc "https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 2; \
     test "$(grep -Fc "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 1
 
-# Fixed GID for the provisioner-token group. Only capsule-driver joins it; neither the platform
-# brain nor any Capsule can read this control-plane credential.
+# Fixed GID for the provisioner-token group. Only team-driver joins it; neither the platform
+# brain nor any Team can read this control-plane credential.
 ARG SHIMPZ_PGDRIVER_TOKEN_GID=10004
 
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && \

@@ -1,15 +1,15 @@
 #!/usr/local/bin/python3
-"""egress-proxy — the ONLY internet route for platform and Capsule Brains (security-plan items 8/12).
+"""egress-proxy — the ONLY internet route for platform and Team Brains (security-plan items 8/12).
 
-The platform Brain reaches this proxy over its internal `egress_net`. Each Capsule Brain reaches it over
-that Capsule's separate internal Brain-egress network. The proxy is never attached to a Capsule's
+The platform Brain reaches this proxy over its internal `egress_net`. Each Team Brain reaches it over
+that Team's separate internal Brain-egress network. The proxy is never attached to a Team's
 core/App/data plane, so installed Apps cannot bypass their token-scoped app-egress-proxy. The proxy's own
 `egress_out` network is its only internet route; internal datastores remain unreachable, and every outbound
 destination is audited. `SHIMPZ_EGRESS_ALLOW=*` (the default) is BROAD+AUDIT for general-purpose Brains; a
 comma-list is a tight :443 allowlist for a narrow-purpose deployment. See `permitted()`.
 
 Design (deliberately minimal — no bearer, no TLS termination):
-  * network-gated, not token-gated: only Brains share its dedicated egress networks. No Capsule App,
+  * network-gated, not token-gated: only Brains share its dedicated egress networks. No Team App,
     Postgres, or other core/data member is attached. `egress_out` is its own route to the internet.
   * CONNECT-only: a plain-HTTP forward request is refused (405) so `http://` exfil is impossible; the
     tunnel is opaque TLS end-to-end (no CA injection, the proxy never sees plaintext).

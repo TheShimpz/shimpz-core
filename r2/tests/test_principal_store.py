@@ -26,12 +26,12 @@ class PrincipalStoreTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_principal_is_hashed_scoped_and_fail_closed(self) -> None:
-        self.store.provision("capsule_one", self.token)
-        self.assertEqual(self.store.resolve(self.token, "capsule_one"), "capsule_one")
+        self.store.provision("team_one", self.token)
+        self.assertEqual(self.store.resolve(self.token, "team_one"), "team_one")
         with self.assertRaises(PrincipalError):
-            self.store.resolve(self.token, "capsule_two")
+            self.store.resolve(self.token, "team_two")
         with self.assertRaises(PrincipalError):
-            self.store.resolve("2" * 64, "capsule_one")
+            self.store.resolve("2" * 64, "team_one")
 
         serialized = self.state_path.read_text()
         self.assertNotIn(self.token, serialized)
@@ -41,46 +41,46 @@ class PrincipalStoreTests(unittest.TestCase):
 
     def test_retire_finalize_history_blocks_replay_and_allows_only_a_new_token(self) -> None:
         replacement = "2" * 64
-        self.store.provision("capsule_one", self.token)
+        self.store.provision("team_one", self.token)
         with self.assertRaises(PrincipalError):
-            self.store.provision("capsule_one", replacement)
-        self.store.retire(self.token, "capsule_one")
-        self.store.retire(self.token, "capsule_one")
+            self.store.provision("team_one", replacement)
+        self.store.retire(self.token, "team_one")
+        self.store.retire(self.token, "team_one")
         with self.assertRaises(PrincipalError):
-            self.store.resolve(self.token, "capsule_one")
-        self.assertEqual(self.store.resolve(self.token, "capsule_one", allow_retired=True), "capsule_one")
-        self.store.finalize("capsule_one")
-        self.store.finalize("capsule_one")
+            self.store.resolve(self.token, "team_one")
+        self.assertEqual(self.store.resolve(self.token, "team_one", allow_retired=True), "team_one")
+        self.store.finalize("team_one")
+        self.store.finalize("team_one")
         with self.assertRaises(PrincipalError):
-            self.store.provision("capsule_one", self.token)
-        self.store.provision("capsule_one", replacement)
-        self.assertEqual(self.store.resolve(replacement, "capsule_one"), "capsule_one")
-        self.store.retire(replacement, "capsule_one")
-        self.store.finalize("capsule_one")
+            self.store.provision("team_one", self.token)
+        self.store.provision("team_one", replacement)
+        self.assertEqual(self.store.resolve(replacement, "team_one"), "team_one")
+        self.store.retire(replacement, "team_one")
+        self.store.finalize("team_one")
         with self.assertRaises(PrincipalError):
-            self.store.provision("capsule_one", self.token)
+            self.store.provision("team_one", self.token)
         state = json.loads(self.state_path.read_text())["principals"]
         self.assertEqual(len(state), 2)
         self.assertEqual({record["status"] for record in state.values()}, {"finalized"})
 
     def test_finalize_refuses_an_active_principal(self) -> None:
-        self.store.provision("capsule_one", self.token)
+        self.store.provision("team_one", self.token)
         with self.assertRaises(PrincipalError):
-            self.store.finalize("capsule_one")
+            self.store.finalize("team_one")
 
     def test_retire_waits_for_in_flight_authorization_and_closes_the_gate(self) -> None:
-        self.store.provision("capsule_one", self.token)
+        self.store.provision("team_one", self.token)
         entered = threading.Event()
         release = threading.Event()
         retired = threading.Event()
 
         def use_principal() -> None:
-            with self.store.authorized(self.token, "capsule_one"):
+            with self.store.authorized(self.token, "team_one"):
                 entered.set()
                 self.assertTrue(release.wait(1))
 
         def retire_principal() -> None:
-            self.store.retire(self.token, "capsule_one")
+            self.store.retire(self.token, "team_one")
             retired.set()
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -92,7 +92,7 @@ class PrincipalStoreTests(unittest.TestCase):
             use.result()
             retire.result()
 
-        with self.assertRaises(PrincipalError), self.store.authorized(self.token, "capsule_one"):
+        with self.assertRaises(PrincipalError), self.store.authorized(self.token, "team_one"):
             self.fail("retired bearer unexpectedly passed the lifecycle gate")
 
 

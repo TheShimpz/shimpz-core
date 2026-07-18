@@ -13,7 +13,7 @@ import secrets
 
 # Postgres identifier limit is 63 bytes; dbname/role are "proj_" + this, so leave room for the prefix.
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_]{1,58}$")
-CAPSULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 PRINCIPAL_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
 
@@ -41,9 +41,9 @@ def validate_project(name: object) -> str:
     return sanitized
 
 
-def validate_capsule_id(value: object) -> str:
-    if not isinstance(value, str) or not CAPSULE_ID_RE.fullmatch(value):
-        raise ValidationError("capsule_id must match [a-z0-9_]{1,40}")
+def validate_team_id(value: object) -> str:
+    if not isinstance(value, str) or not TEAM_ID_RE.fullmatch(value):
+        raise ValidationError("team_id must match [a-z0-9_]{1,40}")
     return value
 
 
@@ -59,14 +59,14 @@ def validate_principal_token(value: object) -> str:
     return value
 
 
-def capsule_project(capsule_id: str) -> str:
-    return f"capsule_{validate_capsule_id(capsule_id)}"
+def team_project(team_id: str) -> str:
+    return f"team_{validate_team_id(team_id)}"
 
 
-def capsule_app_project(capsule_id: str, app_id: str) -> str:
-    digest = hashlib.sha256(validate_capsule_id(capsule_id).encode()).hexdigest()[:10]
+def team_app_project(team_id: str, app_id: str) -> str:
+    digest = hashlib.sha256(validate_team_id(team_id).encode()).hexdigest()[:10]
     app = validate_app_id(app_id).replace("-", "_")
-    return f"cap_{digest}_{app}"
+    return f"team_{digest}_{app}"
 
 
 def tokens_equal(left: str, right: str) -> bool:

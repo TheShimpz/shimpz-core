@@ -1,4 +1,4 @@
-"""Hashed pg-driver principals scoped to one Capsule and its exact database set."""
+"""Hashed pg-driver principals scoped to one Team and its exact database set."""
 
 from __future__ import annotations
 
@@ -36,9 +36,9 @@ def _read() -> dict[str, dict[str, object]]:
     for digest, record in data.items():
         if not isinstance(digest, str) or not isinstance(record, dict):
             raise PrincipalStoreError("principal registry contains an invalid record")
-        capsule_id = record.get("capsule_id")
+        team_id = record.get("team_id")
         databases = record.get("databases")
-        if not isinstance(capsule_id, str) or not isinstance(databases, list):
+        if not isinstance(team_id, str) or not isinstance(databases, list):
             raise PrincipalStoreError("principal registry contains an invalid record")
         if not all(isinstance(database, str) for database in databases):
             raise PrincipalStoreError("principal registry contains an invalid database set")
@@ -58,37 +58,37 @@ def _write(data: dict[str, dict[str, object]]) -> None:
         raise PrincipalStoreError("principal registry could not be committed") from exc
 
 
-def register(capsule_id: str, token: str, database: str) -> None:
-    """Register or rotate exactly one principal for `capsule_id`; cleartext is never stored."""
+def register(team_id: str, token: str, database: str) -> None:
+    """Register or rotate exactly one principal for `team_id`; cleartext is never stored."""
     with _lock:
         data = _read()
         for digest, record in list(data.items()):
-            if record.get("capsule_id") == capsule_id:
+            if record.get("team_id") == team_id:
                 del data[digest]
-        data[_digest(token)] = {"capsule_id": capsule_id, "databases": [database], "retired": False}
+        data[_digest(token)] = {"team_id": team_id, "databases": [database], "retired": False}
         _write(data)
 
 
-def databases(token: str, capsule_id: str, *, allow_retired: bool = False) -> frozenset[str]:
+def databases(token: str, team_id: str, *, allow_retired: bool = False) -> frozenset[str]:
     with _lock:
         record = _read().get(_digest(token))
-        if record is None or record.get("capsule_id") != capsule_id:
-            raise PrincipalError("unknown principal or capsule scope mismatch")
+        if record is None or record.get("team_id") != team_id:
+            raise PrincipalError("unknown principal or team scope mismatch")
         if record.get("retired", False) and not allow_retired:
-            raise PrincipalError("Capsule principal is retired")
+            raise PrincipalError("Team principal is retired")
         values = record.get("databases")
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise PrincipalError("principal registry contains an invalid database set")
         return frozenset(values)
 
 
-def add_database(token: str, capsule_id: str, database: str) -> None:
+def add_database(token: str, team_id: str, database: str) -> None:
     with _lock:
         data = _read()
         digest = _digest(token)
         record = data.get(digest)
-        if record is None or record.get("capsule_id") != capsule_id or record.get("retired", False):
-            raise PrincipalError("unknown principal or capsule scope mismatch")
+        if record is None or record.get("team_id") != team_id or record.get("retired", False):
+            raise PrincipalError("unknown principal or team scope mismatch")
         values = record.get("databases")
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise PrincipalError("principal registry contains an invalid database set")
@@ -96,13 +96,13 @@ def add_database(token: str, capsule_id: str, database: str) -> None:
         _write(data)
 
 
-def remove_database(token: str, capsule_id: str, database: str) -> None:
+def remove_database(token: str, team_id: str, database: str) -> None:
     with _lock:
         data = _read()
         digest = _digest(token)
         record = data.get(digest)
-        if record is None or record.get("capsule_id") != capsule_id or record.get("retired", False):
-            raise PrincipalError("unknown principal or capsule scope mismatch")
+        if record is None or record.get("team_id") != team_id or record.get("retired", False):
+            raise PrincipalError("unknown principal or team scope mismatch")
         values = record.get("databases")
         if not isinstance(values, list) or database not in values:
             raise PrincipalError("database is outside this principal's scope")
@@ -110,14 +110,14 @@ def remove_database(token: str, capsule_id: str, database: str) -> None:
         _write(data)
 
 
-def retire(token: str, capsule_id: str) -> None:
+def retire(token: str, team_id: str) -> None:
     """Keep an empty, idempotent drop proof until the controller finalizes runtime cleanup."""
     with _lock:
         data = _read()
         digest = _digest(token)
         record = data.get(digest)
-        if record is None or record.get("capsule_id") != capsule_id:
-            raise PrincipalError("unknown principal or capsule scope mismatch")
+        if record is None or record.get("team_id") != team_id:
+            raise PrincipalError("unknown principal or team scope mismatch")
         values = record.get("databases")
         if not isinstance(values, list) or values:
             raise PrincipalError("cannot retire a principal with registered databases")
@@ -125,27 +125,27 @@ def retire(token: str, capsule_id: str) -> None:
         _write(data)
 
 
-def finalize(capsule_id: str) -> None:
-    """Provisioner-authorized, retry-safe removal of this Capsule's retired principal proof."""
+def finalize(team_id: str) -> None:
+    """Provisioner-authorized, retry-safe removal of this Team's retired principal proof."""
     with _lock:
         data = _read()
-        matched = [digest for digest, record in data.items() if record.get("capsule_id") == capsule_id]
+        matched = [digest for digest, record in data.items() if record.get("team_id") == team_id]
         for digest in matched:
             record = data[digest]
             if not record.get("retired", False) or record.get("databases"):
-                raise PrincipalError("Capsule principal is still active")
+                raise PrincipalError("Team principal is still active")
         if matched:
             for digest in matched:
                 del data[digest]
             _write(data)
 
 
-def remove(token: str, capsule_id: str) -> None:
+def remove(token: str, team_id: str) -> None:
     with _lock:
         data = _read()
         digest = _digest(token)
         record = data.get(digest)
-        if record is None or record.get("capsule_id") != capsule_id:
-            raise PrincipalError("unknown principal or capsule scope mismatch")
+        if record is None or record.get("team_id") != team_id:
+            raise PrincipalError("unknown principal or team scope mismatch")
         del data[digest]
         _write(data)
