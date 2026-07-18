@@ -270,6 +270,53 @@ class HostedCredentialLeaseTests(unittest.TestCase):
         self.assertEqual([item[:2] for item in invoked], [("places", "search"), ("weather", "current")])
         self.assertEqual(result, {"capsule": "capsule_1", "team": "Marketing", "reply": "Berlin weather is ready."})
 
+    def test_hosted_approval_error_does_not_expose_the_power_id(self) -> None:
+        private_power_id = "private-campaign-export"
+        request = app.brain_runtime_client.PowerRequest(
+            interrupt_id="approval-1",
+            assistant_id="salesnator",
+            power=private_power_id,
+            input={},
+            approval="each-run",
+        )
+        contract = types.SimpleNamespace(rules="Manage campaigns.", powers={})
+        anchor = types.SimpleNamespace(
+            id="team-container",
+            labels={"capsule.name": "Marketing", "capsule.owner": "account_1"},
+        )
+        store = types.SimpleNamespace(load=lambda _cid: types.SimpleNamespace(provider="openai", model="gpt-test"))
+
+        with (
+            _patched(
+                _active_team_assistants=lambda _cid: (
+                    app._ActiveAssistant("salesnator", contract, types.SimpleNamespace(id="assistant-container")),
+                ),
+                _chat_file_metadata=lambda _cid, _files: [],
+                _inference_store=store,
+                _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                _require_model_credential_current=lambda *_args: None,
+                _brain_runtime=object(),
+            ),
+            mock.patch.object(
+                app.chat_orchestrator,
+                "run",
+                side_effect=app.chat_orchestrator.ApprovalRequiredError(request),
+            ),
+            self.assertRaises(app.ApiError) as caught,
+        ):
+            app._chat_in_turn(
+                "capsule_1",
+                "Export the campaign",
+                [],
+                "turn-token",
+                anchor,
+                "account_1",
+            )
+
+        self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+        self.assertEqual(caught.exception.message, "Assistant Power requires Captain approval")
+        self.assertNotIn(private_power_id, caught.exception.message)
+
 
 class R2BridgeTests(unittest.TestCase):
     def test_driver_operation_rechecks_owner_inside_lock_before_lazy_provision(self) -> None:

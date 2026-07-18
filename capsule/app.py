@@ -1791,7 +1791,7 @@ def _chat_in_turn(
     except chat_orchestrator.ApprovalRequiredError as exc:
         raise ApiError(
             HTTPStatus.CONFLICT,
-            f"Power {exc.request.power!r} requires Captain approval",
+            "Assistant Power requires Captain approval",
         ) from exc
     except chat_orchestrator.ChatOrchestrationError as exc:
         raise ApiError(HTTPStatus.BAD_GATEWAY, "Brain could not complete the Assistant turn") from exc
