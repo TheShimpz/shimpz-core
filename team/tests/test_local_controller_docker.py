@@ -22,6 +22,9 @@ TEAM = Path(__file__).resolve().parents[1]
 FIXTURE = TEAM / "tests" / "fixtures" / "shimpz-assistant"
 REGISTRY_IMAGE = "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 BUILDKIT_IMAGE = "moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a"
+APP_EGRESS_IMAGE = (
+    "ghcr.io/roxygens/shimpz-space@sha256:39c4b3aa5a3112b567935d06da35ac56d233d6706bce05ce818d8374ade750b0"
+)
 MANAGED_LABEL = "com.shimpz.local.managed"
 PROFILE_LABEL = "com.shimpz.local.profile"
 SPACE_LABEL = "com.shimpz.local.space-id"
@@ -200,7 +203,6 @@ class DockerFlowTests(unittest.TestCase):
         egress_proxy = f"shimpz-egress-proxy-{unique}"
         fixture_tag = f"shimpz-assistant-test:{unique}"
         controller_tag = f"shimpz-team-driver-local-test:{unique}"
-        egress_proxy_tag = f"shimpz-app-egress-test:{unique}"
         token_volume = f"shimpz-local-token-{unique}"
         runtime_token_volume = f"shimpz-local-runtime-token-{unique}"
         audit_volume = f"shimpz-local-audit-{unique}"
@@ -257,16 +259,6 @@ class DockerFlowTests(unittest.TestCase):
                 "--tag",
                 fixture_tag,
                 str(FIXTURE),
-            )
-            self._run(
-                "buildx",
-                "build",
-                "--builder",
-                builder,
-                "--load",
-                "--tag",
-                egress_proxy_tag,
-                str(TEAM.parent / "app-egress"),
             )
             fixture_id = self._run("image", "inspect", "--format", "{{.Id}}", fixture_tag).stdout.strip()
 
@@ -327,6 +319,7 @@ class DockerFlowTests(unittest.TestCase):
             self._run("volume", "create", egress_policy_volume)
             self._run("volume", "create", egress_audit_volume)
             self._run("network", "create", outbound_network)
+            self._run("pull", APP_EGRESS_IMAGE)
             self._run(
                 "run",
                 "--detach",
@@ -334,6 +327,10 @@ class DockerFlowTests(unittest.TestCase):
                 egress_proxy,
                 "--network",
                 outbound_network,
+                "--cpuset-cpus",
+                test_cpuset,
+                "--cpus",
+                "1",
                 "--user",
                 "10005:10005",
                 "--group-add",
@@ -363,7 +360,7 @@ class DockerFlowTests(unittest.TestCase):
                 f"com.shimpz.local.space-id={space_id}",
                 "--label",
                 "com.shimpz.local.kind=app-egress-proxy",
-                egress_proxy_tag,
+                APP_EGRESS_IMAGE,
             )
             socket_gid = str(Path("/var/run/docker.sock").stat().st_gid)
             self._run(
@@ -392,6 +389,8 @@ class DockerFlowTests(unittest.TestCase):
                 socket_gid,
                 "--group-add",
                 "10016",
+                "--group-add",
+                "10017",
                 "--volume",
                 "/var/run/docker.sock:/var/run/docker.sock",
                 "--volume",
@@ -549,7 +548,8 @@ class DockerFlowTests(unittest.TestCase):
                 "/v1/teams/demo_team/assistants",
                 {"assistant": "shimpz-assistant"},
             )
-            self.assertEqual((installed_status, installed["installed"]), (200, True))
+            self.assertEqual(installed_status, 200, installed)
+            self.assertTrue(installed["installed"], installed)
             self.assertEqual(self._run("image", "inspect", trusted_ref, check=False).returncode, 0)
 
             assistant_name = self._run(
@@ -858,7 +858,7 @@ class DockerFlowTests(unittest.TestCase):
             )
             if trusted_ref:
                 self._remove("image", "rm", "--force", trusted_ref)
-            self._remove("image", "rm", "--force", fixture_tag, controller_tag, egress_proxy_tag)
+            self._remove("image", "rm", "--force", fixture_tag, controller_tag)
             self._remove("buildx", "rm", "--force", builder)
             self.assertEqual(owned_containers, [])
             self.assertEqual(owned_networks, [])
