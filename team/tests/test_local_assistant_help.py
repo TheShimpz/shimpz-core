@@ -81,8 +81,7 @@ class LocalAssistantHelpTests(unittest.TestCase):
         calls: list[tuple[str, str, str]] = []
         controller = SimpleNamespace(
             assistant_help=lambda team_id, assistant_id, locale: (
-                calls.append((team_id, assistant_id, locale))
-                or {"assistant": assistant_id, "markdown": "# Help"}
+                calls.append((team_id, assistant_id, locale)) or {"assistant": assistant_id, "markdown": "# Help"}
             )
         )
         handler = object.__new__(local_app.Handler)
