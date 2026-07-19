@@ -36,7 +36,7 @@ COPY pyproject.toml uv.lock ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY local_app.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py assistant_genesis.py \
+COPY local_app.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py assistant_genesis.py assistant_manifest.py \
     assistant_contract.py \
     assistant_chat.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py inference_config.py \
     power_journal.py ./
