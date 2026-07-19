@@ -238,9 +238,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             events.append("create")
             return container
 
-        engine = types.SimpleNamespace(
-            containers=types.SimpleNamespace(create=create)
-        )
+        engine = types.SimpleNamespace(containers=types.SimpleNamespace(create=create))
 
         def reject(_spec, _container):
             events.append("admit")
