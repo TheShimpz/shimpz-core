@@ -42,6 +42,7 @@ def context(secret: str) -> brain_runtime_client.RuntimeContext:
             brain_runtime_client.RuntimeAssistant(
                 id="hello-pulse",
                 rules="Return a friendly greeting.",
+                genesis="Combine the declared greeting Powers into one bounded welcome.",
                 powers=(
                     brain_runtime_client.RuntimePower(
                         id="hello",
@@ -93,6 +94,10 @@ class BrainRuntimeClientTests(unittest.TestCase):
         self.assertEqual(payload["provider"]["api_key"], self.secret)
         self.assertEqual(payload["team_name"], "Marketing")
         self.assertEqual(payload["assistants"][0]["id"], "hello-pulse")
+        self.assertEqual(
+            payload["assistants"][0]["genesis"],
+            "Combine the declared greeting Powers into one bounded welcome.",
+        )
         self.assertTrue(connection.closed)
 
     def test_power_suspension_is_parsed_without_gaining_execution_authority(self):

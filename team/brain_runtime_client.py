@@ -38,6 +38,7 @@ class RuntimePower:
 class RuntimeAssistant:
     id: str
     rules: str
+    genesis: str
     powers: tuple[RuntimePower, ...]
 
 
@@ -116,6 +117,7 @@ class BrainRuntimeClient:
                 {
                     "id": assistant.id,
                     "rules": assistant.rules,
+                    "genesis": assistant.genesis,
                     "powers": [
                         {
                             "id": power.id,

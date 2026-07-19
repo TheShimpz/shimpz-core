@@ -14,6 +14,7 @@ def context(*powers: brain_runtime_client.RuntimePower) -> brain_runtime_client.
             brain_runtime_client.RuntimeAssistant(
                 id="hello-pulse",
                 rules="Use only declared Powers.",
+                genesis="Compose the declared greeting Power into one bounded welcome.",
                 powers=powers
                 or (
                     brain_runtime_client.RuntimePower(
@@ -229,8 +230,10 @@ class ChatOrchestratorTests(unittest.TestCase):
             thread_id=base.thread_id,
             team_name=base.team_name,
             assistants=(
-                brain_runtime_client.RuntimeAssistant("places", "Find places.", (shared,)),
-                brain_runtime_client.RuntimeAssistant("weather", "Find weather.", (shared,)),
+                brain_runtime_client.RuntimeAssistant("places", "Find places.", "Resolve places first.", (shared,)),
+                brain_runtime_client.RuntimeAssistant(
+                    "weather", "Find weather.", "Use resolved places for weather.", (shared,)
+                ),
             ),
             provider=base.provider,
             model=base.model,

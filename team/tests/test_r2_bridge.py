@@ -205,6 +205,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
         config = types.SimpleNamespace(provider="openai", model="gpt-test")
         return anchor, _patched(
             _active_team_assistants=lambda _team_id: (assistant,),
+            _require_assistant_genesis=lambda _container: "Use only the declared weather Powers.",
             _chat_file_metadata=lambda _team_id, _files: [],
             _inference_store=types.SimpleNamespace(load=lambda _team_id: config),
             _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
@@ -368,6 +369,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
                         assistant_container,
                     ),
                 ),
+                _require_assistant_genesis=lambda _container: "Use only declared Powers.",
                 _chat_file_metadata=lambda _team_id, _files: [],
                 _inference_store=store,
                 _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
@@ -416,6 +418,10 @@ class HostedCredentialLeaseTests(unittest.TestCase):
 
         def run(_runtime, context, _prompt, validate_power, invoke_power, **hooks):
             self.assertEqual([assistant.id for assistant in context.assistants], ["places", "weather"])
+            self.assertEqual(
+                [assistant.genesis for assistant in context.assistants],
+                ["Compose Powers for places-container.", "Compose Powers for weather-container."],
+            )
             self.assertEqual(context.thread_id, app._brain_thread_id("team_1", ANCHOR_ID))
             self.assertTrue(callable(validate_power))
             requests = (
@@ -453,6 +459,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
                         app._ActiveAssistant("places", place_contract, place_container),
                         app._ActiveAssistant("weather", weather_contract, weather_container),
                     ),
+                    _require_assistant_genesis=lambda container: f"Compose Powers for {container.id}.",
                     _chat_file_metadata=lambda _team_id, _files: [],
                     _inference_store=store,
                     _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
@@ -637,6 +644,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
                 _active_team_assistants=lambda _team_id: (
                     app._ActiveAssistant("salesnator", contract, types.SimpleNamespace(id="assistant-container")),
                 ),
+                _require_assistant_genesis=lambda _container: "Use only campaign Powers.",
                 _chat_file_metadata=lambda _team_id, _files: [],
                 _inference_store=store,
                 _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),

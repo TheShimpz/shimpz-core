@@ -82,6 +82,7 @@ class LocalContractTests(unittest.TestCase):
         controller._active_chat_tokens = {}
         controller._active_power_containers = {}
         controller._cancelled_chat_tokens = set()
+        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
         container = SimpleNamespace(id="assistant-container", status="running", reload=lambda: None)
         network = SimpleNamespace(id="a" * 64, name="team-network")
         controller._network = lambda _team_id: network
@@ -89,8 +90,9 @@ class LocalContractTests(unittest.TestCase):
         controller._assistant_container = lambda _team_id, _assistant: container
         controller._validate_container = lambda *_args: None
         controller._active_chat_assistants = lambda _team_id, _network: (
-            local_app._ActiveAssistant(controller.registry["shimpz-assistant"], container.id),
+            local_app._ActiveAssistant(controller.registry["shimpz-assistant"], container.id, container),
         )
+        controller._active_assistant_genesis = lambda _active: "Use only the declared weather Powers."
         return controller
 
     def _lifecycle_controller(self) -> tuple[local_app.LocalController, SimpleNamespace, list[object]]:
@@ -100,6 +102,7 @@ class LocalContractTests(unittest.TestCase):
         controller.cpuset_cpus = "0"
         controller._locks = tuple(threading.RLock() for _ in range(64))
         controller._blocked_power_workloads = set()
+        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
         spec = SimpleNamespace(
             assistant_id="shimpz-assistant",
             image=CURRENT_ASSISTANT_IMAGE,
@@ -542,6 +545,7 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(runtime.context.api_key, key)
         self.assertEqual(runtime.context.team_name, "Marketing")
         self.assertEqual([assistant.id for assistant in runtime.context.assistants], ["shimpz-assistant"])
+        self.assertEqual(runtime.context.assistants[0].genesis, "Use only the declared weather Powers.")
 
     def test_chat_exposes_every_active_assistant_to_the_team_brain(self) -> None:
         class Runtime:
@@ -581,6 +585,10 @@ class LocalContractTests(unittest.TestCase):
 
         self.assertEqual(
             [assistant.id for assistant in runtime.context.assistants], ["shimpz-assistant", "weather-pulse"]
+        )
+        self.assertEqual(
+            [assistant.genesis for assistant in runtime.context.assistants],
+            ["Use only the declared weather Powers.", "Use only the declared weather Powers."],
         )
         self.assertEqual(
             runtime.context.thread_id,

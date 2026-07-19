@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse
 import accounts_client
 import assistant_chat
 import assistant_contract
+import assistant_genesis
 import audit
 import brain_credentials_client
 import brain_runtime_client
@@ -139,6 +140,7 @@ _storage_instance: team_storage.TeamStorage | None = None
 _power_journal_lock = threading.Lock()
 _power_journal_instance: power_journal.PowerJournal | None = None
 _brain_runtime = brain_runtime_client.BrainRuntimeClient()
+_assistant_genesis_cache = assistant_genesis.GenesisCache()
 
 
 def _validated_team_name(value: object) -> str:
@@ -1192,7 +1194,10 @@ def _teardown_app(
     policy_removed = _remove_egress_policy(team_id, app_id)
     container_removed = container is None
     if container is not None and policy_removed:
+        container_id = getattr(container, "id", None)
         container_removed = _remove_team_container(container)
+        if container_removed:
+            _assistant_genesis_cache.discard(container_id)
     elif container is not None:
         # Preserve the labeled retry anchor, but do not leave tenant code running after a failed removal.
         with contextlib.suppress(ApiError):
@@ -1257,6 +1262,7 @@ def _install_app(
                     HTTPStatus.CONFLICT,
                     f"installed app {app_id!r} is not ready ({status}); uninstall it before reinstalling",
                 )
+            _admit_app_genesis(spec, existing)
             return {"team_id": team_id, "app": app_id, "status": status, "installed": False}
         if len(_team_app_containers(team_id)) >= MAX_APPS_PER_TEAM:
             raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, f"app limit reached for {team_id!r} ({MAX_APPS_PER_TEAM})")
@@ -1315,6 +1321,7 @@ def _install_app(
                         f"app {app_id!r} failed its health probe ({reason}; rolled back)",
                     )
                 _require_team_isolation(container)
+                _admit_app_genesis(spec, container)
                 ready, committed_status = _app_ready_now(container, spec.port, spec.health_path)
                 if not ready:
                     raise ApiError(
@@ -1388,6 +1395,19 @@ class _ActiveAssistant:
     assistant_id: str
     contract: marketplace.AssistantContract
     container: object
+
+
+def _require_assistant_genesis(container) -> str:
+    """Admit only one immutable, bounded Genesis file and hide package details on failure."""
+    try:
+        return _assistant_genesis_cache.get(container)
+    except assistant_genesis.GenesisError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant Genesis failed its contract") from exc
+
+
+def _admit_app_genesis(spec: marketplace.AppSpec, container) -> None:
+    if spec.assistant is not None:
+        _require_assistant_genesis(container)
 
 
 def _power_operation(
@@ -1934,6 +1954,7 @@ def _chat_in_turn(
     team_name = _team_name_from_anchor(container)
     thread_id = _brain_thread_id(team_id, container.id)
     assistants = _select_team_assistants(_active_team_assistants(team_id), assistant_ids)
+    genesis_by_id = {active.assistant_id: _require_assistant_genesis(active.container) for active in assistants}
     files = _chat_file_metadata(team_id, file_ids)
     try:
         config = _inference_store.load(team_id)
@@ -1952,6 +1973,7 @@ def _chat_in_turn(
             brain_runtime_client.RuntimeAssistant(
                 id=active.assistant_id,
                 rules=active.contract.rules,
+                genesis=genesis_by_id[active.assistant_id],
                 powers=tuple(
                     brain_runtime_client.RuntimePower(
                         id=power_id,

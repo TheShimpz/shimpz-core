@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 
 import assistant_chat
 import assistant_contract
+import assistant_genesis
 import brain_runtime_client
 import brain_runtime_token_store
 import chat_orchestrator
@@ -131,6 +132,7 @@ class _UnsupportedAssistantRpcPathError(RuntimeError):
 class _ActiveAssistant:
     spec: AssistantSpec
     container_id: str
+    container: object | None = None
 
 
 def _required_active_assistant(
@@ -453,6 +455,7 @@ class LocalController:
         self.power_state = (
             power_state if power_state is not None else power_journal.PowerJournal(LOCAL_POWER_JOURNAL_PATH)
         )
+        self._assistant_genesis_cache = assistant_genesis.GenesisCache()
         self._blocked_power_workloads: set[str] = set()
         self._locks = tuple(threading.RLock() for _ in range(64))
         self._active_chat_guard = threading.Lock()
@@ -1118,6 +1121,32 @@ class LocalController:
                 )
         return team_name, network_id, assistants, files, config
 
+    def _active_assistant_genesis(self, active: _ActiveAssistant) -> str:
+        container = active.container
+        if container is None:
+            try:
+                container = self.client.containers.get(active.container_id)
+            except DockerException as exc:
+                raise ApiProblem(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "installed Assistant Genesis could not be verified",
+                    code="assistant-genesis-unavailable",
+                ) from exc
+        if getattr(container, "id", None) != active.container_id:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "installed Assistant Genesis failed its identity contract",
+                code="assistant-genesis-drift",
+            )
+        try:
+            return self._assistant_genesis_cache.get(container)
+        except assistant_genesis.GenesisError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "installed Assistant Genesis failed its contract",
+                code="assistant-genesis-invalid",
+            ) from exc
+
     def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_ActiveAssistant, ...]:
         try:
             containers = self.client.containers.list(**self._assistant_filters(team_id))
@@ -1146,7 +1175,7 @@ class LocalController:
                 )
             container.reload()
             if container.status == "running":
-                active.append(_ActiveAssistant(spec=spec, container_id=container.id))
+                active.append(_ActiveAssistant(spec=spec, container_id=container.id, container=container))
         active.sort(key=lambda item: item.spec.assistant_id)
         return tuple(active)
 
@@ -1228,6 +1257,7 @@ class LocalController:
                 provider,
                 assistant_ids,
             )
+            genesis_by_id = {active.spec.assistant_id: self._active_assistant_genesis(active) for active in assistants}
             context = brain_runtime_client.RuntimeContext(
                 thread_id=_brain_thread_id(self.space_id, team_id, network_id),
                 team_name=team_name,
@@ -1235,6 +1265,7 @@ class LocalController:
                     brain_runtime_client.RuntimeAssistant(
                         id=active.spec.assistant_id,
                         rules=active.spec.rules,
+                        genesis=genesis_by_id[active.spec.assistant_id],
                         powers=tuple(
                             brain_runtime_client.RuntimePower(
                                 id=power_id,
@@ -1864,8 +1895,10 @@ class LocalController:
             container.start()
             self._validate_container(container, team_id, spec, network.name)
             self._wait_ready(container, spec)
+            self._active_assistant_genesis(_ActiveAssistant(spec, container.id, container))
         except ApiProblem as exc:
             if container is not None:
+                self._assistant_genesis_cache.discard(container.id)
                 container.remove(force=True)
             if egress_prepared:
                 try:
@@ -1894,6 +1927,7 @@ class LocalController:
         image = self._trusted_image(spec)
         self._validate_container(existing, team_id, spec, network.name)
         try:
+            self._assistant_genesis_cache.discard(existing.id)
             existing.remove(force=True)
         except DockerException as exc:
             raise ApiProblem(
@@ -1907,6 +1941,7 @@ class LocalController:
         image = self._trusted_image(spec)
         self._validate_container_security(existing, team_id, spec, network.name)
         try:
+            self._assistant_genesis_cache.discard(existing.id)
             existing.remove(force=True)
         except DockerException as exc:
             raise ApiProblem(
@@ -1945,6 +1980,8 @@ class LocalController:
                     if not _is_replaceable_readiness_failure(assistant_id, exc):
                         raise
                     self._replace_unready_assistant(team_id, spec, network, existing)
+                else:
+                    self._active_assistant_genesis(_ActiveAssistant(spec, existing.id, existing))
                 return {"assistant": assistant_id, "installed": False}
 
             image = self._trusted_image(spec)
@@ -1971,6 +2008,7 @@ class LocalController:
                     code="docker-remove-failed",
                 ) from exc
             self._blocked_power_workloads.discard(container.id)
+            self._assistant_genesis_cache.discard(container.id)
             if spec.egress:
                 self._release_assistant_egress(team_id, assistant_id, network)
             return {"assistant": assistant_id, "uninstalled": True}
