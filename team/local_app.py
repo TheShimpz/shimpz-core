@@ -1545,7 +1545,7 @@ class LocalController:
         labels.update({ASSISTANT_LABEL: spec.assistant_id, IMAGE_LABEL: spec.image})
         return labels
 
-    def _validate_container_security(
+    def _validate_container_isolation(
         self,
         container,
         team_id: str,
@@ -1610,9 +1610,16 @@ class LocalController:
                 "the installed Assistant failed its isolation profile",
                 code="assistant-isolation-drift",
             )
-        allowed_hosts = self._admit_assistant_allowed_hosts(container, spec)
-        if allowed_hosts:
-            expected_proxy_environment = self._validate_egress_policy(team_id, spec, allowed_hosts)
+        try:
+            reviewed_hosts = assistant_manifest.canonical_allowed_hosts(spec.allowed_hosts)
+        except assistant_manifest.ManifestError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "the reviewed Assistant allowed_hosts contract is invalid",
+                code="assistant-registry-drift",
+            ) from exc
+        if reviewed_hosts:
+            expected_proxy_environment = self._validate_egress_policy(team_id, spec, reviewed_hosts)
             self._validate_egress_proxy_attachment(network_name)
             proxy_environment_valid = all(
                 environment.get(key) == value for key, value in expected_proxy_environment.items()
@@ -1625,6 +1632,17 @@ class LocalController:
                 "the installed Assistant failed its isolation profile",
                 code="assistant-isolation-drift",
             )
+        return config
+
+    def _validate_container_security(
+        self,
+        container,
+        team_id: str,
+        spec: AssistantSpec,
+        network_name: str,
+    ) -> dict:
+        config = self._validate_container_isolation(container, team_id, spec, network_name)
+        self._admit_assistant_allowed_hosts(container, spec)
         return config
 
     @staticmethod
@@ -1645,7 +1663,7 @@ class LocalController:
         self._validate_current_assistant_artifact(config, spec)
 
     def _validate_removable_container(self, container, team_id: str, spec: AssistantSpec, network_name: str) -> None:
-        config = self._validate_container_security(container, team_id, spec, network_name)
+        config = self._validate_container_isolation(container, team_id, spec, network_name)
         if spec.assistant_id not in STATELESS_RECOVERY_ASSISTANTS:
             self._validate_current_assistant_artifact(config, spec)
 
@@ -1867,8 +1885,9 @@ class LocalController:
                     "an installed Assistant is no longer allowlisted",
                     code="assistant-registry-drift",
                 )
-            config = self._validate_container_security(container, team_id, spec, self._network_name(team_id))
+            config = self._validate_container_isolation(container, team_id, spec, self._network_name(team_id))
             if self._has_current_assistant_artifact(config, spec):
+                self._admit_assistant_allowed_hosts(container, spec)
                 status = container.status
             elif assistant_id in STATELESS_RECOVERY_ASSISTANTS:
                 status = "outdated"
@@ -1877,6 +1896,40 @@ class LocalController:
             output.append({"assistant": assistant_id, "status": status})
         output.sort(key=lambda item: item["assistant"])
         return {"assistants": output}
+
+    def _rollback_assistant_install(
+        self,
+        team_id: str,
+        spec: AssistantSpec,
+        network,
+        container,
+        *,
+        egress_prepared: bool,
+    ) -> ApiProblem | None:
+        incomplete = False
+        if container is not None:
+            self._assistant_genesis_cache.discard(container.id)
+            self._assistant_allowed_hosts_cache.discard(container.id)
+            try:
+                container.remove(force=True)
+            except NotFound:
+                pass
+            except DockerException:
+                incomplete = True
+                with suppress(ApiProblem):
+                    self._fail_stop_power(container)
+        if egress_prepared:
+            try:
+                self._release_assistant_egress(team_id, spec.assistant_id, network)
+            except ApiProblem:
+                incomplete = True
+        if incomplete:
+            return ApiProblem(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "Assistant install rollback is incomplete",
+                code="assistant-install-rollback-incomplete",
+            )
+        return None
 
     def _create_assistant_container(self, team_id: str, spec: AssistantSpec, network, image) -> None:
         container = None
@@ -1937,26 +1990,26 @@ class LocalController:
             self._wait_ready(container, spec)
             self._active_assistant_genesis(_ActiveAssistant(spec, container.id, container))
         except ApiProblem as exc:
-            if container is not None:
-                self._assistant_genesis_cache.discard(container.id)
-                self._assistant_allowed_hosts_cache.discard(container.id)
-                container.remove(force=True)
-            if egress_prepared:
-                try:
-                    self._release_assistant_egress(team_id, spec.assistant_id, network)
-                except ApiProblem as cleanup_error:
-                    raise cleanup_error from exc
+            cleanup_error = self._rollback_assistant_install(
+                team_id,
+                spec,
+                network,
+                container,
+                egress_prepared=egress_prepared,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error from exc
             raise
         except DockerException as exc:
-            if container is not None:
-                self._assistant_allowed_hosts_cache.discard(container.id)
-                with suppress(DockerException):
-                    container.remove(force=True)
-            if egress_prepared:
-                try:
-                    self._release_assistant_egress(team_id, spec.assistant_id, network)
-                except ApiProblem as cleanup_error:
-                    raise cleanup_error from exc
+            cleanup_error = self._rollback_assistant_install(
+                team_id,
+                spec,
+                network,
+                container,
+                egress_prepared=egress_prepared,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error from exc
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Docker could not install the Assistant",
@@ -1982,7 +2035,7 @@ class LocalController:
 
     def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network, existing) -> None:
         image = self._trusted_image(spec)
-        self._validate_container_security(existing, team_id, spec, network.name)
+        self._validate_container_isolation(existing, team_id, spec, network.name)
         try:
             self._assistant_genesis_cache.discard(existing.id)
             self._assistant_allowed_hosts_cache.discard(existing.id)
@@ -2002,12 +2055,13 @@ class LocalController:
             network = self._network(team_id)
             existing = self._assistant_container(team_id, assistant_id, required=False)
             if existing is not None:
-                config = self._validate_container_security(existing, team_id, spec, network.name)
+                config = self._validate_container_isolation(existing, team_id, spec, network.name)
                 if not self._has_current_assistant_artifact(config, spec):
                     if assistant_id not in STATELESS_RECOVERY_ASSISTANTS:
                         self._validate_current_assistant_artifact(config, spec)
                     self._replace_outdated_assistant(team_id, spec, network, existing)
                     return {"assistant": assistant_id, "installed": False}
+                self._validate_container_security(existing, team_id, spec, network.name)
                 existing.reload()
                 if existing.status != "running":
                     try:

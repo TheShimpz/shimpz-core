@@ -1190,8 +1190,11 @@ class LocalContractTests(unittest.TestCase):
         self.assertIsInstance(failures[0], local_app.ApiProblem)
         self.assertEqual(failures[0].code, "chat-stopped")
 
-    def test_install_replaces_an_outdated_stateless_assistant_after_resolving_trusted_image(self) -> None:
+    def test_install_replaces_an_outdated_stateless_assistant_with_no_manifest(self) -> None:
         controller, container, events = self._lifecycle_controller()
+        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
+            "an outdated artifact must be replaceable without its new manifest"
+        )
         trusted_image = object()
         controller._trusted_image = lambda _spec: events.append("trusted") or trusted_image
         controller._create_assistant_container = lambda _team_id, _spec, _network, image: events.append(
@@ -1287,8 +1290,69 @@ class LocalContractTests(unittest.TestCase):
         self.assertNotIn("activate-egress", events)
         self.assertEqual(events, ["reload", ("remove", True), "release-egress"])
 
-    def test_uninstall_removes_an_owned_outdated_assistant(self) -> None:
+    def test_failed_install_removal_still_revokes_egress_and_reports_incomplete_rollback(self) -> None:
+        events: list[object] = []
+        controller = object.__new__(local_app.LocalController)
+        controller.space_id = "local-space"
+        controller.cpuset_cpus = "0"
+        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
+        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.AllowedHostsCache()
+        controller._blocked_power_workloads = set()
+        spec = SimpleNamespace(
+            assistant_id="shimpz-assistant",
+            image=CURRENT_ASSISTANT_IMAGE,
+            allowed_hosts=("api.open-meteo.com",),
+        )
+        network = SimpleNamespace(name=controller._network_name("team_1"))
+        image = SimpleNamespace(id="sha256:" + "d" * 64)
+
+        class Container:
+            id = "assistant-generation"
+
+            def __init__(self) -> None:
+                self.attrs = {"Image": image.id, "State": {"Running": False}}
+
+            def reload(self) -> None:
+                events.append("reload")
+
+            def remove(self, *, force: bool) -> None:
+                events.append(("remove", force))
+                raise local_app.DockerException("ambiguous removal")
+
+            def stop(self, *, timeout: int) -> None:
+                events.append(("stop", timeout))
+
+            def kill(self) -> None:
+                self.fail("a proved stopped container must not be killed")
+
+        container = Container()
+        controller.client = SimpleNamespace(containers=SimpleNamespace(create=lambda **_kwargs: container))
+        controller._egress_token = lambda *_args, **_kwargs: "a" * 32
+        controller._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
+            local_app.ApiProblem(
+                HTTPStatus.CONFLICT,
+                "installed Assistant allowed_hosts failed its contract",
+                code="assistant-allowed-hosts-invalid",
+            )
+        )
+        controller._activate_assistant_egress = lambda *_args: events.append("activate-egress")
+        controller._release_assistant_egress = lambda *_args: events.append("release-egress")
+
+        with self.assertRaises(local_app.ApiProblem) as caught:
+            controller._create_assistant_container("team_1", spec, network, image)
+
+        self.assertEqual(caught.exception.code, "assistant-install-rollback-incomplete")
+        self.assertNotIn("activate-egress", events)
+        self.assertEqual(
+            events,
+            ["reload", ("remove", True), ("stop", 3), "reload", "release-egress"],
+        )
+
+    def test_uninstall_removes_an_owned_outdated_assistant_with_no_manifest(self) -> None:
         controller, _container, events = self._lifecycle_controller()
+        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
+            "an outdated artifact must be removable without its new manifest"
+        )
 
         result = controller.uninstall_assistant("team_1", "shimpz-assistant")
 
@@ -1321,11 +1385,15 @@ class LocalContractTests(unittest.TestCase):
 
     def test_list_marks_only_artifact_drift_outdated_and_rejects_security_drift(self) -> None:
         controller, container, events = self._lifecycle_controller()
+        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
+            "an outdated artifact must be inventoried without its new manifest"
+        )
 
         self.assertEqual(
             controller.list_assistants("team_1"),
             {"assistants": [{"assistant": "shimpz-assistant", "status": "outdated"}]},
         )
+        controller._admit_assistant_allowed_hosts = lambda _container, spec: tuple(sorted(spec.allowed_hosts))
         with self.assertRaises(local_app.ApiProblem) as update_required:
             controller._validate_container(
                 container,
@@ -1341,6 +1409,24 @@ class LocalContractTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, "assistant-isolation-drift")
         self.assertEqual(events, ["reload", "reload", "reload"])
+
+    def test_list_keeps_the_new_manifest_contract_strict(self) -> None:
+        controller, container, _events = self._lifecycle_controller()
+        container.labels[local_app.IMAGE_LABEL] = CURRENT_ASSISTANT_IMAGE
+        container.attrs["Config"]["Image"] = CURRENT_ASSISTANT_IMAGE
+
+        def reject(*_args):
+            raise local_app.ApiProblem(
+                HTTPStatus.CONFLICT,
+                "installed Assistant allowed_hosts failed its contract",
+                code="assistant-allowed-hosts-invalid",
+            )
+
+        controller._admit_assistant_allowed_hosts = reject
+        with self.assertRaises(local_app.ApiProblem) as caught:
+            controller.list_assistants("team_1")
+
+        self.assertEqual(caught.exception.code, "assistant-allowed-hosts-invalid")
 
     def test_outdated_artifact_lineage_is_closed_before_lifecycle_actions(self) -> None:
         self.assertTrue(local_registry.is_digest_ref(LEGACY_ASSISTANT_IMAGE))
