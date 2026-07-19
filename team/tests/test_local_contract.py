@@ -1235,8 +1235,8 @@ class LocalContractTests(unittest.TestCase):
             )
         )
         controller._egress_token = lambda *_args, **_kwargs: events.append("token") or "a" * 32
-        controller._admit_assistant_allowed_hosts = lambda _container, _spec: events.append("admit") or tuple(
-            sorted(_spec.allowed_hosts)
+        controller._admit_assistant_allowed_hosts = lambda _container, _spec: (
+            events.append("admit") or tuple(sorted(_spec.allowed_hosts))
         )
         controller._activate_assistant_egress = lambda *_args: events.append("activate-egress")
         controller._validate_container = lambda *_args: events.append("validate")
