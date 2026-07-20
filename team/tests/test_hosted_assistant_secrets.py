@@ -212,6 +212,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
             {
                 "input": {"username": "XDevelopers"},
                 "secrets": {"x-bearer-token": SECRET_VALUES["x-bearer-token"]},
+                "connections": {},
             },
         )
 
@@ -228,6 +229,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
                         "x-access-token-secret",
                     )
                 },
+                "connections": {},
             },
         )
         state = self.secret_store.state_path.read_text(encoding="utf-8")

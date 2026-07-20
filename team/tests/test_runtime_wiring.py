@@ -33,9 +33,9 @@ def _calls(function: ast.FunctionDef) -> set[str]:
 
 
 class RuntimeWiringTests(unittest.TestCase):
-    def test_controller_contains_no_provider_cli_or_oauth_bridge(self) -> None:
+    def test_controller_contains_no_provider_cli_bridge(self) -> None:
         source = APP.read_text(encoding="utf-8").lower()
-        for legacy in ("claude", "codex", "oauth", "shimpz-chat-exec", "shimpz-chat-stop"):
+        for legacy in ("claude", "codex", "shimpz-chat-exec", "shimpz-chat-stop"):
             with self.subTest(legacy=legacy):
                 self.assertNotIn(legacy, source)
 
