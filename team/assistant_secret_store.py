@@ -58,6 +58,7 @@ class SecretMetadata:
     id: str
     configured: bool
     mask: str | None
+    generation: int | None
 
 
 def _canonical_id(value: object, scope: str) -> str:
@@ -409,7 +410,13 @@ class AssistantSecretStore:
                 }
             self._write_state(state)
             return tuple(
-                SecretMetadata(secret_id, True, mask_secret(canonical[secret_id])) for secret_id in sorted(canonical)
+                SecretMetadata(
+                    secret_id,
+                    True,
+                    mask_secret(canonical[secret_id]),
+                    int(records[secret_id]["generation"]),
+                )
+                for secret_id in sorted(canonical)
             )
 
     def resolve_many(self, team_id: object, assistant_id: object, secret_ids: object) -> dict[str, str]:
@@ -457,6 +464,7 @@ class AssistantSecretStore:
                     secret_id,
                     secret_id in records,
                     str(records[secret_id]["mask"]) if secret_id in records else None,
+                    int(records[secret_id]["generation"]) if secret_id in records else None,
                 )
                 for secret_id in declared
             )

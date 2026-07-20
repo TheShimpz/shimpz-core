@@ -30,13 +30,14 @@ class AssistantSecretStoreTests(unittest.TestCase):
             stored = store.put_many("team_1", "x-assistant", {"x-api-key": raw})
 
             self.assertEqual(stored[0].mask, "co…89")
+            self.assertEqual(stored[0].generation, 1)
             self.assertEqual(store.resolve_many("team_1", "x-assistant", ["x-api-key"]), {"x-api-key": raw})
             metadata = store.metadata("team_1", "x-assistant", ["x-api-key", "x-token"])
             self.assertEqual(
-                [(item.id, item.configured, item.mask) for item in metadata],
+                [(item.id, item.configured, item.mask, item.generation) for item in metadata],
                 [
-                    ("x-api-key", True, "co…89"),
-                    ("x-token", False, None),
+                    ("x-api-key", True, "co…89", 1),
+                    ("x-token", False, None, None),
                 ],
             )
             state = (root / "state" / "secrets.json").read_text(encoding="utf-8")
