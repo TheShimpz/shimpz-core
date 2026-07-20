@@ -156,24 +156,41 @@ class LocalAssistantEgressTests(unittest.TestCase):
         self.assertNotIn(self.network.name, self.proxy.attrs["NetworkSettings"]["Networks"])
 
     def test_policy_tampering_fails_closed(self) -> None:
-        environment = self.controller._activate_assistant_egress(
-            "team_1",
-            self.spec,
-            self.network,
-            tuple(sorted(self.spec.allowed_hosts)),
-        )
-        token = environment["HTTPS_PROXY"].split("@", 1)[0].rsplit("/", 1)[-1]
-        policy = self.policy_root / f"{token}.json"
-        policy.write_text('["evil.example"]', encoding="ascii")
+        for drift in ("content", "mode", "hardlink", "oversize"):
+            with self.subTest(drift=drift):
+                environment = self.controller._activate_assistant_egress(
+                    "team_1",
+                    self.spec,
+                    self.network,
+                    tuple(sorted(self.spec.allowed_hosts)),
+                )
+                token = environment["HTTPS_PROXY"].split("@", 1)[0].rsplit("/", 1)[-1]
+                policy = self.policy_root / f"{token}.json"
+                if drift == "content":
+                    policy.write_text('["evil.example"]', encoding="ascii")
+                elif drift == "mode":
+                    policy.chmod(0o660)
+                elif drift == "hardlink":
+                    policy.with_name("policy-hardlink.json").hardlink_to(policy)
+                else:
+                    policy.write_bytes(b"x" * (local_app.MAX_EGRESS_POLICY_BYTES + 1))
 
-        with self.assertRaises(local_app.ApiProblem) as caught:
-            self.controller._validate_egress_policy(
-                "team_1",
-                self.spec,
-                tuple(sorted(self.spec.allowed_hosts)),
-            )
+                with self.assertRaises(local_app.ApiProblem) as caught:
+                    self.controller._validate_egress_policy(
+                        "team_1",
+                        self.spec,
+                        tuple(sorted(self.spec.allowed_hosts)),
+                    )
 
-        self.assertEqual(caught.exception.code, "egress-policy-drift")
+                self.assertEqual(caught.exception.code, "egress-policy-drift")
+
+                if drift == "hardlink":
+                    policy.with_name("policy-hardlink.json").unlink()
+                self.controller._write_egress_policy(
+                    "team_1",
+                    self.spec,
+                    tuple(sorted(self.spec.allowed_hosts)),
+                )
 
 
 if __name__ == "__main__":

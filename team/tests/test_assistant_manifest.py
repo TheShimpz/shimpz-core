@@ -178,26 +178,9 @@ class AssistantManifestTests(unittest.TestCase):
     def test_empty_lists_are_valid_and_security_intent_is_required(self):
         empty = manifest(allowed_hosts=(), secrets={}, powers={"hello": ()})
         self.assertEqual(assistant_manifest.parse_manifest_contract(empty).allowed_hosts, ())
-        self.assertEqual(assistant_manifest.parse_allowed_hosts(empty), ())
         for content in (b'name = "No intent"\n', b"schema_version = 2\nallowed_hosts = 1\n"):
             with self.subTest(content=content), self.assertRaises(assistant_manifest.ManifestError):
                 assistant_manifest.parse_manifest_contract(content)
-
-    def test_reconciliation_reads_only_legacy_network_intent(self):
-        legacy = b"""schema_version = 2
-name = "Legacy Assistant"
-allowed_hosts = ["legacy-api.shimpz.com"]
-[connections.legacy]
-provider = "legacy"
-scopes = ["read"]
-"""
-
-        self.assertEqual(
-            assistant_manifest.read_container_declared_allowed_hosts(Container("legacy", legacy)),
-            ("legacy-api.shimpz.com",),
-        )
-        with self.assertRaises(assistant_manifest.ManifestError):
-            assistant_manifest.read_container_manifest_contract(Container("legacy-strict", legacy))
 
     def test_unsafe_hosts_fail_closed(self):
         unsafe = (

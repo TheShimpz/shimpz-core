@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-import tarfile
 import tempfile
 import threading
 import unittest
@@ -46,7 +45,7 @@ TEST_SECRET_VALUES = {
 TEST_ACCOUNT_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "123456789"))
 TEST_ACCOUNT_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
 CURRENT_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "b" * 64
-LEGACY_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "a" * 64
+OUTDATED_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "a" * 64
 
 
 class LocalContractTests(unittest.TestCase):
@@ -240,7 +239,7 @@ class LocalContractTests(unittest.TestCase):
         network = SimpleNamespace(name=network_name)
         controller._network = lambda _team_id: network
         labels = controller._assistant_labels("team_1", spec)
-        labels[local_app.IMAGE_LABEL] = LEGACY_ASSISTANT_IMAGE
+        labels[local_app.IMAGE_LABEL] = OUTDATED_ASSISTANT_IMAGE
         container = SimpleNamespace(
             id="assistant-container",
             name=controller._container_name("team_1", spec.assistant_id),
@@ -249,7 +248,7 @@ class LocalContractTests(unittest.TestCase):
             attrs={
                 "Config": {
                     "Labels": labels,
-                    "Image": LEGACY_ASSISTANT_IMAGE,
+                    "Image": OUTDATED_ASSISTANT_IMAGE,
                     "User": local_app.ASSISTANT_UID,
                     "Env": [],
                 },
@@ -287,49 +286,6 @@ class LocalContractTests(unittest.TestCase):
         controller._assistant_container = lambda *_args, **_kwargs: container
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_kwargs: [container]))
         return controller, container, events
-
-    def _egress_migration_controller(
-        self,
-        *,
-        old_hosts: tuple[str, ...] = ("old-api.shimpz.com",),
-        new_hosts: tuple[str, ...] = ("new-api.shimpz.com",),
-    ) -> tuple[local_app.LocalController, SimpleNamespace, list[object], Path | None]:
-        controller, container, events = self._lifecycle_controller()
-        spec = controller.registry["shimpz-assistant"]
-        spec.allowed_hosts = new_hosts
-        del controller._read_admitted_egress_policy
-
-        policy_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(policy_directory.cleanup)
-        policy_root = Path(policy_directory.name) / "policy"
-        policy_root.mkdir(mode=0o770)
-        policy_root.chmod(0o770)
-        self.enterContext(mock.patch.object(local_app, "APP_EGRESS_POLICY_DIR", policy_root))
-        self.enterContext(mock.patch.object(local_app, "APP_EGRESS_POLICY_GID", policy_root.stat().st_gid))
-        controller._validate_egress_proxy_attachment = lambda _network_name: None
-
-        policy_path = None
-        if old_hosts:
-            environment = controller._write_egress_policy("team_1", spec, old_hosts)
-            container.attrs["Config"]["Env"] = [f"{key}={value}" for key, value in environment.items()]
-            manifest = (
-                f"schema_version = 2\nallowed_hosts = {json.dumps(list(old_hosts), separators=(',', ':'))}\n"
-            ).encode()
-            archive = BytesIO()
-            with tarfile.open(fileobj=archive, mode="w") as bundle:
-                member = tarfile.TarInfo("shimpz.assistant.toml")
-                member.size = len(manifest)
-                member.mode = 0o444
-                bundle.addfile(member, BytesIO(manifest))
-            payload = archive.getvalue()
-            container.get_archive = lambda _path: (
-                iter((payload,)),
-                {"name": "shimpz.assistant.toml", "size": len(manifest), "mode": 0o444},
-            )
-            token = controller._egress_token("team_1", spec.assistant_id, create=False)
-            self.assertIsNotNone(token)
-            policy_path = policy_root / f"{token}.json"
-        return controller, container, events, policy_path
 
     def test_registry_accepts_only_a_non_placeholder_digest(self) -> None:
         digest = "127.0.0.1:5000/shimpz/shimpz-assistant@sha256:" + "a" * 64
@@ -1599,7 +1555,7 @@ class LocalContractTests(unittest.TestCase):
         controller._lock = lambda _team_id: LifecycleLock()
         controller._network = lambda _team_id, *, required=False: events.append("network-read") or network
         controller._assistant_filters = lambda _team_id: {}
-        controller._validate_removable_container = lambda *_args: events.append("container-validated")
+        controller._validate_container_security = lambda *_args: events.append("container-validated")
         controller.registry = {"shimpz-assistant": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=list_containers))
         controller.brain_runtime = SimpleNamespace(
@@ -1704,7 +1660,7 @@ class LocalContractTests(unittest.TestCase):
         controller._lock = lambda _team_id: threading.RLock()
         controller._network = lambda _team_id, *, required=False: network
         controller._assistant_filters = lambda _team_id: {}
-        controller._validate_removable_container = lambda *_args: None
+        controller._validate_container_security = lambda *_args: None
         controller.registry = {"shimpz-assistant": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_filters: [container]))
 
@@ -1755,7 +1711,7 @@ class LocalContractTests(unittest.TestCase):
         controller._lock = lambda _team_id: threading.RLock()
         controller._network = lambda _team_id, *, required=False: network
         controller._assistant_filters = lambda _team_id: {}
-        controller._validate_removable_container = lambda *_args: None
+        controller._validate_container_security = lambda *_args: None
         controller.registry = {"shimpz-assistant": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_filters: [container]))
         controller.brain_runtime = SimpleNamespace(
@@ -2261,11 +2217,8 @@ class LocalContractTests(unittest.TestCase):
 
         self.assertEqual(events, [])
 
-    def test_install_replaces_an_outdated_stateless_assistant_with_no_manifest(self) -> None:
+    def test_install_replaces_an_outdated_release_after_current_contract_admission(self) -> None:
         controller, container, events = self._lifecycle_controller()
-        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
-            "an outdated artifact must be replaceable without its new manifest"
-        )
         trusted_image = object()
         controller._trusted_image = lambda _spec: events.append("trusted") or trusted_image
         controller._create_assistant_container = lambda _team_id, _spec, _network, image: events.append(
@@ -2276,9 +2229,9 @@ class LocalContractTests(unittest.TestCase):
 
         self.assertEqual(result, {"assistant": "shimpz-assistant", "installed": False})
         self.assertEqual(events, ["reload", "trusted", "reload", ("remove", True), ("create", trusted_image)])
-        self.assertEqual(container.attrs["Config"]["Image"], LEGACY_ASSISTANT_IMAGE)
+        self.assertEqual(container.attrs["Config"]["Image"], OUTDATED_ASSISTANT_IMAGE)
 
-    def test_artifact_reconciliation_is_generic_for_future_assistants(self) -> None:
+    def test_release_update_is_generic_for_future_assistants(self) -> None:
         controller, container, events = self._lifecycle_controller()
         spec = controller.registry.pop("shimpz-assistant")
         spec.assistant_id = "future-assistant"
@@ -2299,124 +2252,16 @@ class LocalContractTests(unittest.TestCase):
         )
         self.assertEqual(events, ["reload", "reload", "trusted", "reload", ("remove", True), "create"])
 
-    def test_inventory_accepts_only_the_old_artifacts_exact_admitted_egress(self) -> None:
-        controller, container, _events, policy_path = self._egress_migration_controller()
-        self.assertIsNotNone(policy_path)
-        original = policy_path.read_bytes()
+    def test_release_update_rejects_a_previous_security_contract(self) -> None:
+        controller, _container, events = self._lifecycle_controller()
+        controller.registry["shimpz-assistant"].allowed_hosts = ("api.example.com",)
+        controller._trusted_image = lambda _spec: self.fail("contract drift reached image resolution")
 
-        self.assertEqual(
-            controller.list_assistants("team_1"),
-            {"assistants": [{"assistant": "shimpz-assistant", "status": "outdated"}]},
-        )
-        self.assertEqual(policy_path.read_bytes(), original)
+        with self.assertRaises(local_app.ApiProblem) as caught:
+            controller.install_assistant("team_1", "shimpz-assistant")
 
-        container.labels[local_app.IMAGE_LABEL] = CURRENT_ASSISTANT_IMAGE
-        container.attrs["Config"]["Image"] = CURRENT_ASSISTANT_IMAGE
-        with self.assertRaises(local_app.ApiProblem) as current_drift:
-            controller.list_assistants("team_1")
-        self.assertEqual(current_drift.exception.code, "egress-policy-drift")
-
-    def test_update_rotates_egress_authority_before_admitting_the_new_hosts(self) -> None:
-        old_hosts = ("old-api.shimpz.com",)
-        new_hosts = ("new-api.shimpz.com",)
-        controller, container, events, old_policy = self._egress_migration_controller(
-            old_hosts=old_hosts,
-            new_hosts=new_hosts,
-        )
-        self.assertIsNotNone(old_policy)
-        old_token = controller._egress_token("team_1", "shimpz-assistant", create=False)
-        self.assertIsNotNone(old_token)
-        live = [container]
-
-        def remove(*, force: bool) -> None:
-            events.append(("remove", force))
-            live.clear()
-
-        def create(_team_id, spec, _network, _image) -> None:
-            events.append("create")
-            controller._write_egress_policy("team_1", spec, spec.allowed_hosts)
-
-        container.remove = remove
-        controller.client.containers.list = lambda **_kwargs: list(live)
-        controller._trusted_image = lambda _spec: events.append("trusted") or object()
-        controller._disconnect_egress_proxy = lambda _network: events.append("disconnect")
-        controller._create_assistant_container = create
-
-        result = controller.install_assistant("team_1", "shimpz-assistant")
-
-        new_token = controller._egress_token("team_1", "shimpz-assistant", create=False)
-        self.assertEqual(result, {"assistant": "shimpz-assistant", "installed": False})
-        self.assertIsNotNone(new_token)
-        self.assertNotEqual(new_token, old_token)
-        self.assertFalse(old_policy.exists())
-        self.assertEqual(
-            (local_app.APP_EGRESS_POLICY_DIR / f"{new_token}.json").read_bytes(),
-            json.dumps(list(new_hosts), separators=(",", ":")).encode("ascii"),
-        )
-        self.assertEqual(events, ["reload", "trusted", "reload", ("remove", True), "disconnect", "create"])
-
-    def test_egress_update_supports_hosts_to_none_and_none_to_hosts(self) -> None:
-        controller, container, events, old_policy = self._egress_migration_controller(
-            old_hosts=("old-api.shimpz.com",),
-            new_hosts=(),
-        )
-        self.assertIsNotNone(old_policy)
-        token_path = controller._egress_token_path("team_1", "shimpz-assistant")
-        live = [container]
-        container.remove = lambda *, force: (events.append(("remove", force)), live.clear())
-        controller.client.containers.list = lambda **_kwargs: list(live)
-        controller._trusted_image = lambda _spec: object()
-        controller._disconnect_egress_proxy = lambda _network: None
-        controller._create_assistant_container = lambda *_args: None
-
-        controller.install_assistant("team_1", "shimpz-assistant")
-
-        self.assertFalse(token_path.exists())
-        self.assertFalse(old_policy.exists())
-
-        controller, container, events, _policy = self._egress_migration_controller(
-            old_hosts=(),
-            new_hosts=("new-api.shimpz.com",),
-        )
-        live = [container]
-        container.remove = lambda *, force: (events.append(("remove", force)), live.clear())
-        controller.client.containers.list = lambda **_kwargs: list(live)
-        controller._trusted_image = lambda _spec: object()
-        controller._create_assistant_container = lambda team_id, spec, _network, _image: (
-            controller._write_egress_policy(
-                team_id,
-                spec,
-                spec.allowed_hosts,
-            )
-        )
-
-        controller.install_assistant("team_1", "shimpz-assistant")
-
-        token = controller._egress_token("team_1", "shimpz-assistant", create=False)
-        self.assertIsNotNone(token)
-        self.assertEqual(
-            (local_app.APP_EGRESS_POLICY_DIR / f"{token}.json").read_bytes(),
-            b'["new-api.shimpz.com"]',
-        )
-
-    def test_outdated_egress_reconciliation_rejects_policy_tampering(self) -> None:
-        for drift in ("content", "mode", "hardlink", "oversize"):
-            with self.subTest(drift=drift):
-                controller, _container, _events, policy_path = self._egress_migration_controller()
-                self.assertIsNotNone(policy_path)
-                if drift == "content":
-                    policy_path.write_bytes(b'["tampered.shimpz.com"]')
-                elif drift == "mode":
-                    policy_path.chmod(0o660)
-                elif drift == "hardlink":
-                    policy_path.with_name("policy-hardlink.json").hardlink_to(policy_path)
-                else:
-                    policy_path.write_bytes(b"x" * (local_app.MAX_EGRESS_POLICY_BYTES + 1))
-
-                with self.assertRaises(local_app.ApiProblem) as caught:
-                    controller.list_assistants("team_1")
-
-                self.assertEqual(caught.exception.code, "egress-policy-drift")
+        self.assertEqual(caught.exception.code, "egress-policy-drift")
+        self.assertEqual(events, ["reload"])
 
     def test_container_profile_rejects_duplicate_or_malformed_environment_entries(self) -> None:
         invalid_environments = (
@@ -2434,39 +2279,6 @@ class LocalContractTests(unittest.TestCase):
 
                 self.assertEqual(caught.exception.code, "assistant-isolation-drift")
                 self.assertEqual(events, ["reload"])
-
-    def test_successful_assistant_update_prunes_secrets_removed_by_the_new_release(self) -> None:
-        controller, _container, _events = self._lifecycle_controller()
-        spec = controller.registry["shimpz-assistant"]
-        spec.secrets = {"kept-secret": SimpleNamespace()}
-        controller.assistant_secrets.put_many(
-            "team_1",
-            "shimpz-assistant",
-            {"kept-secret": "abcdefgh", "removed-secret": "ijklmnop"},
-        )
-        controller.approval_grants.grant_many(
-            (
-                assistant_approval_grants.Grant(
-                    "team_1",
-                    "shimpz-assistant",
-                    "create-post",
-                    CURRENT_ASSISTANT_IMAGE,
-                ),
-            )
-        )
-        controller._trusted_image = lambda _spec: object()
-        controller._create_assistant_container = lambda *_args: None
-
-        controller.install_assistant("team_1", "shimpz-assistant")
-
-        self.assertEqual(
-            controller.assistant_secrets.resolve_many("team_1", "shimpz-assistant", ["kept-secret"]),
-            {"kept-secret": "abcdefgh"},
-        )
-        self.assertFalse(
-            controller.assistant_secrets.metadata("team_1", "shimpz-assistant", ["removed-secret"])[0].configured
-        )
-        self.assertEqual(controller.approval_grants.list_team("team_1"), ())
 
     def test_unready_same_release_recovery_preserves_once_approval(self) -> None:
         controller, container, _events = self._lifecycle_controller()
@@ -2710,11 +2522,8 @@ class LocalContractTests(unittest.TestCase):
             ["reload", ("remove", True), ("stop", 3), "reload", "release-egress"],
         )
 
-    def test_uninstall_removes_an_owned_outdated_assistant_with_no_manifest(self) -> None:
+    def test_uninstall_removes_an_outdated_release_after_current_contract_admission(self) -> None:
         controller, _container, events = self._lifecycle_controller()
-        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
-            "an outdated artifact must be removable without its new manifest"
-        )
 
         result = controller.uninstall_assistant("team_1", "shimpz-assistant")
 
@@ -2747,15 +2556,11 @@ class LocalContractTests(unittest.TestCase):
 
     def test_list_marks_only_artifact_drift_outdated_and_rejects_security_drift(self) -> None:
         controller, container, events = self._lifecycle_controller()
-        controller._admit_assistant_allowed_hosts = lambda *_args: self.fail(
-            "an outdated artifact must be inventoried without its new manifest"
-        )
 
         self.assertEqual(
             controller.list_assistants("team_1"),
             {"assistants": [{"assistant": "shimpz-assistant", "status": "outdated"}]},
         )
-        controller._admit_assistant_allowed_hosts = lambda _container, spec: tuple(sorted(spec.allowed_hosts))
         with self.assertRaises(local_app.ApiProblem) as update_required:
             controller._validate_container(
                 container,
@@ -2790,8 +2595,8 @@ class LocalContractTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, "assistant-manifest-invalid")
 
-    def test_outdated_artifact_lineage_is_closed_before_lifecycle_actions(self) -> None:
-        self.assertTrue(local_registry.is_digest_ref(LEGACY_ASSISTANT_IMAGE))
+    def test_outdated_release_lineage_is_closed_before_lifecycle_actions(self) -> None:
+        self.assertTrue(local_registry.is_digest_ref(OUTDATED_ASSISTANT_IMAGE))
         self.assertFalse(local_registry.is_digest_ref("ghcr.io/roxygens/shimpz-space@sha256:" + "0" * 64))
         self.assertFalse(local_registry.is_digest_ref("ghcr.io/roxygens/shimpz-space:latest"))
 

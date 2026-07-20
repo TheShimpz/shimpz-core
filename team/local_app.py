@@ -932,15 +932,6 @@ class LocalController:
                 code="egress-policy-unavailable",
             ) from exc
 
-    def _remove_installed_egress_policy(
-        self,
-        team_id: str,
-        assistant_id: str,
-        installed_hosts: tuple[str, ...],
-    ) -> None:
-        if installed_hosts:
-            self._remove_egress_policy(team_id, assistant_id)
-
     def _egress_proxy(self):
         if not APP_EGRESS_PROXY_CONTAINER or _CONTAINER_NAME.fullmatch(APP_EGRESS_PROXY_CONTAINER) is None:
             raise ApiProblem(
@@ -1082,13 +1073,13 @@ class LocalController:
                     "an installed Assistant is no longer allowlisted",
                     code="assistant-registry-drift",
                 )
-            _config, installed_hosts = self._validate_reconcilable_container(
+            self._validate_container_security(
                 container,
                 team_id,
                 spec,
                 self._network_name(team_id),
             )
-            if installed_hosts:
+            if spec.allowed_hosts:
                 return True
         return False
 
@@ -1105,6 +1096,15 @@ class LocalController:
             remaining_egress = self._team_has_egress_assistant(team_id)
         if not remaining_egress:
             self._disconnect_egress_proxy(network)
+
+    def _remove_assistant_policy_if_needed(
+        self,
+        team_id: str,
+        assistant_id: str,
+        spec: AssistantSpec,
+    ) -> None:
+        if spec.allowed_hosts:
+            self._remove_egress_policy(team_id, assistant_id)
 
     def _activate_assistant_egress(
         self,
@@ -2855,10 +2855,9 @@ class LocalController:
         spec: AssistantSpec,
         network_name: str,
         environment: dict[str, str],
-        allowed_hosts: tuple[str, ...],
     ) -> tuple[str, ...]:
         try:
-            reviewed_hosts = assistant_manifest.canonical_allowed_hosts(allowed_hosts)
+            reviewed_hosts = assistant_manifest.canonical_allowed_hosts(spec.allowed_hosts)
         except assistant_manifest.ManifestError as exc:
             raise ApiProblem(
                 HTTPStatus.CONFLICT,
@@ -2903,56 +2902,8 @@ class LocalController:
             spec,
             network_name,
             environment,
-            spec.allowed_hosts,
         )
         return config
-
-    def _validate_reconcilable_container(
-        self,
-        container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-    ) -> tuple[dict, tuple[str, ...]]:
-        """Validate current intent or an older controller-admitted egress binding before replacement."""
-        config, environment = self._validate_container_profile(container, team_id, spec, network_name)
-        if self._has_current_assistant_artifact(config, spec):
-            hosts = self._validate_container_egress(
-                team_id,
-                spec,
-                network_name,
-                environment,
-                spec.allowed_hosts,
-            )
-            return config, hosts
-
-        admitted = self._read_admitted_egress_policy(team_id, spec.assistant_id)
-        if admitted is None:
-            hosts: tuple[str, ...] = ()
-        else:
-            _token, hosts = admitted
-            try:
-                declared_hosts = assistant_manifest.read_container_declared_allowed_hosts(container)
-            except assistant_manifest.ManifestError as exc:
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "Assistant egress policy failed its ownership contract",
-                    code="egress-policy-drift",
-                ) from exc
-            if declared_hosts != hosts:
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "Assistant egress policy failed its ownership contract",
-                    code="egress-policy-drift",
-                )
-        hosts = self._validate_container_egress(
-            team_id,
-            spec,
-            network_name,
-            environment,
-            hosts,
-        )
-        return config, hosts
 
     def _validate_container_security(
         self,
@@ -2981,16 +2932,6 @@ class LocalController:
     def _validate_container(self, container, team_id: str, spec: AssistantSpec, network_name: str) -> None:
         config = self._validate_container_security(container, team_id, spec, network_name)
         self._validate_current_assistant_artifact(config, spec)
-
-    def _validate_removable_container(
-        self,
-        container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-    ) -> tuple[str, ...]:
-        _config, hosts = self._validate_reconcilable_container(container, team_id, spec, network_name)
-        return hosts
 
     @staticmethod
     def _close_exec_stream(stream) -> None:
@@ -3215,7 +3156,7 @@ class LocalController:
                     "an installed Assistant is no longer allowlisted",
                     code="assistant-registry-drift",
                 )
-            config, _hosts = self._validate_reconcilable_container(
+            config = self._validate_container_security(
                 container,
                 team_id,
                 spec,
@@ -3368,7 +3309,7 @@ class LocalController:
 
     def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network, existing) -> None:
         image = self._trusted_image(spec)
-        config, previous_hosts = self._validate_reconcilable_container(existing, team_id, spec, network.name)
+        config = self._validate_container_security(existing, team_id, spec, network.name)
         if self._has_current_assistant_artifact(config, spec):
             raise ApiProblem(
                 HTTPStatus.CONFLICT,
@@ -3376,7 +3317,7 @@ class LocalController:
                 code="assistant-update-conflict",
             )
         remaining_egress = (
-            self._team_has_egress_assistant(team_id, excluding=spec.assistant_id) if previous_hosts else None
+            self._team_has_egress_assistant(team_id, excluding=spec.assistant_id) if spec.allowed_hosts else None
         )
         try:
             self._assistant_genesis_cache.discard(existing.id)
@@ -3389,7 +3330,7 @@ class LocalController:
                 code="docker-remove-failed",
             ) from exc
         self._revoke_assistant_approval_grants(team_id, spec.assistant_id)
-        if previous_hosts:
+        if spec.allowed_hosts:
             self._release_assistant_egress(
                 team_id,
                 spec.assistant_id,
@@ -3397,10 +3338,6 @@ class LocalController:
                 remaining_egress=remaining_egress,
             )
         self._create_assistant_container(team_id, spec, network, image)
-        try:
-            self.assistant_secrets.retain_declared(team_id, spec.assistant_id, tuple(spec.secrets))
-        except assistant_secret_store.AssistantSecretError as exc:
-            self._raise_secret_problem(exc)
 
     @_serialize_against_local_team_chat
     def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object]:
@@ -3410,7 +3347,7 @@ class LocalController:
             network = self._network(team_id)
             existing = self._assistant_container(team_id, assistant_id, required=False)
             if existing is not None:
-                config, _hosts = self._validate_reconcilable_container(existing, team_id, spec, network.name)
+                config = self._validate_container_security(existing, team_id, spec, network.name)
                 if not self._has_current_assistant_artifact(config, spec):
                     self._replace_outdated_assistant(team_id, spec, network, existing)
                     return {"assistant": assistant_id, "installed": False}
@@ -3461,9 +3398,9 @@ class LocalController:
                     )
                 self._delete_assistant_secret_state(team_id, assistant_id)
                 return {"assistant": assistant_id, "uninstalled": False}
-            installed_hosts = self._validate_removable_container(container, team_id, spec, network.name)
+            self._validate_container_security(container, team_id, spec, network.name)
             remaining_egress = (
-                self._team_has_egress_assistant(team_id, excluding=assistant_id) if installed_hosts else None
+                self._team_has_egress_assistant(team_id, excluding=assistant_id) if spec.allowed_hosts else None
             )
             try:
                 container.remove(force=True)
@@ -3476,7 +3413,7 @@ class LocalController:
             self._blocked_power_workloads.discard(container.id)
             self._assistant_genesis_cache.discard(container.id)
             self._assistant_allowed_hosts_cache.discard(container.id)
-            if installed_hosts:
+            if spec.allowed_hosts:
                 self._release_assistant_egress(
                     team_id,
                     assistant_id,
@@ -3665,7 +3602,6 @@ class LocalController:
                         code="docker-unavailable",
                     ) from exc
 
-                installed_hosts: dict[str, tuple[str, ...]] = {}
                 for container in containers:
                     assistant_id = container.labels.get(ASSISTANT_LABEL)
                     spec = self.registry.get(assistant_id)
@@ -3675,7 +3611,7 @@ class LocalController:
                             "Team resources failed their ownership contract",
                             code="ownership-conflict",
                         )
-                    installed_hosts[container.id] = self._validate_removable_container(
+                    self._validate_container_security(
                         container,
                         team_id,
                         spec,
@@ -3697,6 +3633,7 @@ class LocalController:
                 removed = 0
                 for container in containers:
                     assistant_id = container.labels[ASSISTANT_LABEL]
+                    spec = self.registry[assistant_id]
                     try:
                         container.remove(force=True)
                     except DockerException as exc:
@@ -3706,11 +3643,7 @@ class LocalController:
                             code="docker-remove-failed",
                         ) from exc
                     self._blocked_power_workloads.discard(container.id)
-                    self._remove_installed_egress_policy(
-                        team_id,
-                        assistant_id,
-                        installed_hosts[container.id],
-                    )
+                    self._remove_assistant_policy_if_needed(team_id, assistant_id, spec)
                     removed += 1
 
                 if network is None:
