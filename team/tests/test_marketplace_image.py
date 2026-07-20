@@ -75,7 +75,10 @@ class MarketplaceImageTests(unittest.TestCase):
             {"org.shimpz.assistant.id": "shimpz-assistant", "org.shimpz.assistant.api": "1"},
         )
         self.assertIsNotNone(spec.assistant)
-        self.assertEqual(set(spec.assistant.powers), {"public-user-lookup", "identity-me", "create-post", "delete-post"})
+        self.assertEqual(
+            set(spec.assistant.powers),
+            {"public-user-lookup", "identity-me", "create-post", "delete-post"},
+        )
         self.assertEqual(spec.assistant.powers["identity-me"].path, "/v1/powers/identity-me")
         self.assertEqual(len(spec.assistant.secrets), 5)
 
