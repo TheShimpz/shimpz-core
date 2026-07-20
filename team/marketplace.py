@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import assistant_contract
@@ -40,6 +40,7 @@ class PowerSpec:
     output_schema: Mapping[str, Any]
     approval: Literal["none", "once", "each-run"] = "none"
     secrets: tuple[str, ...] = ()
+    connections: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,10 +50,17 @@ class SecretSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectionSpec:
+    provider: str
+    scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantContract:
     rpc_command: str
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
+    connections: dict[str, ConnectionSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -100,6 +108,10 @@ APPS: dict[str, AppSpec] = {
             secrets={
                 secret_id: SecretSpec(**contract)
                 for secret_id, contract in assistant_contract.secret_contracts().items()
+            },
+            connections={
+                connection_id: ConnectionSpec(**contract)
+                for connection_id, contract in assistant_contract.connection_contracts().items()
             },
         ),
     ),

@@ -80,7 +80,15 @@ class MarketplaceImageTests(unittest.TestCase):
             {"public-user-lookup", "identity-me", "create-post", "delete-post"},
         )
         self.assertEqual(spec.assistant.powers["identity-me"].path, "/v1/powers/identity-me")
-        self.assertEqual(len(spec.assistant.secrets), 5)
+        self.assertEqual(spec.assistant.secrets, {})
+        self.assertEqual(spec.assistant.connections["x"].provider, "x")
+        self.assertEqual(
+            spec.assistant.connections["x"].scopes,
+            ("offline.access", "tweet.read", "tweet.write", "users.read"),
+        )
+        for power in spec.assistant.powers.values():
+            self.assertEqual(power.secrets, ())
+            self.assertEqual(power.connections, ("x",))
 
     def test_x_powers_expose_closed_runtime_schemas_and_explicit_approval(self) -> None:
         powers = marketplace.APPS["shimpz-assistant"].assistant.powers

@@ -2,7 +2,7 @@
 
 The hosted and single-owner controllers deliberately share this module so the
 Brain never sees a Power that one runtime validates differently from the other.
-Secret declarations are public metadata; values remain Controller-owned.
+Connection declarations are public metadata; tokens remain Controller-owned.
 """
 
 from __future__ import annotations
@@ -22,28 +22,17 @@ _SNOWFLAKE = re.compile(r"[0-9]{1,19}")
 
 
 def secret_contracts() -> dict[str, dict[str, str]]:
-    """Return fresh public metadata; no secret value or transport hint lives here."""
+    """Return the empty legacy-secret contract for the OAuth-connected X Assistant."""
+    return {}
+
+
+def connection_contracts() -> dict[str, dict[str, object]]:
+    """Return fresh public OAuth intent; endpoints and credentials stay Controller-owned."""
     return {
-        "x-bearer-token": {
-            "name": "X Bearer Token",
-            "summary": "App-only token used exclusively for public X profile reads.",
-        },
-        "x-api-key": {
-            "name": "X API Key",
-            "summary": "OAuth 1.0a consumer key identifying the connected X application.",
-        },
-        "x-api-key-secret": {
-            "name": "X API Key Secret",
-            "summary": "OAuth 1.0a consumer secret used to sign account requests.",
-        },
-        "x-access-token": {
-            "name": "X Access Token",
-            "summary": "OAuth 1.0a token identifying the connected X account.",
-        },
-        "x-access-token-secret": {
-            "name": "X Access Token Secret",
-            "summary": "OAuth 1.0a token secret used to sign account requests.",
-        },
+        "x": {
+            "provider": "x",
+            "scopes": ("offline.access", "tweet.read", "tweet.write", "users.read"),
+        }
     }
 
 
@@ -62,7 +51,6 @@ def _user_schema() -> dict[str, object]:
 
 def power_contracts() -> dict[str, dict[str, Any]]:
     """Return fresh closed schemas so callers cannot mutate another registry."""
-    oauth = ("x-api-key", "x-api-key-secret", "x-access-token", "x-access-token-secret")
     return {
         "public-user-lookup": {
             "method": "POST",
@@ -76,7 +64,8 @@ def power_contracts() -> dict[str, dict[str, Any]]:
             },
             "output_schema": _user_schema(),
             "approval": "none",
-            "secrets": ("x-bearer-token",),
+            "secrets": (),
+            "connections": ("x",),
         },
         "identity-me": {
             "method": "POST",
@@ -85,7 +74,8 @@ def power_contracts() -> dict[str, dict[str, Any]]:
             "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
             "output_schema": _user_schema(),
             "approval": "none",
-            "secrets": oauth,
+            "secrets": (),
+            "connections": ("x",),
         },
         "create-post": {
             "method": "POST",
@@ -107,7 +97,8 @@ def power_contracts() -> dict[str, dict[str, Any]]:
                 "additionalProperties": False,
             },
             "approval": "each-run",
-            "secrets": oauth,
+            "secrets": (),
+            "connections": ("x",),
         },
         "delete-post": {
             "method": "POST",
@@ -126,7 +117,8 @@ def power_contracts() -> dict[str, dict[str, Any]]:
                 "additionalProperties": False,
             },
             "approval": "each-run",
-            "secrets": oauth,
+            "secrets": (),
+            "connections": ("x",),
         },
     }
 

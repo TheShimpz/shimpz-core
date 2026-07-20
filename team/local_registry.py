@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -35,12 +35,19 @@ class PowerSpec:
     output_schema: dict[str, object]
     approval: Literal["none", "once", "each-run"]
     secrets: tuple[str, ...]
+    connections: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class SecretSpec:
     name: str
     summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionSpec:
+    provider: str
+    scopes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +61,7 @@ class AssistantSpec:
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
     allowed_hosts: tuple[str, ...]
+    connections: dict[str, ConnectionSpec] = field(default_factory=dict)
 
 
 def is_digest_ref(value: object) -> bool:
@@ -97,6 +105,10 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
             secret_id: SecretSpec(**contract) for secret_id, contract in assistant_contract.secret_contracts().items()
         },
         allowed_hosts=assistant_contract.ASSISTANT_ALLOWED_HOSTS,
+        connections={
+            connection_id: ConnectionSpec(**contract)
+            for connection_id, contract in assistant_contract.connection_contracts().items()
+        },
     )
     return {shimpz_assistant.assistant_id: shimpz_assistant}
 

@@ -15,15 +15,22 @@ class AssistantContractTests(unittest.TestCase):
         )
         powers = assistant_contract.power_contracts()
         self.assertEqual(set(powers), {"public-user-lookup", "identity-me", "create-post", "delete-post"})
+        self.assertEqual(assistant_contract.secret_contracts(), {})
         self.assertEqual(
-            set(assistant_contract.secret_contracts()),
-            {"x-bearer-token", "x-api-key", "x-api-key-secret", "x-access-token", "x-access-token-secret"},
+            assistant_contract.connection_contracts(),
+            {
+                "x": {
+                    "provider": "x",
+                    "scopes": ("offline.access", "tweet.read", "tweet.write", "users.read"),
+                }
+            },
         )
         for power_id, power in powers.items():
             self.assertEqual(power["approval"], "each-run" if power_id in {"create-post", "delete-post"} else "none")
             self.assertFalse(power["input_schema"]["additionalProperties"])
             self.assertFalse(power["output_schema"]["additionalProperties"])
-            self.assertTrue(power["secrets"])
+            self.assertEqual(power["secrets"], ())
+            self.assertEqual(power["connections"], ("x",))
 
     def test_each_power_normalizes_only_its_declared_input(self) -> None:
         self.assertEqual(
