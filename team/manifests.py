@@ -280,7 +280,7 @@ def build_team_app_kwargs(
     never count against the team quota or appear in the team list.
     """
     env = {
-        # The contract: the app answers HTTP on $PORT on its own interface (see sdk packaging docs).
+        # The contract: the app answers HTTP on $PORT on its own interface.
         "PORT": str(spec.port),
         "HOST": CONTAINER_ALL_INTERFACES,
         "SHIMPZ_TEAM_ID": team_id,

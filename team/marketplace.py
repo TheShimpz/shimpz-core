@@ -4,7 +4,7 @@ The store forwards ONLY an app id; this table (baked into the socket-holding dri
 caller-suppliable) decides what image actually runs, on which port, and with which needs. An app id
 missing here is not installable — the storefront catalog may advertise more than the Space can deploy,
 never the reverse. Every image is a reviewed pinned tag or digest: an artifact change is a code change
-here, rebuilt like any other. Packaging contract: sdk/docs/build-a-shimpz-app.md ("Package for the marketplace").
+here, rebuilt like any other. Packaging follows the reviewed Assistant manifest contract.
 """
 
 from __future__ import annotations
