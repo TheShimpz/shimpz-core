@@ -162,9 +162,7 @@ class OAuthPKCEChallengeStore:
         return challenge
 
     def _expire(self, now: float) -> None:
-        for state in tuple(
-            state for state, challenge in self._pending.items() if challenge.expires_at <= now
-        ):
+        for state in tuple(state for state, challenge in self._pending.items() if challenge.expires_at <= now):
             self._remove(state)
 
     def create(
@@ -186,9 +184,7 @@ class OAuthPKCEChallengeStore:
                 raise OAuthChallengeError("OAuth connection already has a pending challenge")
             if len(self._pending) >= self._capacity:
                 raise OAuthChallengeError("OAuth challenge capacity reached")
-            session_count = sum(
-                hmac.compare_digest(item.session_digest, binding[0]) for item in self._pending.values()
-            )
+            session_count = sum(hmac.compare_digest(item.session_digest, binding[0]) for item in self._pending.values())
             team_count = sum(item.team_id == binding[1] for item in self._pending.values())
             if session_count >= self._per_session:
                 raise OAuthChallengeError("OAuth session challenge capacity reached")
@@ -302,9 +298,7 @@ class OAuthPKCEChallengeStore:
     def cancel_team(self, team_id: object) -> int:
         team = _team_id(team_id)
         with self._lock:
-            states = tuple(
-                state for state, challenge in self._pending.items() if challenge.team_id == team
-            )
+            states = tuple(state for state, challenge in self._pending.items() if challenge.team_id == team)
             for state in states:
                 self._remove(state)
             return len(states)

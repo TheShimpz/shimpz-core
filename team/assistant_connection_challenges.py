@@ -78,9 +78,7 @@ class ConnectionChallengeStore:
 
     def _expire(self, now: float) -> None:
         for identifier in tuple(
-            identifier
-            for identifier, challenge in self._pending.items()
-            if challenge.expires_at <= now
+            identifier for identifier, challenge in self._pending.items() if challenge.expires_at <= now
         ):
             challenge = self._pending.pop(identifier)
             if self._by_team.get(challenge.team_id) == identifier:

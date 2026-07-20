@@ -130,9 +130,7 @@ def _token(value: object) -> str:
         encoded = value.encode("ascii")
     except UnicodeError as exc:
         raise OAuthHTTPError("OAuth provider response is invalid") from exc
-    if not 16 <= len(encoded) <= MAX_TOKEN_BYTES or any(
-        byte <= 32 or byte >= 127 for byte in encoded
-    ):
+    if not 16 <= len(encoded) <= MAX_TOKEN_BYTES or any(byte <= 32 or byte >= 127 for byte in encoded):
         raise OAuthHTTPError("OAuth provider response is invalid")
     return value
 

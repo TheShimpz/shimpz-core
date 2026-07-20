@@ -54,9 +54,7 @@ class ApprovalGrantStoreTests(unittest.TestCase):
             path = Path(directory) / "grants.sqlite3"
             store = assistant_approval_grants.ApprovalGrantStore(path, max_grants=1)
             self.addCleanup(store.close)
-            store.grant_many(
-                (assistant_approval_grants.Grant("team_1", "first-assistant", "create-post", IMAGE_V1),)
-            )
+            store.grant_many((assistant_approval_grants.Grant("team_1", "first-assistant", "create-post", IMAGE_V1),))
             with self.assertRaises(assistant_approval_grants.ApprovalGrantError):
                 store.grant_many(
                     (assistant_approval_grants.Grant("team_1", "second-assistant", "create-post", IMAGE_V1),)

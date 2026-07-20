@@ -149,11 +149,16 @@ class ApprovalGrantStore:
         application_id = self._connection.execute("PRAGMA application_id").fetchone()[0]
         version = self._connection.execute("PRAGMA user_version").fetchone()[0]
         columns = tuple(row[1] for row in self._connection.execute("PRAGMA table_info(grants)"))
-        if application_id != APPLICATION_ID or version != SCHEMA_VERSION or columns != (
-            "team_id",
-            "assistant_id",
-            "power_id",
-            "image",
+        if (
+            application_id != APPLICATION_ID
+            or version != SCHEMA_VERSION
+            or columns
+            != (
+                "team_id",
+                "assistant_id",
+                "power_id",
+                "image",
+            )
         ):
             raise ApprovalGrantError("approval grant schema is invalid")
 

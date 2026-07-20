@@ -226,12 +226,9 @@ def _metadata_for(
             or expected_id != connection_id
         ):
             raise ConnectionFlowError("Assistant connection inventory is invalid")
-        if (
-            (status == "missing" and (item.account is not None or item.expires_at is not None or generation != 0))
-            or (
-                status != "missing"
-                and (type(item.expires_at) is not int or not 1 <= item.expires_at <= 2**53 - 1 or generation < 1)
-            )
+        if (status == "missing" and (item.account is not None or item.expires_at is not None or generation != 0)) or (
+            status != "missing"
+            and (type(item.expires_at) is not int or not 1 <= item.expires_at <= 2**53 - 1 or generation < 1)
         ):
             raise ConnectionFlowError("Assistant connection inventory is invalid")
         indexed[connection_id] = item

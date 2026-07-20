@@ -70,9 +70,7 @@ class AssistantConnectionChallengeTests(unittest.TestCase):
 
     def test_empty_requirements_and_invalid_limits_are_rejected(self) -> None:
         with self.assertRaises(assistant_connection_challenges.ConnectionChallengeError):
-            assistant_connection_challenges.ConnectionChallengeStore().create(
-                "team_1", (), object()
-            )
+            assistant_connection_challenges.ConnectionChallengeStore().create("team_1", (), object())
         for options in (
             {"capacity": 0},
             {"capacity": True},

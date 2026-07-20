@@ -107,9 +107,7 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             controller=SimpleNamespace(list_assistant_connections=lambda team_id: expected)
         )
 
-        route = handler._assistant_connection_route(
-            ["v1", "teams", "team_1", "assistant-connections"]
-        )
+        route = handler._assistant_connection_route(["v1", "teams", "team_1", "assistant-connections"])
 
         self.assertEqual(
             route,

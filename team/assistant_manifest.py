@@ -239,9 +239,7 @@ def canonical_manifest_contract(
 ) -> ManifestContract:
     """Build one deterministic contract for package and reviewed registry comparison."""
     secrets = canonical_secret_declarations(secret_declarations)
-    connections = canonical_connection_declarations(
-        {} if connection_declarations is None else connection_declarations
-    )
+    connections = canonical_connection_declarations({} if connection_declarations is None else connection_declarations)
     connection_refs = (
         dict.fromkeys(power_secret_refs, ())
         if power_connection_refs is None and isinstance(power_secret_refs, Mapping)
@@ -276,9 +274,7 @@ def reviewed_manifest_contract(
             connection_id: (metadata.provider, metadata.scopes)
             for connection_id, metadata in ({} if connections is None else connections).items()
         }
-        power_connection_refs = {
-            power_id: getattr(power, "connections", ()) for power_id, power in powers.items()
-        }
+        power_connection_refs = {power_id: getattr(power, "connections", ()) for power_id, power in powers.items()}
     except AttributeError as exc:
         raise ManifestError("Assistant reviewed manifest contract is invalid") from exc
     return canonical_manifest_contract(
