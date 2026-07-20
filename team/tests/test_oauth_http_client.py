@@ -153,9 +153,10 @@ class OAuthHTTPClientTests(unittest.TestCase):
         )
         for provider_response in bad_responses:
             transport = FakeTransport([provider_response])
-            with self.subTest(body=provider_response.body), self.assertRaises(
-                oauth_http_client.OAuthHTTPError
-            ) as caught:
+            with (
+                self.subTest(body=provider_response.body),
+                self.assertRaises(oauth_http_client.OAuthHTTPError) as caught,
+            ):
                 oauth_http_client.OAuthHTTPClient(transport).exchange_code(
                     provider_id="x",
                     client_id=CLIENT_ID,
@@ -187,9 +188,7 @@ class OAuthHTTPClientTests(unittest.TestCase):
                 scopes=SCOPES,
             )
         for invalid_client in ("short", "secret value", "x" * 257):
-            with self.subTest(client=invalid_client), self.assertRaises(
-                oauth_http_client.OAuthHTTPError
-            ):
+            with self.subTest(client=invalid_client), self.assertRaises(oauth_http_client.OAuthHTTPError):
                 oauth_http_client.authorization_url(
                     provider_id="x",
                     client_id=invalid_client,

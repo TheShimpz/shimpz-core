@@ -44,8 +44,9 @@ class OAuthProviderTests(unittest.TestCase):
             ("x", tuple("scope" for _ in range(oauth_providers.MAX_REQUESTED_SCOPES + 1))),
         )
         for provider_id, scopes in invalid:
-            with self.subTest(provider=provider_id, scopes=scopes), self.assertRaises(
-                oauth_providers.OAuthProviderError
+            with (
+                self.subTest(provider=provider_id, scopes=scopes),
+                self.assertRaises(oauth_providers.OAuthProviderError),
             ):
                 oauth_providers.connection_intent(provider_id, scopes)
 

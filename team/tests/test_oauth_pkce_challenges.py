@@ -51,8 +51,9 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 "connection_id": "x",
             }
             binding.update(mismatched)
-            with self.subTest(mismatched=mismatched), self.assertRaises(
-                oauth_pkce_challenges.OAuthChallengeNotFoundError
+            with (
+                self.subTest(mismatched=mismatched),
+                self.assertRaises(oauth_pkce_challenges.OAuthChallengeNotFoundError),
             ):
                 store.claim(state=challenge.state, **binding)
 
@@ -63,9 +64,11 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
             assistant_id="shimpz-assistant",
             connection_id="x",
         )
-        expected = base64.urlsafe_b64encode(
-            hashlib.sha256(exchange.code_verifier.encode("ascii")).digest()
-        ).rstrip(b"=").decode("ascii")
+        expected = (
+            base64.urlsafe_b64encode(hashlib.sha256(exchange.code_verifier.encode("ascii")).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
         self.assertEqual(expected, challenge.code_challenge)
         self.assertEqual(exchange.provider_id, "x")
         self.assertEqual(exchange.scopes, tuple(sorted(SCOPES)))
