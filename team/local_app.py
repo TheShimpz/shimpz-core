@@ -481,6 +481,28 @@ def _environment_map(raw: object) -> dict[str, str]:
     return dict(item.split("=", 1) for item in raw)
 
 
+def _serialize_against_local_team_chat(
+    operation: Callable[..., dict[str, object]],
+) -> Callable[..., dict[str, object]]:
+    """Reject Assistant mutation before its first side effect while a Team turn owns the slot."""
+
+    def guarded(controller, team_id: str, *args, **kwargs) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        lock = controller._chat_lock(team_id)
+        if not lock.acquire(blocking=False):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant lifecycle cannot change during an active Team chat turn",
+                code="chat-active",
+            )
+        try:
+            return operation(controller, team_id, *args, **kwargs)
+        finally:
+            lock.release()
+
+    return guarded
+
+
 class LocalController:
     def __init__(
         self,
@@ -2781,6 +2803,7 @@ class LocalController:
         except assistant_secret_store.AssistantSecretError as exc:
             self._raise_secret_problem(exc)
 
+    @_serialize_against_local_team_chat
     def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         spec = self._resolve(assistant_id)
@@ -2820,6 +2843,7 @@ class LocalController:
             self._create_assistant_container(team_id, spec, network, image)
             return {"assistant": assistant_id, "installed": True}
 
+    @_serialize_against_local_team_chat
     def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         spec = self._resolve(assistant_id)

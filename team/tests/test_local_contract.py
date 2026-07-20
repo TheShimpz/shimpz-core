@@ -142,6 +142,8 @@ class LocalContractTests(unittest.TestCase):
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._locks = tuple(threading.RLock() for _ in range(64))
+        controller._active_chat_guard = threading.Lock()
+        controller._chat_locks = {}
         controller._blocked_power_workloads = set()
         controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
         controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
@@ -2074,6 +2076,21 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIsInstance(failures[0], local_app.ApiProblem)
         self.assertEqual(failures[0].code, "chat-stopped")
+
+    def test_assistant_lifecycle_is_rejected_before_mutation_during_an_active_chat(self) -> None:
+        controller, _container, events = self._lifecycle_controller()
+        chat_lock = controller._chat_lock("team_1")
+        self.assertTrue(chat_lock.acquire(blocking=False))
+        try:
+            operations = (controller.install_assistant, controller.uninstall_assistant)
+            for operation in operations:
+                with self.subTest(operation=operation.__name__), self.assertRaises(local_app.ApiProblem) as caught:
+                    operation("team_1", "shimpz-assistant")
+                self.assertEqual((caught.exception.status, caught.exception.code), (HTTPStatus.CONFLICT, "chat-active"))
+        finally:
+            chat_lock.release()
+
+        self.assertEqual(events, [])
 
     def test_install_replaces_an_outdated_stateless_assistant_with_no_manifest(self) -> None:
         controller, container, events = self._lifecycle_controller()

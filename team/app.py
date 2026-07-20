@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+import functools
 import hashlib
 import http.client
 import ipaddress
@@ -300,6 +301,22 @@ def _chat_lock_for(team_id: str) -> threading.Lock:
             lock = threading.Lock()
             _chat_locks[team_id] = lock
         return lock
+
+
+def _serialize_against_team_chat(operation: Callable[..., dict]) -> Callable[..., dict]:
+    """Reject lifecycle mutation before its first side effect while a Team turn owns the slot."""
+
+    @functools.wraps(operation)
+    def guarded(team_id: str, *args, **kwargs) -> dict:
+        lock = _chat_lock_for(team_id)
+        if not lock.acquire(blocking=False):
+            raise ApiError(HTTPStatus.CONFLICT, "Team lifecycle cannot change during an active chat turn")
+        try:
+            return operation(team_id, *args, **kwargs)
+        finally:
+            lock.release()
+
+    return guarded
 
 
 def _clear_team_id_runtime_state(team_id: str) -> None:
@@ -1332,6 +1349,7 @@ def _teardown_app(
     return _CleanupResult(True, True)
 
 
+@_serialize_against_team_chat
 def _install_app(
     team_id: str,
     app_id: str,
@@ -1452,6 +1470,7 @@ def _install_app(
         }
 
 
+@_serialize_against_team_chat
 def _uninstall_app(team_id: str, app_id: str, lease: _AuthorizationLease) -> dict:
     with _lock_for(team_id):
         # Removal is a remediation operation and must remain available for a legacy blocked Team.
@@ -3182,6 +3201,7 @@ def _logs(team_id: str, lines: int, lease: _AuthorizationLease) -> dict:
         return {"team_id": team_id, "logs": container.logs(tail=lines).decode("utf-8", "replace")}
 
 
+@_serialize_against_team_chat
 def _lifecycle(team_id: str, op: str, lease: _AuthorizationLease) -> dict:
     with _lock_for(team_id):
         # Stop is always available as remediation. Start/restart require both an exact per-container
@@ -3190,20 +3210,12 @@ def _lifecycle(team_id: str, op: str, lease: _AuthorizationLease) -> dict:
         if op in {"start", "restart"}:
             _require_team_runtime()
         container.reload()
-        # Stop first so the provider tree cannot keep mutating the volume, then wait for the turn's
-        # cleanup/finally to relinquish its slot. Start takes the same slot before making the container
-        # runnable. The lifecycle lock serializes all of this with configure/deconfigure/destroy.
+        # The outer Team chat slot proves no turn can observe a partially changed runtime.
         if op in {"stop", "restart"} and container.status == "running":
             _fail_stop_team(container, timeout=30)
-        chat_lock = _chat_lock_for(team_id)
-        if not chat_lock.acquire(timeout=30):
-            raise ApiError(HTTPStatus.CONFLICT, "the active chat turn did not stop in time")
-        try:
-            container.reload()
-            if op in {"start", "restart"} and container.status != "running":
-                _start_team_with_isolation(container)
-        finally:
-            chat_lock.release()
+        container.reload()
+        if op in {"start", "restart"} and container.status != "running":
+            _start_team_with_isolation(container)
     return {"team_id": team_id, "op": op, "status": "ok"}
 
 

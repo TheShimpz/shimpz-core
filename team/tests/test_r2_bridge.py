@@ -421,6 +421,25 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 app._validated_team_name(invalid)
 
+    def test_hosted_lifecycle_rejects_an_active_chat_before_any_mutation(self) -> None:
+        spec = app.marketplace.APPS["shimpz-assistant"]
+        lease = types.SimpleNamespace(owner="account_1")
+        operations = (
+            lambda: app._install_app("team_1", "shimpz-assistant", spec, "account_1", lease),
+            lambda: app._uninstall_app("team_1", "shimpz-assistant", lease),
+            lambda: app._lifecycle("team_1", "restart", lease),
+        )
+        chat_lock = app._chat_lock_for("team_1")
+        self.assertTrue(chat_lock.acquire(blocking=False))
+        try:
+            with _patched(_lock_for=lambda _team_id: self.fail("lifecycle mutation acquired its inner lock")):
+                for operation in operations:
+                    with self.subTest(operation=operation), self.assertRaises(app.ApiError) as caught:
+                        operation()
+                    self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+        finally:
+            chat_lock.release()
+
     def test_hosted_stream_emits_the_exact_v2_done_shape(self) -> None:
         class StreamHarness:
             def __init__(self) -> None:
