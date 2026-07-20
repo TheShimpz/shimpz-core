@@ -256,6 +256,61 @@ class ChatOrchestratorTests(unittest.TestCase):
         self.assertEqual(raised.exception.request.power, "hello")
         self.assertEqual(invoked, [])
 
+    def test_explicit_approval_pauses_the_whole_batch_then_grants_only_that_interrupt(self):
+        protected = brain_runtime_client.RuntimePower(
+            id="hello",
+            summary="Return a greeting.",
+            input_schema={"type": "object"},
+            approval="each-run",
+        )
+        runtime = FakeRuntime([suspended(approval="each-run"), completed("Approved.")])
+        invoked = []
+
+        paused = chat_orchestrator.run_until_pause(
+            runtime,
+            context(protected),
+            "Do it",
+            accept_input,
+            lambda request: invoked.append(request.interrupt_id) or {"ok": True},
+            pause_for_approval=lambda requests: (
+                self.assertEqual(
+                    [request.interrupt_id for request in requests],
+                    ["interrupt-1"],
+                )
+                is None
+            ),
+        )
+
+        self.assertIsInstance(paused, chat_orchestrator.ChatSuspension)
+        self.assertEqual(invoked, [])
+        outcome = chat_orchestrator.continue_after_pause(
+            runtime,
+            context(protected),
+            paused.continuation,
+            accept_input,
+            lambda request: invoked.append(request.interrupt_id) or {"ok": True},
+            approval_granted=lambda request: request.interrupt_id == "interrupt-1",
+        )
+        self.assertIsInstance(outcome, chat_orchestrator.ChatOutcome)
+        self.assertEqual(invoked, ["interrupt-1"])
+
+    def test_approval_grant_cannot_authorize_another_interrupt(self):
+        protected = brain_runtime_client.RuntimePower(
+            id="hello",
+            summary="Return a greeting.",
+            input_schema={"type": "object"},
+            approval="each-run",
+        )
+        with self.assertRaises(chat_orchestrator.ApprovalRequiredError):
+            chat_orchestrator.run_until_pause(
+                FakeRuntime([suspended(approval="each-run", interrupt_id="other")]),
+                context(protected),
+                "Do it",
+                accept_input,
+                lambda _request: self.fail("unbound grant must not invoke a Power"),
+                approval_granted=lambda request: request.interrupt_id == "interrupt-1",
+            )
+
     def test_cancelled_turn_never_starts_or_resumes_work(self):
         runtime = FakeRuntime([completed()])
 

@@ -18,6 +18,7 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
+import assistant_approval_challenges
 import assistant_secret_challenges
 import assistant_secret_store
 import brain_runtime_client
@@ -86,6 +87,7 @@ class LocalContractTests(unittest.TestCase):
             Path(directory) / "assistant-secrets" / "key" / "aes256.key",
         )
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         if configure_secrets:
             controller.assistant_secrets.put_many(
                 "team_1",
@@ -145,6 +147,7 @@ class LocalContractTests(unittest.TestCase):
             Path(secret_directory.name) / "key" / "aes256.key",
         )
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller._admit_assistant_allowed_hosts = lambda _container, spec: tuple(sorted(spec.allowed_hosts))
         spec = SimpleNamespace(
             assistant_id="shimpz-assistant",
@@ -1108,6 +1111,7 @@ class LocalContractTests(unittest.TestCase):
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
         controller._active_chat_tokens = {"team_1": "turn-token"}
@@ -1199,6 +1203,7 @@ class LocalContractTests(unittest.TestCase):
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
         controller._active_chat_tokens = {}
@@ -1248,6 +1253,7 @@ class LocalContractTests(unittest.TestCase):
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
         controller._active_chat_tokens = {}
@@ -1460,44 +1466,75 @@ class LocalContractTests(unittest.TestCase):
         self.assertNotIn("private Assistant failure", str(retry.exception))
         self.assertEqual(invocations, ["rpc"])
 
-    def test_chat_fails_closed_before_a_power_that_requires_approval(self) -> None:
+    def test_chat_approval_is_explicit_team_bound_single_use_and_continues_exact_power(self) -> None:
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="power-1",
+            assistant_id="shimpz-assistant",
+            power="create-post",
+            input={"text": "Approved test Post"},
+            approval="each-run",
+        )
+
         class Runtime:
+            def __init__(self) -> None:
+                self.resumes: list[dict[str, object]] = []
+
             def start(self, _context, _message):
                 return brain_runtime_client.RuntimeTurn(
                     status="power-required",
                     reply="",
-                    powers=(
-                        brain_runtime_client.PowerRequest(
-                            interrupt_id="power-1",
-                            assistant_id="shimpz-assistant",
-                            power="public-user-lookup",
-                            input=LOOKUP_INPUT,
-                            approval="each-run",
-                        ),
-                    ),
+                    powers=(request,),
                 )
 
+            def resume(self, _context, results):
+                self.resumes.append(dict(results))
+                return brain_runtime_client.RuntimeTurn(status="completed", reply="Published.", powers=())
+
+        runtime = Runtime()
         with tempfile.TemporaryDirectory() as directory:
-            controller = self._chat_controller(directory, Runtime())
-            spec = controller.registry["shimpz-assistant"]
-            controller.registry["shimpz-assistant"] = replace(
-                spec,
-                powers={
-                    "public-user-lookup": replace(
-                        spec.powers["public-user-lookup"],
-                        approval="each-run",
-                    )
-                },
+            controller = self._chat_controller(directory, runtime)
+            invocations: list[tuple[str, object]] = []
+            controller.invoke = lambda _team, assistant, power, payload: (
+                invocations.append((power, payload))
+                or {"assistant": assistant, "power": power, "result": {"id": "123", "text": payload["text"]}}
             )
-            controller.invoke = lambda *_args: self.fail("approval-gated Power executed")
-            with self.assertRaises(local_app.ApiProblem) as caught:
-                controller.chat(
+            challenge = controller.chat(
+                "team_1",
+                {"message": "Publish it", "files": [], "assistant_ids": ["shimpz-assistant"]},
+                "openai",
+                "sk-test-0123456789",
+            )
+            self.assertEqual(invocations, [])
+            self.assertEqual(challenge["status"], "approval-required")
+            self.assertNotIn("Approved test Post", repr(challenge))
+            self.assertNotIn("power-1", repr(challenge))
+
+            submission = {"challenge_id": challenge["challenge_id"], "approved": True}
+            for invalid in (
+                {**submission, "approved": False},
+                {**submission, "unexpected": True},
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as rejected:
+                    controller.submit_chat_approval("team_1", invalid, "openai", "sk-test-0123456789")
+                self.assertEqual(rejected.exception.code, "invalid-assistant-approval")
+
+            with self.assertRaises(local_app.ApiProblem) as isolated:
+                controller.submit_chat_approval("team_2", submission, "openai", "sk-test-0123456789")
+            self.assertEqual(isolated.exception.code, "assistant-approval-challenge-expired")
+
+            response = controller.submit_chat_approval("team_1", submission, "openai", "sk-test-0123456789")
+            with self.assertRaises(local_app.ApiProblem) as replay:
+                controller.submit_chat_approval(
                     "team_1",
-                    {"message": "Greet me", "files": [], "assistant_ids": ["shimpz-assistant"]},
+                    submission,
                     "openai",
                     "sk-test-0123456789",
                 )
-        self.assertEqual(caught.exception.code, "power-approval-required")
+
+        self.assertEqual(response["reply"], "Published.")
+        self.assertEqual(invocations, [("create-post", {"text": "Approved test Post"})])
+        self.assertEqual(runtime.resumes, [{"power-1": {"id": "123", "text": "Approved test Post"}}])
+        self.assertEqual(replay.exception.code, "assistant-approval-challenge-expired")
 
     def test_stop_discards_a_runtime_reply_that_finishes_late(self) -> None:
         started = threading.Event()
