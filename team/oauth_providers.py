@@ -93,7 +93,7 @@ _X = _provider(
     revocation_endpoint="https://api.x.com/2/oauth2/revoke",
     api_hosts=("api.x.com",),
     allowed_scopes=frozenset({"offline.access", "tweet.read", "tweet.write", "users.read"}),
-    client_auth_method="client_secret_basic",
+    client_auth_method="none",
 )
 
 PROVIDERS = MappingProxyType({_X.id: _X})

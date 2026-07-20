@@ -14,7 +14,7 @@ class OAuthProviderTests(unittest.TestCase):
         self.assertEqual(provider.revocation_endpoint, "https://api.x.com/2/oauth2/revoke")
         self.assertEqual(provider.api_hosts, ("api.x.com",))
         self.assertEqual(provider.pkce_method, "S256")
-        self.assertEqual(provider.client_auth_method, "client_secret_basic")
+        self.assertEqual(provider.client_auth_method, "none")
         self.assertEqual(
             provider.allowed_scopes,
             {"offline.access", "tweet.read", "tweet.write", "users.read"},
