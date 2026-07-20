@@ -128,6 +128,32 @@ def inventory_payload(
     return {"team_id": team_id, "assistants": listing}
 
 
+def replacement_values(spec: AssistantSpec, body: object) -> dict[str, str]:
+    """Validate one partial, atomic replacement batch against declared secret ids."""
+    if not isinstance(body, dict) or set(body) != {"assistant_id", "values"}:
+        raise SecretFlowError("secret replacement has an invalid shape")
+    if body.get("assistant_id") != spec.assistant_id:
+        raise SecretFlowError("secret replacement does not match its Assistant")
+    values = body.get("values")
+    if not isinstance(values, list) or not 1 <= len(values) <= len(spec.secrets):
+        raise SecretFlowError("secret replacement has an invalid shape")
+    replacements: dict[str, str] = {}
+    for item in values:
+        if not isinstance(item, dict) or set(item) != {"secret_id", "value"}:
+            raise SecretFlowError("secret replacement has an invalid shape")
+        secret_id = item.get("secret_id")
+        value = item.get("value")
+        if (
+            not isinstance(secret_id, str)
+            or secret_id not in spec.secrets
+            or secret_id in replacements
+            or not isinstance(value, str)
+        ):
+            raise SecretFlowError("secret replacement does not match its Assistant")
+        replacements[secret_id] = value
+    return replacements
+
+
 def submission_values(
     challenge: assistant_secret_challenges.PendingSecretChallenge,
     body: object,

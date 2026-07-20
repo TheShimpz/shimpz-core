@@ -838,6 +838,58 @@ class LocalContractTests(unittest.TestCase):
         )
         self.assertTrue(all(not item["configured"] and item["mask"] is None for item in other_secrets.values()))
 
+    def test_secret_replacement_is_declared_atomic_and_returns_only_refreshed_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self._chat_controller(directory, object())
+            controller.list_assistants = lambda _team_id: {
+                "assistants": [{"assistant": "shimpz-assistant", "status": "running"}]
+            }
+            before = controller.assistant_secrets.resolve_many(
+                "team_1",
+                "shimpz-assistant",
+                ("x-api-key", "x-api-key-secret"),
+            )
+            replacement = "replacement-api-key-123456789"
+            response = controller.replace_assistant_secrets(
+                "team_1",
+                {
+                    "assistant_id": "shimpz-assistant",
+                    "values": [{"secret_id": "x-api-key", "value": replacement}],
+                },
+            )
+            after = controller.assistant_secrets.resolve_many(
+                "team_1",
+                "shimpz-assistant",
+                ("x-api-key", "x-api-key-secret"),
+            )
+
+            state_before_invalid = controller.assistant_secrets.state_path.read_bytes()
+            for invalid in (
+                {
+                    "assistant_id": "shimpz-assistant",
+                    "values": [
+                        {"secret_id": "x-api-key", "value": "must-not-commit"},
+                        {"secret_id": "undeclared", "value": "invalid"},
+                    ],
+                },
+                {
+                    "assistant_id": "shimpz-assistant",
+                    "values": [{"secret_id": "x-api-key", "value": "line\nbreak"}],
+                },
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as rejected:
+                    controller.replace_assistant_secrets("team_1", invalid)
+                self.assertEqual(rejected.exception.code, "invalid-assistant-secrets")
+                self.assertEqual(controller.assistant_secrets.state_path.read_bytes(), state_before_invalid)
+
+        self.assertEqual(before["x-api-key-secret"], after["x-api-key-secret"])
+        self.assertNotEqual(before["x-api-key"], after["x-api-key"])
+        self.assertEqual(after["x-api-key"], replacement)
+        self.assertNotIn(replacement, repr(response))
+        secret = next(item for item in response["assistants"][0]["secrets"] if item["id"] == "x-api-key")
+        self.assertTrue(secret["configured"])
+        self.assertEqual(secret["mask"], assistant_secret_store.mask_secret(replacement))
+
     def test_power_rpc_receives_only_the_validated_input_and_declared_secrets(self) -> None:
         captured: list[object] = []
         with tempfile.TemporaryDirectory() as directory:

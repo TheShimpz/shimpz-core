@@ -1344,6 +1344,37 @@ class LocalController:
                 self._raise_secret_problem(exc)
         raise AssertionError("unreachable")
 
+    def replace_assistant_secrets(self, team_id: str, body: object) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        if not isinstance(body, dict):
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Assistant secret replacement is invalid",
+                code="invalid-assistant-secrets",
+            )
+        assistant_id = body.get("assistant_id")
+        try:
+            spec = self._resolve(assistant_id)
+            replacements = assistant_secret_flow.replacement_values(spec, body)
+        except (ApiProblem, assistant_secret_flow.SecretFlowError) as exc:
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Assistant secret replacement is invalid",
+                code="invalid-assistant-secrets",
+            ) from exc
+        with self._lock(team_id):
+            network = self._network(team_id)
+            container = self._assistant_container(team_id, spec.assistant_id)
+            self._validate_container(container, team_id, spec, network.name)
+            try:
+                self.assistant_secrets.put_many(team_id, spec.assistant_id, replacements)
+                installed = self.list_assistants(team_id)["assistants"]
+                specs = [self._resolve(item["assistant"]) for item in installed]
+                return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
+            except assistant_secret_store.AssistantSecretError as exc:
+                self._raise_secret_problem(exc)
+        raise AssertionError("unreachable")
+
     @staticmethod
     def _challenge_response(
         challenge: assistant_secret_challenges.PendingSecretChallenge,
@@ -3230,6 +3261,17 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.controller.configure_inference(team_id, self._body()),
                 "inference-configure",
+                team_id,
+                None,
+            )
+        if self.command == "PUT":
+            return (
+                HTTPStatus.OK,
+                self.server.controller.replace_assistant_secrets(
+                    team_id,
+                    self._body(max_bytes=MAX_SECRET_BODY_BYTES),
+                ),
+                "assistant-secret-replace",
                 team_id,
                 None,
             )

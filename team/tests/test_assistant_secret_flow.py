@@ -117,6 +117,31 @@ class AssistantSecretFlowTests(unittest.TestCase):
             self.assertNotIn("generation", encoded)
             self.assertEqual(payload["assistants"][0]["secrets"][0]["mask"], "pr…89")
 
+    def test_replacement_batch_accepts_declared_subset_and_rejects_extras_or_duplicates(self) -> None:
+        spec = _spec()
+        self.assertEqual(
+            assistant_secret_flow.replacement_values(
+                spec,
+                {"assistant_id": "x-assistant", "values": [{"secret_id": "bearer", "value": "next-value"}]},
+            ),
+            {"bearer": "next-value"},
+        )
+        invalid = (
+            {"assistant_id": "other", "values": [{"secret_id": "bearer", "value": "next-value"}]},
+            {"assistant_id": "x-assistant", "values": []},
+            {"assistant_id": "x-assistant", "values": [{"secret_id": "extra", "value": "next-value"}]},
+            {
+                "assistant_id": "x-assistant",
+                "values": [
+                    {"secret_id": "bearer", "value": "one"},
+                    {"secret_id": "bearer", "value": "two"},
+                ],
+            },
+        )
+        for body in invalid:
+            with self.subTest(body=body), self.assertRaises(assistant_secret_flow.SecretFlowError):
+                assistant_secret_flow.replacement_values(spec, body)
+
 
 if __name__ == "__main__":
     unittest.main()
