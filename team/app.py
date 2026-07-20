@@ -2587,12 +2587,20 @@ def _submit_chat_secrets(
         if current_identity != pending.identity:
             _assistant_secret_challenges.cancel_team(team_id)
             raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
+
+        def commit_secret_transaction(current) -> None:
+            if current is not challenge:
+                raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
+            _assistant_secrets.put_for_assistants(team_id, values)
+
         try:
-            claimed = _assistant_secret_challenges.claim(team_id, challenge.id)
+            claimed = _assistant_secret_challenges.claim_after(
+                team_id,
+                challenge.id,
+                commit_secret_transaction,
+            )
             if claimed is not challenge:
                 raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
-            for assistant_id, secrets_by_id in values.items():
-                _assistant_secrets.put_many(team_id, assistant_id, secrets_by_id)
         except assistant_secret_challenges.SecretChallengeNotFoundError as exc:
             raise ApiError(HTTPStatus.CONFLICT, "Assistant secret request expired; retry the message") from exc
         except assistant_secret_store.AssistantSecretError as exc:

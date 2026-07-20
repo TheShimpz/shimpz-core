@@ -1935,12 +1935,20 @@ class LocalController:
                     "Team capabilities changed; retry",
                     code="team-context-changed",
                 )
+
+            def commit_secret_transaction(current) -> None:
+                if current is not challenge:
+                    raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
+                self.assistant_secrets.put_for_assistants(team_id, values)
+
             try:
-                claimed = self.secret_challenges.claim(team_id, challenge_id)
+                claimed = self.secret_challenges.claim_after(
+                    team_id,
+                    challenge_id,
+                    commit_secret_transaction,
+                )
                 if claimed is not challenge:
                     raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
-                for assistant_id, secrets_by_id in values.items():
-                    self.assistant_secrets.put_many(team_id, assistant_id, secrets_by_id)
             except assistant_secret_challenges.SecretChallengeNotFoundError as exc:
                 raise ApiProblem(
                     HTTPStatus.CONFLICT,

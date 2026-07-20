@@ -257,6 +257,38 @@ class HostedAssistantSecretTests(unittest.TestCase):
         self.assertFalse(self.secret_store.state_path.exists())
         self.assertNotIn("attacker-value", caught.exception.message)
 
+    def test_storage_failure_keeps_the_one_use_challenge_retryable(self) -> None:
+        with self._environment():
+            challenge = app._chat_in_turn(
+                TEAM_ID,
+                "Read the public profile and my connected identity.",
+                [],
+                (ASSISTANT_ID,),
+                "initial-turn",
+                self.anchor,
+                "account_1",
+            )
+
+            @contextlib.contextmanager
+            def exclusive(_team_id, _lease):
+                yield "resumed-turn", self.anchor
+
+            original = self.secret_store.put_for_assistants
+            self.secret_store.put_for_assistants = mock.Mock(
+                side_effect=app.assistant_secret_store.AssistantSecretError("storage unavailable")
+            )
+            with _patched(_exclusive_chat_turn=exclusive), self.assertRaises(app.ApiError) as caught:
+                app._submit_chat_secrets(
+                    TEAM_ID,
+                    self._submission(challenge),
+                    app._AuthorizationLease(TEAM_ID, ANCHOR_ID, "account_1", ("account", "account_1")),
+                )
+            self.secret_store.put_for_assistants = original
+
+        self.assertEqual(caught.exception.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(self.challenge_store.current(TEAM_ID).id, challenge["challenge_id"])
+        self.assertFalse(self.secret_store.state_path.exists())
+
     def test_secret_bearing_assistant_output_is_rejected_without_echo(self) -> None:
         secret = SECRET_VALUES["x-bearer-token"]
         self.secret_store.put_many(TEAM_ID, ASSISTANT_ID, {"x-bearer-token": secret})

@@ -781,6 +781,21 @@ class LocalContractTests(unittest.TestCase):
                 self.assertEqual(rejected.exception.code, "invalid-assistant-secrets")
                 self.assertIsNotNone(controller.secret_challenges.current("team_1"))
 
+            original_put = controller.assistant_secrets.put_for_assistants
+            controller.assistant_secrets.put_for_assistants = mock.Mock(
+                side_effect=assistant_secret_store.AssistantSecretError("storage unavailable")
+            )
+            with self.assertRaises(local_app.ApiProblem) as unavailable:
+                controller.submit_chat_secrets(
+                    "team_1",
+                    exact,
+                    "openai",
+                    "sk-test-0123456789",
+                )
+            controller.assistant_secrets.put_for_assistants = original_put
+            self.assertEqual(unavailable.exception.code, "assistant-secret-state-unavailable")
+            self.assertIsNotNone(controller.secret_challenges.current("team_1"))
+
             with self.assertRaises(local_app.ApiProblem) as isolated:
                 controller.submit_chat_secrets(
                     "team_2",
