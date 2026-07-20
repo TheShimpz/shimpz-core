@@ -19,9 +19,9 @@ MAX_ARCHIVE_BYTES = MAX_MANIFEST_BYTES + (32 * 1024)
 MAX_ALLOWED_HOSTS = 32
 MAX_SECRETS = 32
 MAX_POWER_SECRETS = 16
-MAX_CONNECTIONS = 16
-MAX_CONNECTION_SCOPES = 32
-MAX_POWER_CONNECTIONS = 4
+MAX_ACCOUNTS = 16
+MAX_ACCOUNT_SCOPES = 32
+MAX_POWER_ACCOUNTS = 4
 MAX_POWERS = 128
 MAX_IDENTIFIER_LENGTH = 80
 MAX_SECRET_ID_LENGTH = 64
@@ -66,8 +66,8 @@ class SecretDeclaration:
 
 
 @dataclass(frozen=True, slots=True, order=True)
-class ConnectionDeclaration:
-    """Public provider intent for one controller-owned connection."""
+class AccountDeclaration:
+    """Public provider intent for one controller-owned account."""
 
     id: str
     provider: str
@@ -80,9 +80,9 @@ class ManifestContract:
 
     allowed_hosts: tuple[str, ...]
     secrets: tuple[SecretDeclaration, ...]
-    connections: tuple[ConnectionDeclaration, ...]
+    accounts: tuple[AccountDeclaration, ...]
     power_secrets: tuple[tuple[str, tuple[str, ...]], ...]
-    power_connections: tuple[tuple[str, tuple[str, ...]], ...]
+    power_accounts: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 def canonical_allowed_hosts(value: object) -> tuple[str, ...]:
@@ -148,31 +148,31 @@ def canonical_secret_declarations(value: object) -> tuple[SecretDeclaration, ...
 
 
 def _canonical_scopes(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list | tuple) or not 1 <= len(value) <= MAX_CONNECTION_SCOPES:
-        raise ManifestError("Assistant connection scopes are invalid")
+    if not isinstance(value, list | tuple) or not 1 <= len(value) <= MAX_ACCOUNT_SCOPES:
+        raise ManifestError("Assistant account scopes are invalid")
     scopes: list[str] = []
     for scope in value:
         if not isinstance(scope, str) or len(scope) > MAX_IDENTIFIER_LENGTH or _SCOPE_RE.fullmatch(scope) is None:
-            raise ManifestError("Assistant connection scopes are invalid")
+            raise ManifestError("Assistant account scopes are invalid")
         scopes.append(scope)
     if len(scopes) != len(set(scopes)):
-        raise ManifestError("Assistant connection scopes are invalid")
+        raise ManifestError("Assistant account scopes are invalid")
     return tuple(sorted(scopes))
 
 
-def canonical_connection_declarations(value: object) -> tuple[ConnectionDeclaration, ...]:
+def canonical_account_declarations(value: object) -> tuple[AccountDeclaration, ...]:
     """Canonicalize provider metadata without accepting endpoints or credentials."""
-    if not isinstance(value, Mapping) or len(value) > MAX_CONNECTIONS:
-        raise ManifestError("Assistant connection declarations are invalid")
-    declarations: list[ConnectionDeclaration] = []
-    for connection_id, metadata in value.items():
-        identifier = _identifier(connection_id, kind="connection", maximum=MAX_SECRET_ID_LENGTH)
+    if not isinstance(value, Mapping) or len(value) > MAX_ACCOUNTS:
+        raise ManifestError("Assistant account declarations are invalid")
+    declarations: list[AccountDeclaration] = []
+    for account_id, metadata in value.items():
+        identifier = _identifier(account_id, kind="account", maximum=MAX_SECRET_ID_LENGTH)
         if not isinstance(metadata, list | tuple) or len(metadata) != 2:
-            raise ManifestError("Assistant connection declaration is invalid")
+            raise ManifestError("Assistant account declaration is invalid")
         declarations.append(
-            ConnectionDeclaration(
+            AccountDeclaration(
                 identifier,
-                _identifier(metadata[0], kind="connection provider", maximum=MAX_SECRET_ID_LENGTH),
+                _identifier(metadata[0], kind="account provider", maximum=MAX_SECRET_ID_LENGTH),
                 _canonical_scopes(metadata[1]),
             )
         )
@@ -203,29 +203,27 @@ def canonical_power_secret_refs(
     return tuple(sorted(bindings))
 
 
-def canonical_power_connection_refs(
+def canonical_power_account_refs(
     value: object,
-    declared_connections: tuple[ConnectionDeclaration, ...],
+    declared_accounts: tuple[AccountDeclaration, ...],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Canonicalize every Power's exact controller-owned connection dependencies."""
+    """Canonicalize every Power's exact controller-owned account dependencies."""
     if not isinstance(value, Mapping) or not value or len(value) > MAX_POWERS:
-        raise ManifestError("Assistant Power connection references are invalid")
-    declared_ids = {connection.id for connection in declared_connections}
+        raise ManifestError("Assistant Power account references are invalid")
+    declared_ids = {account.id for account in declared_accounts}
     used: set[str] = set()
     bindings: list[tuple[str, tuple[str, ...]]] = []
     for power_id, refs in value.items():
         identifier = _identifier(power_id, kind="Power")
-        if not isinstance(refs, list | tuple) or len(refs) > MAX_POWER_CONNECTIONS:
-            raise ManifestError("Assistant Power connection references are invalid")
-        normalized = tuple(
-            _identifier(connection_id, kind="connection", maximum=MAX_SECRET_ID_LENGTH) for connection_id in refs
-        )
+        if not isinstance(refs, list | tuple) or len(refs) > MAX_POWER_ACCOUNTS:
+            raise ManifestError("Assistant Power account references are invalid")
+        normalized = tuple(_identifier(account_id, kind="account", maximum=MAX_SECRET_ID_LENGTH) for account_id in refs)
         if len(normalized) != len(set(normalized)) or not set(normalized) <= declared_ids:
-            raise ManifestError("Assistant Power connection references are invalid")
+            raise ManifestError("Assistant Power account references are invalid")
         used.update(normalized)
         bindings.append((identifier, tuple(sorted(normalized))))
     if used != declared_ids:
-        raise ManifestError("Assistant connection declarations must each be used by a Power")
+        raise ManifestError("Assistant account declarations must each be used by a Power")
     return tuple(sorted(bindings))
 
 
@@ -234,25 +232,25 @@ def canonical_manifest_contract(
     allowed_hosts: object,
     secret_declarations: object,
     power_secret_refs: object,
-    connection_declarations: object | None = None,
-    power_connection_refs: object | None = None,
+    account_declarations: object | None = None,
+    power_account_refs: object | None = None,
 ) -> ManifestContract:
     """Build one deterministic contract for package and reviewed registry comparison."""
     secrets = canonical_secret_declarations(secret_declarations)
-    connections = canonical_connection_declarations({} if connection_declarations is None else connection_declarations)
-    connection_refs = (
+    accounts = canonical_account_declarations({} if account_declarations is None else account_declarations)
+    account_refs = (
         dict.fromkeys(power_secret_refs, ())
-        if power_connection_refs is None and isinstance(power_secret_refs, Mapping)
-        else power_connection_refs
+        if power_account_refs is None and isinstance(power_secret_refs, Mapping)
+        else power_account_refs
     )
     return ManifestContract(
         allowed_hosts=canonical_allowed_hosts(allowed_hosts),
         secrets=secrets,
-        connections=connections,
+        accounts=accounts,
         power_secrets=canonical_power_secret_refs(power_secret_refs, secrets),
-        power_connections=canonical_power_connection_refs(
-            connection_refs,
-            connections,
+        power_accounts=canonical_power_account_refs(
+            account_refs,
+            accounts,
         ),
     )
 
@@ -262,7 +260,7 @@ def reviewed_manifest_contract(
     allowed_hosts: object,
     secrets: object,
     powers: object,
-    connections: object | None = None,
+    accounts: object | None = None,
 ) -> ManifestContract:
     """Normalize the controller-owned registry dataclasses without trusting package input."""
     if not isinstance(secrets, Mapping) or not isinstance(powers, Mapping):
@@ -270,19 +268,19 @@ def reviewed_manifest_contract(
     try:
         secret_declarations = {secret_id: (metadata.name, metadata.summary) for secret_id, metadata in secrets.items()}
         power_secret_refs = {power_id: power.secrets for power_id, power in powers.items()}
-        connection_declarations = {
-            connection_id: (metadata.provider, metadata.scopes)
-            for connection_id, metadata in ({} if connections is None else connections).items()
+        account_declarations = {
+            account_id: (metadata.provider, metadata.scopes)
+            for account_id, metadata in ({} if accounts is None else accounts).items()
         }
-        power_connection_refs = {power_id: getattr(power, "connections", ()) for power_id, power in powers.items()}
+        power_account_refs = {power_id: power.accounts for power_id, power in powers.items()}
     except AttributeError as exc:
         raise ManifestError("Assistant reviewed manifest contract is invalid") from exc
     return canonical_manifest_contract(
         allowed_hosts=allowed_hosts,
         secret_declarations=secret_declarations,
         power_secret_refs=power_secret_refs,
-        connection_declarations=connection_declarations,
-        power_connection_refs=power_connection_refs,
+        account_declarations=account_declarations,
+        power_account_refs=power_account_refs,
     )
 
 
@@ -300,9 +298,9 @@ def _reject_credential_material(value: object) -> None:
                     (not path and key == "secrets")
                     or path == ("secrets",)
                     or (len(path) == 2 and path[0] == "powers" and key == "secrets")
-                    or (not path and key == "connections")
-                    or path == ("connections",)
-                    or (len(path) == 2 and path[0] == "powers" and key == "connections")
+                    or (not path and key == "accounts")
+                    or path == ("accounts",)
+                    or (len(path) == 2 and path[0] == "powers" and key == "accounts")
                 )
                 lowered = key.lower()
                 if not public_security_key and any(
@@ -332,6 +330,21 @@ def _manifest_table(raw: bytes) -> dict[str, object]:
         raise ManifestError("Assistant manifest is invalid TOML") from exc
     if not isinstance(manifest, dict):
         raise ManifestError("Assistant manifest is invalid")
+    allowed_top_level = {
+        "schema_version",
+        "name",
+        "summary",
+        "creators",
+        "github",
+        "allowed_hosts",
+        "secrets",
+        "accounts",
+        "powers",
+    }
+    if set(manifest) - allowed_top_level:
+        raise ManifestError("Assistant manifest contains an unsupported top-level field")
+    if "connections" in manifest:
+        raise ManifestError("Assistant manifest uses the obsolete connections contract")
     _reject_credential_material(manifest)
     return manifest
 
@@ -351,36 +364,36 @@ def parse_manifest_contract(raw: bytes) -> ManifestContract:
             raise ManifestError("Assistant secret declaration is invalid")
         declarations[secret_id] = (metadata["name"], metadata["summary"])
 
-    raw_connections = manifest.get("connections", {})
-    if not isinstance(raw_connections, dict):
-        raise ManifestError("Assistant connection declarations are invalid")
-    connection_declarations: dict[str, tuple[object, object]] = {}
-    for connection_id, metadata in raw_connections.items():
+    raw_accounts = manifest.get("accounts", {})
+    if not isinstance(raw_accounts, dict):
+        raise ManifestError("Assistant account declarations are invalid")
+    account_declarations: dict[str, tuple[object, object]] = {}
+    for account_id, metadata in raw_accounts.items():
         if not isinstance(metadata, dict) or set(metadata) != {"provider", "scopes"}:
-            raise ManifestError("Assistant connection declaration is invalid")
-        connection_declarations[connection_id] = (metadata["provider"], metadata["scopes"])
+            raise ManifestError("Assistant account declaration is invalid")
+        account_declarations[account_id] = (metadata["provider"], metadata["scopes"])
 
     raw_powers = manifest.get("powers")
     if not isinstance(raw_powers, dict):
         raise ManifestError("Assistant Power secret references are invalid")
     power_refs: dict[str, object] = {}
-    power_connection_refs: dict[str, object] = {}
+    power_account_refs: dict[str, object] = {}
     for power_id, power in raw_powers.items():
-        if not isinstance(power, dict) or set(power) - {"summary", "approval", "secrets", "connections"}:
+        if not isinstance(power, dict) or set(power) - {"summary", "approval", "secrets", "accounts"}:
             raise ManifestError("Assistant Power declaration is invalid")
         _public_text(power.get("summary"), kind="Power summary", maximum=160)
         approval = power.get("approval", "never")
         if approval not in {"never", "once", "always"}:
             raise ManifestError("Assistant Power approval is invalid")
         power_refs[power_id] = power.get("secrets", [])
-        power_connection_refs[power_id] = power.get("connections", [])
+        power_account_refs[power_id] = power.get("accounts", [])
 
     return canonical_manifest_contract(
         allowed_hosts=manifest["allowed_hosts"],
         secret_declarations=declarations,
         power_secret_refs=power_refs,
-        connection_declarations=connection_declarations,
-        power_connection_refs=power_connection_refs,
+        account_declarations=account_declarations,
+        power_account_refs=power_account_refs,
     )
 
 

@@ -17,10 +17,10 @@ class TeamDriverImageContractTests(unittest.TestCase):
             "assistant_secret_challenges.py",
             "assistant_secret_flow.py",
             "assistant_secret_store.py",
-            "assistant_connection_challenges.py",
-            "assistant_connection_flow.py",
-            "oauth_connection_store.py",
-            "oauth_connection_service.py",
+            "assistant_account_challenges.py",
+            "assistant_account_flow.py",
+            "oauth_account_store.py",
+            "oauth_account_service.py",
             "oauth_http_client.py",
             "oauth_pkce_challenges.py",
             "oauth_providers.py",
@@ -43,8 +43,8 @@ class TeamDriverImageContractTests(unittest.TestCase):
         self.assertIn("/var/lib/team-driver/power-journal", dockerfile)
         self.assertIn("/var/lib/team-driver/assistant-secrets/state", dockerfile)
         self.assertIn("/var/lib/team-driver/assistant-secrets/key", dockerfile)
-        self.assertIn("/var/lib/team-driver/assistant-connections/state", dockerfile)
-        self.assertIn("/var/lib/team-driver/assistant-connections/key", dockerfile)
+        self.assertIn("/var/lib/team-driver/assistant-accounts/state", dockerfile)
+        self.assertIn("/var/lib/team-driver/assistant-accounts/key", dockerfile)
         self.assertIn(
             "/var/lib/team-driver/cleanup \\\n"
             "        /var/lib/team-driver/inference \\\n"

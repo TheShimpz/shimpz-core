@@ -2,7 +2,7 @@
 
 The browser receives only ``state`` and the S256 challenge. The verifier stays
 process-local and is released once, after the callback proves the same session,
-Team, Assistant, and connection binding that started the flow.
+Team, Assistant, and account binding that started the flow.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ class OAuthExchange:
     code_verifier: str
     team_id: str
     assistant_id: str
-    connection_id: str
+    account_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +65,7 @@ class _PendingChallenge:
     session_digest: bytes
     team_id: str
     assistant_id: str
-    connection_id: str
+    account_id: str
     code_verifier: str
     expires_at: float
 
@@ -139,13 +139,13 @@ class OAuthPKCEChallengeStore:
         session_binding: object,
         team_id: object,
         assistant_id: object,
-        connection_id: object,
+        account_id: object,
     ) -> tuple[bytes, str, str, str]:
         return (
             _session_digest(session_binding),
             _team_id(team_id),
             _component_id(assistant_id, "Assistant"),
-            _component_id(connection_id, "connection"),
+            _component_id(account_id, "account"),
         )
 
     def _remove(self, state: str) -> _PendingChallenge | None:
@@ -155,7 +155,7 @@ class OAuthPKCEChallengeStore:
                 challenge.session_digest,
                 challenge.team_id,
                 challenge.assistant_id,
-                challenge.connection_id,
+                challenge.account_id,
             )
             if self._by_binding.get(binding) == state:
                 self._by_binding.pop(binding, None)
@@ -171,17 +171,17 @@ class OAuthPKCEChallengeStore:
         session_binding: object,
         team_id: object,
         assistant_id: object,
-        connection_id: object,
+        account_id: object,
         provider_id: object,
         scopes: object,
     ) -> OAuthAuthorizationChallenge:
-        binding = self._binding(session_binding, team_id, assistant_id, connection_id)
-        intent = oauth_providers.connection_intent(provider_id, scopes)
+        binding = self._binding(session_binding, team_id, assistant_id, account_id)
+        intent = oauth_providers.account_intent(provider_id, scopes)
         now = time.monotonic()
         with self._lock:
             self._expire(now)
             if binding in self._by_binding:
-                raise OAuthChallengeError("OAuth connection already has a pending challenge")
+                raise OAuthChallengeError("OAuth account already has a pending challenge")
             if len(self._pending) >= self._capacity:
                 raise OAuthChallengeError("OAuth challenge capacity reached")
             session_count = sum(hmac.compare_digest(item.session_digest, binding[0]) for item in self._pending.values())
@@ -209,7 +209,7 @@ class OAuthPKCEChallengeStore:
                 session_digest=binding[0],
                 team_id=binding[1],
                 assistant_id=binding[2],
-                connection_id=binding[3],
+                account_id=binding[3],
                 code_verifier=verifier,
                 expires_at=now + self._ttl,
             )
@@ -223,10 +223,10 @@ class OAuthPKCEChallengeStore:
         session_binding: object,
         team_id: object,
         assistant_id: object,
-        connection_id: object,
+        account_id: object,
     ) -> OAuthExchange:
         identifier = _state(state)
-        binding = self._binding(session_binding, team_id, assistant_id, connection_id)
+        binding = self._binding(session_binding, team_id, assistant_id, account_id)
         now = time.monotonic()
         with self._lock:
             self._expire(now)
@@ -237,7 +237,7 @@ class OAuthPKCEChallengeStore:
                 not hmac.compare_digest(challenge.session_digest, binding[0])
                 or challenge.team_id != binding[1]
                 or challenge.assistant_id != binding[2]
-                or challenge.connection_id != binding[3]
+                or challenge.account_id != binding[3]
             ):
                 raise OAuthChallengeNotFoundError("OAuth challenge is unavailable")
             self._remove(identifier)
@@ -247,7 +247,7 @@ class OAuthPKCEChallengeStore:
                 code_verifier=challenge.code_verifier,
                 team_id=challenge.team_id,
                 assistant_id=challenge.assistant_id,
-                connection_id=challenge.connection_id,
+                account_id=challenge.account_id,
             )
 
     def claim_callback(
@@ -280,7 +280,7 @@ class OAuthPKCEChallengeStore:
                 code_verifier=challenge.code_verifier,
                 team_id=challenge.team_id,
                 assistant_id=challenge.assistant_id,
-                connection_id=challenge.connection_id,
+                account_id=challenge.account_id,
             )
 
     def cancel_session(self, session_binding: object) -> int:

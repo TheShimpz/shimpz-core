@@ -76,7 +76,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
 
 COPY app.py validate.py manifests.py network_policy.py marketplace.py marketplace_image.py assistant_contract.py assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
      assistant_chat.py assistant_secret_challenges.py assistant_secret_flow.py assistant_secret_store.py local_registry.py \
-     assistant_connection_challenges.py assistant_connection_flow.py oauth_connection_store.py oauth_connection_service.py \
+     assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py inference_config.py \
      power_journal.py pgdriver_client.py r2driver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
@@ -92,8 +92,8 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/power-journal \
         /var/lib/team-driver/assistant-secrets/state \
         /var/lib/team-driver/assistant-secrets/key \
-        /var/lib/team-driver/assistant-connections/state \
-        /var/lib/team-driver/assistant-connections/key \
+        /var/lib/team-driver/assistant-accounts/state \
+        /var/lib/team-driver/assistant-accounts/key \
         /app-egress-policy /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
         /run/shimpz-brain-runtime \
     && chown teamdriver:shimpzteamdriver-token /run/shimpz-teamdriver && chmod 750 /run/shimpz-teamdriver \
@@ -110,8 +110,8 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/power-journal \
         /var/lib/team-driver/assistant-secrets/state \
         /var/lib/team-driver/assistant-secrets/key \
-        /var/lib/team-driver/assistant-connections/state \
-        /var/lib/team-driver/assistant-connections/key \
+        /var/lib/team-driver/assistant-accounts/state \
+        /var/lib/team-driver/assistant-accounts/key \
     # egress-policy mountpoint owned by the driver uid, so a FRESH policy volume copies up writable
     # (an existing root-owned volume needs the one-time `chown 10001` — see docs/TESTS.md)
     && chown teamdriver:dockersock /app-egress-policy

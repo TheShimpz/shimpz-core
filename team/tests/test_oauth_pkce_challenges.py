@@ -18,13 +18,13 @@ def create(
     session: str = SESSION_ONE,
     team: str = "team_1",
     assistant: str = "shimpz-assistant",
-    connection: str = "x",
+    account: str = "x",
 ):
     return store.create(
         session_binding=session,
         team_id=team,
         assistant_id=assistant,
-        connection_id=connection,
+        account_id=account,
         provider_id="x",
         scopes=SCOPES,
     )
@@ -42,13 +42,13 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
             {"session_binding": SESSION_TWO},
             {"team_id": "team_2"},
             {"assistant_id": "other-assistant"},
-            {"connection_id": "other"},
+            {"account_id": "other"},
         ):
             binding = {
                 "session_binding": SESSION_ONE,
                 "team_id": "team_1",
                 "assistant_id": "shimpz-assistant",
-                "connection_id": "x",
+                "account_id": "x",
             }
             binding.update(mismatched)
             with (
@@ -62,7 +62,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
             session_binding=SESSION_ONE,
             team_id="team_1",
             assistant_id="shimpz-assistant",
-            connection_id="x",
+            account_id="x",
         )
         expected = (
             base64.urlsafe_b64encode(hashlib.sha256(exchange.code_verifier.encode("ascii")).digest())
@@ -73,7 +73,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
         self.assertEqual(exchange.provider_id, "x")
         self.assertEqual(exchange.scopes, tuple(sorted(SCOPES)))
         self.assertEqual(
-            (exchange.team_id, exchange.assistant_id, exchange.connection_id),
+            (exchange.team_id, exchange.assistant_id, exchange.account_id),
             ("team_1", "shimpz-assistant", "x"),
         )
         with self.assertRaises(oauth_pkce_challenges.OAuthChallengeNotFoundError):
@@ -82,7 +82,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 session_binding=SESSION_ONE,
                 team_id="team_1",
                 assistant_id="shimpz-assistant",
-                connection_id="x",
+                account_id="x",
             )
 
     def test_callback_recovers_private_binding_only_for_the_starting_browser(self) -> None:
@@ -95,7 +95,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
         self.assertEqual(exchange.provider_id, "x")
         self.assertEqual(exchange.team_id, "team_1")
         self.assertEqual(exchange.assistant_id, "shimpz-assistant")
-        self.assertEqual(exchange.connection_id, "x")
+        self.assertEqual(exchange.account_id, "x")
         self.assertNotIn(SESSION_ONE, repr(exchange))
         with self.assertRaises(oauth_pkce_challenges.OAuthChallengeNotFoundError):
             store.claim_callback(state=challenge.state, session_binding=SESSION_ONE)
@@ -115,7 +115,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 session_binding=SESSION_ONE,
                 team_id="team_1",
                 assistant_id="shimpz-assistant",
-                connection_id="x",
+                account_id="x",
             )
 
     def test_global_session_and_team_caps_are_independent(self) -> None:
@@ -157,7 +157,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 session_binding=SESSION_ONE,
                 team_id="team_1",
                 assistant_id="shimpz-assistant",
-                connection_id="x",
+                account_id="x",
             )
         self.assertEqual(store.cancel_team("team_2"), 1)
         self.assertEqual(store.cancel_all(), 0)
@@ -167,14 +167,14 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 session_binding=SESSION_TWO,
                 team_id="team_2",
                 assistant_id="shimpz-assistant",
-                connection_id="x",
+                account_id="x",
             )
 
         for invalid in (
             {"session_binding": "short"},
             {"team_id": "../team"},
             {"assistant_id": "Assistant"},
-            {"connection_id": "x/evil"},
+            {"account_id": "x/evil"},
             {"provider_id": "evil"},
             {"scopes": ("dm.read",)},
         ):
@@ -182,7 +182,7 @@ class OAuthPKCEChallengeTests(unittest.TestCase):
                 "session_binding": SESSION_ONE,
                 "team_id": "team_1",
                 "assistant_id": "shimpz-assistant",
-                "connection_id": "x",
+                "account_id": "x",
                 "provider_id": "x",
                 "scopes": SCOPES,
             }

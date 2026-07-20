@@ -9,7 +9,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import oauth_connection_store
+import oauth_account_store
 from oauth_http_client import OAuthTokenSet
 
 ACCESS = "access-token-private-material-123456789"
@@ -29,33 +29,33 @@ def tokens(
     return OAuthTokenSet(access, refresh, scopes, expires_in)
 
 
-class OAuthConnectionStoreTests(unittest.TestCase):
+class OAuthAccountStoreTests(unittest.TestCase):
     def _store(
         self,
         root: Path,
         *,
         clock=lambda: 1_000_000_000,
-    ) -> oauth_connection_store.OAuthConnectionStore:
-        return oauth_connection_store.OAuthConnectionStore(
-            root / "state" / "connections.json",
+    ) -> oauth_account_store.OAuthAccountStore:
+        return oauth_account_store.OAuthAccountStore(
+            root / "state" / "accounts.json",
             root / "key" / "aes256.key",
             clock=clock,
         )
 
-    def test_inventory_includes_missing_and_encrypted_connection_metadata(self) -> None:
+    def test_inventory_includes_missing_and_encrypted_account_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = self._store(root)
             missing = store.metadata("team_1", "shimpz-assistant", DECLARATIONS)
             self.assertEqual(
                 missing,
-                (oauth_connection_store.OAuthConnectionMetadata("x", "x", SCOPES, "missing", None, None, 0),),
+                (oauth_account_store.OAuthAccountMetadata("x", "x", SCOPES, "missing", None, None, 0),),
             )
 
             stored = store.put("team_1", "shimpz-assistant", "x", "x", SCOPES, tokens(), ACCOUNT)
             self.assertEqual(stored.generation, 1)
             self.assertEqual(stored.status, "connected")
-            self.assertEqual(stored.account, oauth_connection_store.ConnectionAccount(**ACCOUNT))
+            self.assertEqual(stored.account, oauth_account_store.OAuthAccountIdentity(**ACCOUNT))
             self.assertEqual(store.metadata("team_1", "shimpz-assistant", DECLARATIONS), (stored,))
             self.assertEqual(
                 store.resolve(
@@ -69,7 +69,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                 ACCESS,
             )
 
-            state = (root / "state" / "connections.json").read_text(encoding="utf-8")
+            state = (root / "state" / "accounts.json").read_text(encoding="utf-8")
             key = (root / "key" / "aes256.key").read_bytes()
             for private in (ACCESS, REFRESH, "2244994945", "XDevelopers", "X Developers"):
                 self.assertNotIn(private, state)
@@ -110,7 +110,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                 "new-access-token-123456789",
             )
 
-    def test_expired_connection_refresh_is_single_flight_and_preserves_account(self) -> None:
+    def test_expired_account_refresh_is_single_flight_and_preserves_account(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             now = [1_000]
             store = self._store(Path(directory), clock=lambda: now[0])
@@ -156,7 +156,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
             self.assertEqual(calls, [REFRESH])
             metadata = store.metadata("team_1", "shimpz-assistant", DECLARATIONS)[0]
             self.assertEqual(metadata.generation, 2)
-            self.assertEqual(metadata.account, oauth_connection_store.ConnectionAccount(**ACCOUNT))
+            self.assertEqual(metadata.account, oauth_account_store.OAuthAccountIdentity(**ACCOUNT))
 
     def test_missing_refresh_and_declaration_drift_require_reauthorization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -176,7 +176,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
             self.assertEqual(drifted.status, "reauthorization-required")
             self.assertEqual(drifted.scopes, SCOPES)
             self.assertIsNone(drifted.account)
-            with self.assertRaises(oauth_connection_store.OAuthConnectionReauthorizationError):
+            with self.assertRaises(oauth_account_store.OAuthAccountReauthorizationError):
                 store.resolve("team_1", "shimpz-assistant", "x", "x", SCOPES, lambda _: None)
 
             reduced = {"x": {"provider": "x", "scopes": reduced_scopes}}
@@ -185,7 +185,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                 store.metadata("team_1", "shimpz-assistant", reduced)[0].status,
                 "reauthorization-required",
             )
-            with self.assertRaises(oauth_connection_store.OAuthConnectionReauthorizationError):
+            with self.assertRaises(oauth_account_store.OAuthAccountReauthorizationError):
                 store.resolve("team_1", "shimpz-assistant", "x", "x", reduced_scopes, lambda _: None)
 
     def test_aad_rejects_cross_identity_copy_and_metadata_tampering(self) -> None:
@@ -202,13 +202,13 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                 tokens(access="other-access-token-123456789"),
                 ACCOUNT,
             )
-            state_path = root / "state" / "connections.json"
+            state_path = root / "state" / "accounts.json"
             original = json.loads(state_path.read_text(encoding="utf-8"))
             copied = json.loads(json.dumps(original))
             copied["teams"]["team_2"]["shimpz-assistant"]["x"] = copied["teams"]["team_1"]["shimpz-assistant"]["x"]
             state_path.write_text(json.dumps(copied, separators=(",", ":")), encoding="utf-8")
             state_path.chmod(0o600)
-            with self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+            with self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                 store.metadata("team_2", "shimpz-assistant", DECLARATIONS)
 
             for field, value in (
@@ -221,7 +221,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                 tampered["teams"]["team_1"]["shimpz-assistant"]["x"][field] = value
                 state_path.write_text(json.dumps(tampered, separators=(",", ":")), encoding="utf-8")
                 state_path.chmod(0o600)
-                with self.subTest(field=field), self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+                with self.subTest(field=field), self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                     store.metadata("team_1", "shimpz-assistant", DECLARATIONS)
 
     def test_missing_or_substituted_key_fails_closed_without_replacement(self) -> None:
@@ -231,7 +231,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
             store.put("team_1", "shimpz-assistant", "x", "x", SCOPES, tokens(), ACCOUNT)
             original_state = store.state_path.read_bytes()
             store.key_path.unlink()
-            with self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+            with self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                 store.put(
                     "team_1",
                     "shimpz-assistant",
@@ -246,7 +246,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
 
             store.key_path.write_bytes(os.urandom(32))
             store.key_path.chmod(0o600)
-            with self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+            with self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                 store.metadata("team_1", "shimpz-assistant", DECLARATIONS)
 
     def test_invalid_tokens_permissions_symlinks_and_duplicate_json_fail_closed(self) -> None:
@@ -263,13 +263,13 @@ class OAuthConnectionStoreTests(unittest.TestCase):
             for value in invalid:
                 with (
                     self.subTest(value=value),
-                    self.assertRaises(oauth_connection_store.OAuthConnectionValidationError),
+                    self.assertRaises(oauth_account_store.OAuthAccountValidationError),
                 ):
                     store.put("team_1", "shimpz-assistant", "x", "x", SCOPES, value, ACCOUNT)
                 self.assertEqual(store.state_path.read_bytes(), original)
 
             store.state_path.chmod(0o644)
-            with self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+            with self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                 store.metadata("team_1", "shimpz-assistant", DECLARATIONS)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -278,13 +278,13 @@ class OAuthConnectionStoreTests(unittest.TestCase):
             target = root / "target.json"
             target.write_text('{"schema":1,"teams":{},"teams":{}}', encoding="utf-8")
             target.chmod(0o600)
-            symlink = root / "state" / "connections.json"
+            symlink = root / "state" / "accounts.json"
             symlink.symlink_to(target)
-            with self.assertRaises(oauth_connection_store.OAuthConnectionStoreError):
+            with self.assertRaises(oauth_account_store.OAuthAccountStoreError):
                 self._store(root).metadata("team_1", "shimpz-assistant", DECLARATIONS)
             symlink.unlink()
             target.replace(symlink)
-            with self.assertRaisesRegex(oauth_connection_store.OAuthConnectionStoreError, "duplicate"):
+            with self.assertRaisesRegex(oauth_account_store.OAuthAccountStoreError, "duplicate"):
                 self._store(root).metadata("team_1", "shimpz-assistant", DECLARATIONS)
 
     def test_retention_and_deletion_are_exactly_scoped(self) -> None:
@@ -299,7 +299,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
 
             self.assertFalse(store.retain_declared("team_1", "first-assistant", {"x": object()}))
             self.assertTrue(store.retain_declared("team_1", "first-assistant", {}))
-            self.assertFalse(store.delete_connection("team_1", "first-assistant", "x"))
+            self.assertFalse(store.delete_account("team_1", "first-assistant", "x"))
             self.assertEqual(
                 store.metadata("team_1", "second-assistant", DECLARATIONS)[0].status,
                 "connected",
@@ -345,7 +345,7 @@ class OAuthConnectionStoreTests(unittest.TestCase):
                     "team_1",
                     "shimpz-assistant",
                     "x",
-                    lambda *_tokens: self.fail("missing connection must not invoke revocation"),
+                    lambda *_tokens: self.fail("missing account must not invoke revocation"),
                 )
             )
 

@@ -9,26 +9,41 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 MAX_BODY = 16 * 1024
 HELP_PATHS = {"/v1/help", *(f"/v1/help/{locale}" for locale in ("en", "pt", "es", "zh", "fr", "de", "ja", "ar"))}
-POWERS = {"public-user-lookup", "identity-me", "create-post", "delete-post"}
+X_POWERS = {"public-user-lookup", "identity-me", "create-post", "delete-post"}
+MUX_API_POWERS = {"list-direct-uploads", "create-test-direct-upload", "cancel-direct-upload"}
+MUX_WEBHOOK_POWERS = {"verify-mux-webhook"}
+POWERS = X_POWERS | MUX_API_POWERS | MUX_WEBHOOK_POWERS
 USERNAME_RE = re.compile(r"[A-Za-z0-9_]{1,15}\Z")
 POST_ID_RE = re.compile(r"[0-9]{1,19}\Z")
+MUX_UPLOAD_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _power_input(payload: object, power: str) -> dict[str, object]:
-    if not isinstance(payload, dict) or set(payload) != {"input", "secrets", "connections"}:
+    if not isinstance(payload, dict) or set(payload) != {"input", "secrets", "accounts"}:
         raise ValueError
     power_input = payload["input"]
     secrets = payload["secrets"]
-    connections = payload["connections"]
-    if not isinstance(power_input, dict) or secrets != {} or not isinstance(connections, dict):
+    accounts = payload["accounts"]
+    if not isinstance(power_input, dict) or not isinstance(secrets, dict) or not isinstance(accounts, dict):
         raise ValueError
-    if set(connections) != {"x"}:
+    if power in MUX_API_POWERS | MUX_WEBHOOK_POWERS:
+        expected = {"mux-token-id", "mux-token-secret"} if power in MUX_API_POWERS else {"mux-webhook-signing-secret"}
+        if (
+            accounts
+            or set(secrets) != expected
+            or not all(isinstance(value, str) and value for value in secrets.values())
+        ):
+            raise ValueError
+        return power_input
+    if secrets or power not in X_POWERS:
         raise ValueError
-    connection = connections["x"]
-    if not isinstance(connection, dict) or set(connection) != {"type", "access_token"}:
+    if set(accounts) != {"x"}:
         raise ValueError
-    token = connection["access_token"]
-    if connection["type"] != "oauth2-bearer" or not isinstance(token, str):
+    account = accounts["x"]
+    if not isinstance(account, dict) or set(account) != {"type", "access_token"}:
+        raise ValueError
+    token = account["access_token"]
+    if account["type"] != "oauth2-bearer" or not isinstance(token, str):
         raise ValueError
     try:
         encoded_token = token.encode("ascii")
@@ -39,7 +54,7 @@ def _power_input(payload: object, power: str) -> dict[str, object]:
     return power_input
 
 
-def _power_result(power: str, power_input: dict[str, object]) -> dict[str, object]:
+def _x_power_result(power: str, power_input: dict[str, object]) -> dict[str, object]:
     if power == "public-user-lookup":
         if set(power_input) != {"username"} or not isinstance(power_input["username"], str):
             raise ValueError
@@ -59,14 +74,55 @@ def _power_result(power: str, power_input: dict[str, object]) -> dict[str, objec
         if set(power_input) != {"text"} or not isinstance(power_input["text"], str):
             raise ValueError
         text = power_input["text"]
-        if not 1 <= len(text) <= 280 or text != text.strip():
+        if not 1 <= len(text) <= 8192 or text != text.strip():
             raise ValueError
         return {"id": "246813579", "text": text}
-    if set(power_input) != {"id"} or not isinstance(power_input["id"], str):
+    if power == "delete-post":
+        if set(power_input) != {"id"} or not isinstance(power_input["id"], str):
+            raise ValueError
+        if POST_ID_RE.fullmatch(power_input["id"]) is None:
+            raise ValueError
+        return {"deleted": True}
+    raise ValueError
+
+
+def _mux_power_result(power: str, power_input: dict[str, object]) -> dict[str, object]:
+    if power == "list-direct-uploads":
+        limit = power_input.get("limit")
+        if (
+            set(power_input) != {"limit"}
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 25
+        ):
+            raise ValueError
+        return {"uploads": []}
+    if power == "create-test-direct-upload":
+        if power_input:
+            raise ValueError
+        return {"id": "fixture_upload", "status": "waiting", "timeout": 60}
+    if power == "cancel-direct-upload":
+        upload_id = power_input.get("id")
+        if (
+            set(power_input) != {"id"}
+            or not isinstance(upload_id, str)
+            or MUX_UPLOAD_ID_RE.fullmatch(upload_id) is None
+        ):
+            raise ValueError
+        return {"id": upload_id, "status": "cancelled", "timeout": 60}
+    raise ValueError
+
+
+def _power_result(power: str, power_input: dict[str, object]) -> dict[str, object]:
+    if power in X_POWERS:
+        return _x_power_result(power, power_input)
+    if power in MUX_API_POWERS:
+        return _mux_power_result(power, power_input)
+    if set(power_input) != {"body", "signature"}:
         raise ValueError
-    if POST_ID_RE.fullmatch(power_input["id"]) is None:
+    if not all(isinstance(power_input[key], str) and power_input[key] for key in ("body", "signature")):
         raise ValueError
-    return {"deleted": True}
+    return {"valid": True, "timestamp": 0, "event_type": "video.upload.asset_created"}
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -111,12 +111,12 @@ class HostedAssistantSecretTests(unittest.TestCase):
                     secrets=(
                         tuple(SECRET_VALUES)[:1] if power_id == "public-user-lookup" else tuple(SECRET_VALUES)[1:]
                     ),
-                    connections=(),
+                    accounts=(),
                 )
                 for power_id, power in trusted_contract.powers.items()
             },
             secrets=secret_contract,
-            connections={},
+            accounts={},
         )
         self.assistant_container = types.SimpleNamespace(id="b" * 64)
         self.active = app._ActiveAssistant(ASSISTANT_ID, self.contract, self.assistant_container)
@@ -212,7 +212,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
             {
                 "input": {"username": "XDevelopers"},
                 "secrets": {"x-bearer-token": SECRET_VALUES["x-bearer-token"]},
-                "connections": {},
+                "accounts": {},
             },
         )
 
@@ -229,7 +229,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
                         "x-access-token-secret",
                     )
                 },
-                "connections": {},
+                "accounts": {},
             },
         )
         state = self.secret_store.state_path.read_text(encoding="utf-8")

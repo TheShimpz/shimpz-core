@@ -40,7 +40,7 @@ class PowerSpec:
     output_schema: Mapping[str, Any]
     approval: Literal["none", "once", "each-run"] = "none"
     secrets: tuple[str, ...] = ()
-    connections: tuple[str, ...] = ()
+    accounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +50,7 @@ class SecretSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectionSpec:
+class AccountSpec:
     provider: str
     scopes: tuple[str, ...]
 
@@ -60,7 +60,7 @@ class AssistantContract:
     rpc_command: str
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
-    connections: dict[str, ConnectionSpec] = field(default_factory=dict)
+    accounts: dict[str, AccountSpec] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -109,9 +109,9 @@ APPS: dict[str, AppSpec] = {
                 secret_id: SecretSpec(**contract)
                 for secret_id, contract in assistant_contract.secret_contracts().items()
             },
-            connections={
-                connection_id: ConnectionSpec(**contract)
-                for connection_id, contract in assistant_contract.connection_contracts().items()
+            accounts={
+                account_id: AccountSpec(**contract)
+                for account_id, contract in assistant_contract.account_contracts().items()
             },
         ),
     ),

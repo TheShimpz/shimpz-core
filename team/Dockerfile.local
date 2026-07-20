@@ -38,7 +38,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
 
 COPY local_app.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py assistant_genesis.py assistant_manifest.py \
     assistant_contract.py assistant_secret_store.py assistant_secret_challenges.py assistant_secret_flow.py \
-    assistant_connection_challenges.py assistant_connection_flow.py oauth_connection_store.py oauth_connection_service.py \
+    assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
     oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
     assistant_approval_challenges.py assistant_approval_flow.py assistant_approval_grants.py \
     assistant_chat.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py inference_config.py \
@@ -59,7 +59,7 @@ RUN groupadd --gid 10001 shimpzlocal && \
         /var/lib/shimpz-local/inference /var/lib/shimpz-local/power-journal /var/lib/shimpz-local/app-egress \
         /var/lib/shimpz-local/assistant-approvals \
         /var/lib/shimpz-local/assistant-secrets/state /var/lib/shimpz-local/assistant-secrets/key \
-        /var/lib/shimpz-local/assistant-connections/state /var/lib/shimpz-local/assistant-connections/key && \
+        /var/lib/shimpz-local/assistant-accounts/state /var/lib/shimpz-local/assistant-accounts/key && \
     chown shimpzlocal:shimpzteamdriver-token /run/shimpz-local && chmod 2750 /run/shimpz-local && \
     chown shimpzlocal:shimpzbrain-runtime-token /run/shimpz-brain-runtime && \
     chmod 0750 /run/shimpz-brain-runtime && \
@@ -67,14 +67,14 @@ RUN groupadd --gid 10001 shimpzlocal && \
         /var/lib/shimpz-local/inference /var/lib/shimpz-local/power-journal \
         /var/lib/shimpz-local/assistant-approvals \
         /var/lib/shimpz-local/assistant-secrets/state /var/lib/shimpz-local/assistant-secrets/key \
-        /var/lib/shimpz-local/assistant-connections/state /var/lib/shimpz-local/assistant-connections/key && \
+        /var/lib/shimpz-local/assistant-accounts/state /var/lib/shimpz-local/assistant-accounts/key && \
     chown shimpzlocal:shimpzapp-egress-policy /var/lib/shimpz-local/app-egress && \
     chmod 0770 /var/lib/shimpz-local/app-egress && \
     chmod 0700 /var/log/shimpz-local /var/lib/shimpz-local/storage /var/lib/shimpz-local/inference \
         /var/lib/shimpz-local/power-journal /var/lib/shimpz-local/assistant-secrets/state \
         /var/lib/shimpz-local/assistant-approvals \
         /var/lib/shimpz-local/assistant-secrets/key \
-        /var/lib/shimpz-local/assistant-connections/state /var/lib/shimpz-local/assistant-connections/key && \
+        /var/lib/shimpz-local/assistant-accounts/state /var/lib/shimpz-local/assistant-accounts/key && \
     chmod 0555 /app/local_healthcheck.py && chmod 0444 /etc/shimpz/local-assistants.json
 
 LABEL org.opencontainers.image.source="https://github.com/roxygens/shimpz-drivers" \

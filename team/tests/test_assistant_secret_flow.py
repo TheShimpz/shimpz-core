@@ -74,13 +74,13 @@ class AssistantSecretFlowTests(unittest.TestCase):
         payload = {
             "input": {"city": "São Paulo"},
             "secrets": {"token": "private-value"},
-            "connections": {},
+            "accounts": {},
         }
         encoded = assistant_secret_flow.encode_private_rpc_envelope(payload)
 
         self.assertEqual(
             encoded,
-            b'{"input":{"city":"S\\u00e3o Paulo"},"secrets":{"token":"private-value"},"connections":{}}',
+            b'{"input":{"city":"S\\u00e3o Paulo"},"secrets":{"token":"private-value"},"accounts":{}}',
         )
         with self.assertRaises(assistant_secret_flow.SecretFlowError):
             assistant_secret_flow.require_power_rpc_envelope(

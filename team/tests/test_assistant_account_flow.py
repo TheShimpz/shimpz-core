@@ -10,10 +10,10 @@ from pathlib import Path
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_connection_challenges
-import assistant_connection_flow
+import assistant_account_challenges
+import assistant_account_flow
 import brain_runtime_client
-from local_registry import AssistantSpec, ConnectionSpec, PowerSpec
+from local_registry import AccountSpec, AssistantSpec, PowerSpec
 
 
 @dataclass(frozen=True)
@@ -54,22 +54,22 @@ class _Store:
     def metadata(self, team_id: object, assistant_id: object, declarations: object) -> tuple[_Metadata, ...]:
         assert isinstance(assistant_id, str)
         assert isinstance(declarations, dict)
-        return tuple(self.rows[(assistant_id, connection_id)] for connection_id in declarations)
+        return tuple(self.rows[(assistant_id, account_id)] for account_id in declarations)
 
     def resolve(
         self,
         team_id: object,
         assistant_id: object,
-        connection_id: object,
+        account_id: object,
         provider: object,
         scopes: object,
         refresh_callback: object,
     ) -> str:
         assert isinstance(assistant_id, str)
-        assert isinstance(connection_id, str)
+        assert isinstance(account_id, str)
         assert callable(refresh_callback)
-        self.resolved.append((team_id, assistant_id, connection_id, provider, scopes, refresh_callback))
-        return self.tokens[(assistant_id, connection_id)]
+        self.resolved.append((team_id, assistant_id, account_id, provider, scopes, refresh_callback))
+        return self.tokens[(assistant_id, account_id)]
 
 
 def _spec() -> AssistantSpec:
@@ -106,9 +106,9 @@ def _spec() -> AssistantSpec:
         },
         secrets={},
         allowed_hosts=("api.x.com",),
-        connections={
-            "x-read": ConnectionSpec("x", read_scopes),
-            "x-write": ConnectionSpec("x", write_scopes),
+        accounts={
+            "x-read": AccountSpec("x", read_scopes),
+            "x-write": AccountSpec("x", write_scopes),
         },
     )
 
@@ -117,8 +117,8 @@ def _request(power: str, interrupt_id: str) -> brain_runtime_client.PowerRequest
     return brain_runtime_client.PowerRequest(interrupt_id, "x-assistant", power, {}, "none")
 
 
-class AssistantConnectionFlowTests(unittest.TestCase):
-    def test_batch_collects_every_unusable_connection_before_any_power(self) -> None:
+class AssistantAccountFlowTests(unittest.TestCase):
+    def test_batch_collects_every_unusable_account_before_any_power(self) -> None:
         expiry = int(time.time()) + 3600
         spec = _spec()
         store = _Store(
@@ -126,7 +126,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 ("x-assistant", "x-read"): _Metadata(
                     "x-read",
                     "x",
-                    tuple(sorted(spec.connections["x-read"].scopes)),
+                    tuple(sorted(spec.accounts["x-read"].scopes)),
                     "connected",
                     _Account("123", "reader", "Reader"),
                     expiry,
@@ -135,7 +135,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 ("x-assistant", "x-write"): _Metadata(
                     "x-write",
                     "x",
-                    tuple(sorted(spec.connections["x-write"].scopes)),
+                    tuple(sorted(spec.accounts["x-write"].scopes)),
                     "refresh-required",
                     _Account("123", "reader", "Reader"),
                     expiry,
@@ -144,7 +144,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
             }
         )
 
-        requirements = assistant_connection_flow.requirements_for_batch(
+        requirements = assistant_account_flow.requirements_for_batch(
             "team_1",
             {"x-assistant": _Active(spec)},
             (_request("read-profile", "one"), _request("publish-post", "two")),
@@ -154,19 +154,19 @@ class AssistantConnectionFlowTests(unittest.TestCase):
         self.assertEqual(len(requirements), 1)
         self.assertEqual(requirements[0].power_ids, ("publish-post",))
         self.assertEqual(
-            requirements[0].connections,
+            requirements[0].accounts,
             (("x-write", "x", ("offline.access", "tweet.read", "tweet.write", "users.read")),),
         )
 
     def test_challenge_is_exact_bounded_public_metadata(self) -> None:
         spec = _spec()
-        requirement = assistant_connection_challenges.ConnectionRequirement(
+        requirement = assistant_account_challenges.AccountRequirement(
             "x-assistant",
             "X Assistant",
             ("publish-post",),
             (("x-write", "x", ("offline.access", "tweet.read", "tweet.write", "users.read")),),
         )
-        challenge = assistant_connection_challenges.PendingConnectionChallenge(
+        challenge = assistant_account_challenges.PendingAccountChallenge(
             "a" * 32,
             "team_1",
             time.monotonic() + 300,
@@ -174,7 +174,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
             {"input": "must-never-be-public"},
         )
 
-        payload = assistant_connection_flow.challenge_payload(
+        payload = assistant_account_flow.challenge_payload(
             challenge,
             {"x-assistant": _Active(spec)},
         )
@@ -183,7 +183,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
             set(payload),
             {"team_id", "status", "turn_id", "challenge_id", "expires_in", "requirements"},
         )
-        self.assertEqual(payload["status"], "connections-required")
+        self.assertEqual(payload["status"], "accounts-required")
         self.assertIn(payload["expires_in"], {299, 300})
         self.assertEqual(
             payload["requirements"],
@@ -191,7 +191,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 {
                     "assistant_id": "x-assistant",
                     "assistant_name": "X Assistant",
-                    "connection_id": "x-write",
+                    "account_id": "x-write",
                     "provider": "x",
                     "name": "X",
                     "summary": "Connect your X account so this Assistant can use only its reviewed X permissions.",
@@ -217,7 +217,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 ("x-assistant", "x-read"): _Metadata(
                     "x-read",
                     "x",
-                    tuple(sorted(spec.connections["x-read"].scopes)),
+                    tuple(sorted(spec.accounts["x-read"].scopes)),
                     "missing",
                     None,
                     None,
@@ -226,7 +226,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 ("x-assistant", "x-write"): _Metadata(
                     "x-write",
                     "x",
-                    tuple(sorted(spec.connections["x-write"].scopes)),
+                    tuple(sorted(spec.accounts["x-write"].scopes)),
                     "refresh-required",
                     _Account("123", "juliano", "Juliano"),
                     expiry,
@@ -235,30 +235,30 @@ class AssistantConnectionFlowTests(unittest.TestCase):
             }
         )
 
-        payload = assistant_connection_flow.inventory_payload("team_1", [spec], store)
+        payload = assistant_account_flow.inventory_payload("team_1", [spec], store)
 
-        self.assertEqual(set(payload), {"connections"})
-        self.assertEqual(payload["connections"][0]["status"], "missing")
-        self.assertEqual(payload["connections"][1]["status"], "expired")
+        self.assertEqual(set(payload), {"accounts"})
+        self.assertEqual(payload["accounts"][0]["status"], "missing")
+        self.assertEqual(payload["accounts"][1]["status"], "expired")
         self.assertEqual(
-            payload["connections"][1]["account"],
+            payload["accounts"][1]["account"],
             {"id": "123", "name": "Juliano", "username": "juliano"},
         )
         self.assertEqual(
-            payload["connections"][1]["expires_at"],
+            payload["accounts"][1]["expires_at"],
             datetime.fromtimestamp(expiry, UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         )
         encoded = repr(payload)
         for forbidden in ("access_token", "refresh_token", "must-never-be-public", "generation"):
             self.assertNotIn(forbidden, encoded)
 
-    def test_private_resolution_returns_only_the_selected_power_connection(self) -> None:
+    def test_private_resolution_returns_only_the_selected_power_account(self) -> None:
         spec = _spec()
         token = "-".join(("private", "access", "token", "123456"))
         store = _Store({}, {("x-assistant", "x-write"): token})
         refresh_calls: list[tuple[str, tuple[str, ...], str]] = []
 
-        connections = assistant_connection_flow.resolve_power_connections(
+        accounts = assistant_account_flow.resolve_power_accounts(
             "team_1",
             spec,
             "publish-post",
@@ -267,7 +267,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            connections,
+            accounts,
             {"x-write": {"type": "oauth2-bearer", "access_token": token}},
         )
         self.assertEqual(len(store.resolved), 1)
@@ -293,19 +293,19 @@ class AssistantConnectionFlowTests(unittest.TestCase):
                 )
             }
         )
-        with self.assertRaises(assistant_connection_flow.ConnectionFlowError):
-            assistant_connection_flow.requirements_for_batch(
+        with self.assertRaises(assistant_account_flow.AccountFlowError):
+            assistant_account_flow.requirements_for_batch(
                 "team_1",
                 {"x-assistant": _Active(spec)},
                 (_request("read-profile", "one"),),
                 drifted,
             )
-        with self.assertRaises(assistant_connection_flow.ConnectionFlowError):
-            assistant_connection_flow._assert_public_payload({"access_token": "private"})
+        with self.assertRaises(assistant_account_flow.AccountFlowError):
+            assistant_account_flow._assert_public_payload({"access_token": "private"})
 
         invalid_token_store = _Store({}, {("x-assistant", "x-read"): "short"})
-        with self.assertRaises(assistant_connection_flow.ConnectionFlowError):
-            assistant_connection_flow.resolve_power_connections(
+        with self.assertRaises(assistant_account_flow.AccountFlowError):
+            assistant_account_flow.resolve_power_accounts(
                 "team_1",
                 spec,
                 "read-profile",

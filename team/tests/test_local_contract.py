@@ -18,9 +18,9 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
+import assistant_account_challenges
 import assistant_approval_challenges
 import assistant_approval_grants
-import assistant_connection_challenges
 import assistant_secret_challenges
 import assistant_secret_store
 import brain_runtime_client
@@ -30,7 +30,7 @@ import local_audit
 import local_healthcheck
 import local_registry
 import local_token_store
-import oauth_connection_store
+import oauth_account_store
 import oauth_pkce_challenges
 
 LOOKUP_INPUT = {"username": "OpenAI"}
@@ -42,8 +42,8 @@ TEST_SECRET_VALUES = {
     "session-token": "session-token-test-credential-123456789",
     "session-secret": "session-secret-test-credential-123456789",
 }
-TEST_CONNECTION_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "123456789"))
-TEST_CONNECTION_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
+TEST_ACCOUNT_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "123456789"))
+TEST_ACCOUNT_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
 CURRENT_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "b" * 64
 LEGACY_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "a" * 64
 
@@ -84,7 +84,7 @@ class LocalContractTests(unittest.TestCase):
             power_id: replace(
                 power,
                 secrets=tuple(TEST_SECRET_VALUES),
-                connections=(),
+                accounts=(),
             )
             for power_id, power in spec.powers.items()
         }
@@ -93,7 +93,7 @@ class LocalContractTests(unittest.TestCase):
                 spec,
                 powers=test_powers,
                 secrets=test_secrets,
-                connections={},
+                accounts={},
             )
         }
 
@@ -127,11 +127,11 @@ class LocalContractTests(unittest.TestCase):
             Path(directory) / "assistant-secrets" / "key" / "aes256.key",
         )
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
-        controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
-            Path(directory) / "assistant-connections" / "state" / "connections.json",
-            Path(directory) / "assistant-connections" / "key" / "aes256.key",
+        controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
+            Path(directory) / "assistant-accounts" / "state" / "accounts.json",
+            Path(directory) / "assistant-accounts" / "key" / "aes256.key",
         )
-        controller.connection_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+        controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
@@ -145,17 +145,17 @@ class LocalContractTests(unittest.TestCase):
                 TEST_SECRET_VALUES,
             )
         if configure_secrets is None:
-            connection = controller.registry["shimpz-assistant"].connections["x"]
-            controller.assistant_connections.put(
+            account = controller.registry["shimpz-assistant"].accounts["x"]
+            controller.assistant_accounts.put(
                 "team_1",
                 "shimpz-assistant",
                 "x",
-                connection.provider,
-                connection.scopes,
+                account.provider,
+                account.scopes,
                 SimpleNamespace(
-                    access_token=TEST_CONNECTION_ACCESS_TOKEN,
-                    refresh_token=TEST_CONNECTION_REFRESH_TOKEN,
-                    scopes=connection.scopes,
+                    access_token=TEST_ACCOUNT_ACCESS_TOKEN,
+                    refresh_token=TEST_ACCOUNT_REFRESH_TOKEN,
+                    scopes=account.scopes,
                     expires_in=3600,
                 ),
             )
@@ -214,11 +214,11 @@ class LocalContractTests(unittest.TestCase):
             Path(secret_directory.name) / "key" / "aes256.key",
         )
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
-        controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
-            Path(secret_directory.name) / "assistant-connections" / "state" / "connections.json",
-            Path(secret_directory.name) / "assistant-connections" / "key" / "aes256.key",
+        controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
+            Path(secret_directory.name) / "assistant-accounts" / "state" / "accounts.json",
+            Path(secret_directory.name) / "assistant-accounts" / "key" / "aes256.key",
         )
-        controller.connection_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+        controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
@@ -231,7 +231,7 @@ class LocalContractTests(unittest.TestCase):
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=(),
             secrets={},
-            connections={},
+            accounts={},
         )
         controller.registry = {spec.assistant_id: spec}
         network_name = controller._network_name("team_1")
@@ -293,7 +293,16 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(registry["shimpz-assistant"].name, "Shimpz Assistant")
         self.assertEqual(
             set(registry["shimpz-assistant"].powers),
-            {"public-user-lookup", "identity-me", "create-post", "delete-post"},
+            {
+                "public-user-lookup",
+                "identity-me",
+                "create-post",
+                "delete-post",
+                "list-direct-uploads",
+                "create-test-direct-upload",
+                "cancel-direct-upload",
+                "verify-mux-webhook",
+            },
         )
         self.assertEqual(
             registry["shimpz-assistant"].powers["public-user-lookup"].path,
@@ -301,7 +310,7 @@ class LocalContractTests(unittest.TestCase):
         )
         self.assertEqual(
             registry["shimpz-assistant"].allowed_hosts,
-            ("api.x.com",),
+            ("api.mux.com", "api.x.com"),
         )
         invalid = (
             "ghcr.io/roxygens/shimpz-space:latest",
@@ -424,17 +433,17 @@ class LocalContractTests(unittest.TestCase):
             "assistant_secret_store.py",
             "assistant_secret_challenges.py",
             "assistant_secret_flow.py",
-            "assistant_connection_challenges.py",
-            "assistant_connection_flow.py",
-            "oauth_connection_store.py",
-            "oauth_connection_service.py",
+            "assistant_account_challenges.py",
+            "assistant_account_flow.py",
+            "oauth_account_store.py",
+            "oauth_account_service.py",
             "oauth_http_client.py",
             "oauth_pkce_challenges.py",
             "oauth_providers.py",
             "/var/lib/shimpz-local/assistant-secrets/state",
             "/var/lib/shimpz-local/assistant-secrets/key",
-            "/var/lib/shimpz-local/assistant-connections/state",
-            "/var/lib/shimpz-local/assistant-connections/key",
+            "/var/lib/shimpz-local/assistant-accounts/state",
+            "/var/lib/shimpz-local/assistant-accounts/key",
         ):
             self.assertIn(marker, dockerfile)
         self.assertIn(
@@ -443,8 +452,8 @@ class LocalContractTests(unittest.TestCase):
             "        /var/lib/shimpz-local/assistant-approvals \\\n"
             "        /var/lib/shimpz-local/assistant-secrets/state "
             "/var/lib/shimpz-local/assistant-secrets/key \\\n"
-            "        /var/lib/shimpz-local/assistant-connections/state "
-            "/var/lib/shimpz-local/assistant-connections/key &&",
+            "        /var/lib/shimpz-local/assistant-accounts/state "
+            "/var/lib/shimpz-local/assistant-accounts/key &&",
             dockerfile,
         )
         self.assertIn(
@@ -454,8 +463,8 @@ class LocalContractTests(unittest.TestCase):
             "/var/lib/shimpz-local/assistant-secrets/state \\\n"
             "        /var/lib/shimpz-local/assistant-approvals \\\n"
             "        /var/lib/shimpz-local/assistant-secrets/key \\\n"
-            "        /var/lib/shimpz-local/assistant-connections/state "
-            "/var/lib/shimpz-local/assistant-connections/key &&",
+            "        /var/lib/shimpz-local/assistant-accounts/state "
+            "/var/lib/shimpz-local/assistant-accounts/key &&",
             dockerfile,
         )
         self.assertIn("SHIMPZ_LOCAL_POWER_JOURNAL_PATH", source)
@@ -1248,10 +1257,10 @@ class LocalContractTests(unittest.TestCase):
                     {
                         "input": LOOKUP_INPUT,
                         "secrets": {},
-                        "connections": {
+                        "accounts": {
                             "x": {
                                 "type": "oauth2-bearer",
-                                "access_token": TEST_CONNECTION_ACCESS_TOKEN,
+                                "access_token": TEST_ACCOUNT_ACCESS_TOKEN,
                             }
                         },
                     },
@@ -1261,7 +1270,7 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(response["result"], LOOKUP_RESULT)
 
     def test_power_output_containing_a_secret_is_blocked_and_redacted(self) -> None:
-        raw_secret = TEST_CONNECTION_ACCESS_TOKEN
+        raw_secret = TEST_ACCOUNT_ACCESS_TOKEN
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
             controller._rpc = lambda *_args: {
@@ -2316,29 +2325,29 @@ class LocalContractTests(unittest.TestCase):
             {power_id: tuple(sorted(power.secrets)) for power_id, power in spec.powers.items()},
         )
         self.assertEqual(
+            {account.id: (account.provider, account.scopes) for account in reviewed_contracts[0].accounts},
             {
-                connection.id: (connection.provider, connection.scopes)
-                for connection in reviewed_contracts[0].connections
-            },
-            {
-                connection_id: (connection.provider, tuple(sorted(connection.scopes)))
-                for connection_id, connection in spec.connections.items()
+                account_id: (account.provider, tuple(sorted(account.scopes)))
+                for account_id, account in spec.accounts.items()
             },
         )
         self.assertEqual(
-            dict(reviewed_contracts[0].power_connections),
-            {power_id: tuple(sorted(power.connections)) for power_id, power in spec.powers.items()},
+            dict(reviewed_contracts[0].power_accounts),
+            {power_id: tuple(sorted(power.accounts)) for power_id, power in spec.powers.items()},
         )
 
         exact = reviewed_contracts[0]
-        connection = exact.connections[0]
-        first_power, _first_refs = exact.power_connections[0]
+        account = exact.accounts[0]
+        first_power, _first_refs = next(item for item in exact.power_accounts if item[1])
         drifted = (
-            replace(exact, connections=(replace(connection, provider="other"),)),
-            replace(exact, connections=(replace(connection, scopes=("tweet.read",)),)),
+            replace(exact, accounts=(replace(account, provider="other"),)),
+            replace(exact, accounts=(replace(account, scopes=("tweet.read",)),)),
             replace(
                 exact,
-                power_connections=((first_power, ()), *exact.power_connections[1:]),
+                power_accounts=tuple(
+                    (power_id, ()) if power_id == first_power else (power_id, refs)
+                    for power_id, refs in exact.power_accounts
+                ),
             ),
         )
         controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()

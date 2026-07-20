@@ -36,9 +36,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import accounts_client
+import assistant_account_challenges
+import assistant_account_flow
 import assistant_chat
-import assistant_connection_challenges
-import assistant_connection_flow
 import assistant_contract
 import assistant_genesis
 import assistant_manifest
@@ -59,8 +59,8 @@ import manifests
 import marketplace
 import marketplace_image
 import network_policy
-import oauth_connection_service
-import oauth_connection_store
+import oauth_account_service
+import oauth_account_store
 import oauth_http_client
 import oauth_pkce_challenges
 import pgdriver_client
@@ -136,16 +136,16 @@ ASSISTANT_SECRET_KEY_PATH = Path(
         "/var/lib/team-driver/assistant-secrets/key/aes256.key",
     )
 )
-ASSISTANT_CONNECTION_STATE_PATH = Path(
+ASSISTANT_ACCOUNT_STATE_PATH = Path(
     os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_CONNECTION_STATE_PATH",
-        "/var/lib/team-driver/assistant-connections/state/connections.json",
+        "SHIMPZ_TEAM_ASSISTANT_ACCOUNT_STATE_PATH",
+        "/var/lib/team-driver/assistant-accounts/state/accounts.json",
     )
 )
-ASSISTANT_CONNECTION_KEY_PATH = Path(
+ASSISTANT_ACCOUNT_KEY_PATH = Path(
     os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_CONNECTION_KEY_PATH",
-        "/var/lib/team-driver/assistant-connections/key/aes256.key",
+        "SHIMPZ_TEAM_ASSISTANT_ACCOUNT_KEY_PATH",
+        "/var/lib/team-driver/assistant-accounts/key/aes256.key",
     )
 )
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
@@ -183,19 +183,19 @@ _assistant_secrets = assistant_secret_store.AssistantSecretStore(
     ASSISTANT_SECRET_KEY_PATH,
 )
 _assistant_secret_challenges = assistant_secret_challenges.SecretChallengeStore()
-_assistant_connections = oauth_connection_store.OAuthConnectionStore(
-    ASSISTANT_CONNECTION_STATE_PATH,
-    ASSISTANT_CONNECTION_KEY_PATH,
+_assistant_accounts = oauth_account_store.OAuthAccountStore(
+    ASSISTANT_ACCOUNT_STATE_PATH,
+    ASSISTANT_ACCOUNT_KEY_PATH,
 )
-_assistant_connection_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+_assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
 _oauth_pkce_challenges = oauth_pkce_challenges.OAuthPKCEChallengeStore()
 _oauth_http = oauth_http_client.OAuthHTTPClient()
 _x_oauth_client_id = os.environ.get("SHIMPZ_X_OAUTH_CLIENT_ID")
-_oauth_connections = oauth_connection_service.OAuthConnectionService(
+_oauth_accounts = oauth_account_service.OAuthAccountService(
     client_id=_x_oauth_client_id,
     redirect_uri=oauth_http_client.HOSTED_REDIRECT_URI,
     challenge=_oauth_pkce_challenges,
-    store=_assistant_connections,
+    store=_assistant_accounts,
     http=_oauth_http,
 )
 
@@ -1400,25 +1400,25 @@ def _retain_admitted_assistant_secrets(team_id: str, app_id: str, spec: marketpl
         _assistant_secret_challenges.cancel_team(team_id)
 
 
-def _retain_admitted_assistant_connections(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
+def _retain_admitted_assistant_accounts(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
     """Prune OAuth grants removed from the exact Assistant contract admitted at install."""
     if spec.assistant is None:
         return
     try:
-        pruned = _assistant_connections.retain_declared(
+        pruned = _assistant_accounts.retain_declared(
             team_id,
             app_id,
-            tuple(sorted(spec.assistant.connections)),
+            tuple(sorted(spec.assistant.accounts)),
         )
-    except oauth_connection_store.OAuthConnectionStoreError as exc:
-        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant connection state is unavailable") from exc
+    except oauth_account_store.OAuthAccountStoreError as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable") from exc
     if pruned:
-        _assistant_connection_challenges.cancel_team(team_id)
+        _assistant_account_challenges.cancel_team(team_id)
 
 
 def _retain_admitted_assistant_private_state(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
     _retain_admitted_assistant_secrets(team_id, app_id, spec)
-    _retain_admitted_assistant_connections(team_id, app_id, spec)
+    _retain_admitted_assistant_accounts(team_id, app_id, spec)
 
 
 @_serialize_against_team_chat
@@ -1550,7 +1550,7 @@ def _uninstall_app(team_id: str, app_id: str, lease: _AuthorizationLease) -> dic
         # Removal is a remediation operation and must remain available for a legacy blocked Team.
         _require_current_authorization(team_id, lease, require_isolation=False)
         _assistant_secret_challenges.cancel_team(team_id)
-        _assistant_connection_challenges.cancel_team(team_id)
+        _assistant_account_challenges.cancel_team(team_id)
         cleanup = _teardown_app(team_id, app_id)
         if not cleanup.complete:
             raise ApiError(
@@ -1562,9 +1562,9 @@ def _uninstall_app(team_id: str, app_id: str, lease: _AuthorizationLease) -> dic
         except assistant_secret_store.AssistantSecretError as exc:
             _raise_assistant_secret_error(exc)
         try:
-            _assistant_connections.delete_assistant(team_id, app_id)
-        except oauth_connection_store.OAuthConnectionStoreError as exc:
-            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant connection state is unavailable") from exc
+            _assistant_accounts.delete_assistant(team_id, app_id)
+        except oauth_account_store.OAuthAccountStoreError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable") from exc
         return {"team_id": team_id, "app": app_id, "uninstalled": True, "db_dropped": cleanup.db_dropped}
 
 
@@ -1606,19 +1606,19 @@ class _ActiveAssistant:
 
 @dataclass(frozen=True, slots=True)
 class _HostedAssistantSecretSpec:
-    """Small adapter shared by the closed secret and connection contracts."""
+    """Small adapter shared by the closed secret and account contracts."""
 
     assistant_id: str
     name: str
     powers: dict[str, object]
     secrets: dict[str, marketplace.SecretSpec]
-    connections: dict[str, marketplace.ConnectionSpec]
+    accounts: dict[str, marketplace.AccountSpec]
 
 
 @dataclass(frozen=True, slots=True)
 class _HostedPowerSecretSpec:
     secrets: tuple[str, ...]
-    connections: tuple[str, ...]
+    accounts: tuple[str, ...]
     summary: str
 
 
@@ -1650,13 +1650,13 @@ def _hosted_secret_spec(active: _ActiveAssistant) -> _HostedAssistantSecretSpec:
         powers={
             power_id: _HostedPowerSecretSpec(
                 tuple(getattr(power, "secrets", ())),
-                tuple(getattr(power, "connections", ())),
+                tuple(getattr(power, "accounts", ())),
                 str(getattr(power, "summary", "")),
             )
             for power_id, power in active.contract.powers.items()
         },
         secrets=getattr(active.contract, "secrets", {}),
-        connections=getattr(active.contract, "connections", {}),
+        accounts=getattr(active.contract, "accounts", {}),
     )
 
 
@@ -1687,7 +1687,7 @@ def _require_assistant_allowed_hosts(spec: marketplace.AppSpec, container) -> tu
             allowed_hosts=spec.allowed_hosts,
             secrets=contract.secrets,
             powers=contract.powers,
-            connections=contract.connections,
+            accounts=contract.accounts,
         )
         return _assistant_allowed_hosts_cache.get(container, reviewed).allowed_hosts
     except assistant_manifest.ManifestError as exc:
@@ -1706,7 +1706,7 @@ def _power_operation(
     request: brain_runtime_client.PowerRequest,
     assistant_container_id: object,
     secret_generations: tuple[tuple[str, int], ...] = (),
-    connection_generations: tuple[tuple[str, int], ...] = (),
+    account_generations: tuple[tuple[str, int], ...] = (),
 ) -> power_journal.Operation:
     """Commit to one normalized request and private-state generation without plaintext."""
     if not isinstance(assistant_container_id, str) or not assistant_container_id:
@@ -1717,7 +1717,7 @@ def _power_operation(
                 "approval": request.approval,
                 "assistant_container_id": assistant_container_id,
                 "assistant_id": request.assistant_id,
-                "connection_generations": connection_generations,
+                "account_generations": account_generations,
                 "input": request.input,
                 "power": request.power,
                 "secret_generations": secret_generations,
@@ -1746,7 +1746,7 @@ class _HostedPowerBatch:
             [brain_runtime_client.PowerRequest],
             tuple[tuple[str, int], ...],
         ] = lambda _request: (),
-        connection_generations: Callable[
+        account_generations: Callable[
             [brain_runtime_client.PowerRequest],
             tuple[tuple[str, int], ...],
         ] = lambda _request: (),
@@ -1757,7 +1757,7 @@ class _HostedPowerBatch:
         self._execute = execute
         self._preflight = preflight
         self._secret_generations = secret_generations
-        self._connection_generations = connection_generations
+        self._account_generations = account_generations
         self._journal: power_journal.PowerJournal | None = None
         self._batch: power_journal.Batch | None = None
         self._operations: dict[str, power_journal.Operation] = {}
@@ -1776,7 +1776,7 @@ class _HostedPowerBatch:
                     request,
                     active.container.id,
                     self._secret_generations(request),
-                    self._connection_generations(request),
+                    self._account_generations(request),
                 )
             )
         journal = _power_execution_journal()
@@ -2169,35 +2169,35 @@ def _resolve_power_secrets(
     raise AssertionError("unreachable")
 
 
-def _power_connection_generations(
+def _power_account_generations(
     team_id: str,
     active: _ActiveAssistant,
     power_id: str,
 ) -> tuple[tuple[str, int], ...]:
     power = active.contract.powers.get(power_id)
     if power is None:
-        raise power_journal.PowerJournalConflictError("Power connection contract is unavailable")
+        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
     declarations = {
-        connection_id: active.contract.connections[connection_id]
-        for connection_id in getattr(power, "connections", ())
-        if connection_id in active.contract.connections
+        account_id: active.contract.accounts[account_id]
+        for account_id in getattr(power, "accounts", ())
+        if account_id in active.contract.accounts
     }
-    if len(declarations) != len(getattr(power, "connections", ())):
-        raise power_journal.PowerJournalConflictError("Power connection contract is unavailable")
+    if len(declarations) != len(getattr(power, "accounts", ())):
+        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
     try:
-        metadata = _assistant_connections.metadata(
+        metadata = _assistant_accounts.metadata(
             team_id,
             active.assistant_id,
             declarations,
         )
-    except oauth_connection_store.OAuthConnectionStoreError as exc:
-        raise power_journal.PowerJournalConflictError("Power connection state is unavailable") from exc
+    except oauth_account_store.OAuthAccountStoreError as exc:
+        raise power_journal.PowerJournalConflictError("Power account state is unavailable") from exc
     if any(item.status != "connected" or item.generation < 1 for item in metadata):
-        raise power_journal.PowerJournalConflictError("Power connection generation is unavailable")
+        raise power_journal.PowerJournalConflictError("Power account generation is unavailable")
     return tuple((item.id, item.generation) for item in metadata)
 
 
-def _refresh_oauth_connection(provider: str, scopes: tuple[str, ...], refresh_token: str) -> object:
+def _refresh_oauth_account(provider: str, scopes: tuple[str, ...], refresh_token: str) -> object:
     try:
         return _oauth_http.refresh(
             provider_id=provider,
@@ -2206,26 +2206,24 @@ def _refresh_oauth_connection(provider: str, scopes: tuple[str, ...], refresh_to
             scopes=scopes,
         )
     except oauth_http_client.OAuthHTTPError as exc:
-        raise oauth_connection_store.OAuthConnectionReauthorizationError(
-            "OAuth connection requires reauthorization"
-        ) from exc
+        raise oauth_account_store.OAuthAccountReauthorizationError("OAuth account requires reauthorization") from exc
 
 
-def _resolve_power_connections(
+def _resolve_power_accounts(
     team_id: str,
     active: _ActiveAssistant,
     power_id: str,
 ) -> dict[str, dict[str, str]]:
     try:
-        return assistant_connection_flow.resolve_power_connections(
+        return assistant_account_flow.resolve_power_accounts(
             team_id,
             _hosted_secret_spec(active),
             power_id,
-            _assistant_connections,
-            _refresh_oauth_connection,
+            _assistant_accounts,
+            _refresh_oauth_account,
         )
-    except assistant_connection_flow.ConnectionFlowError as exc:
-        raise ApiError(HTTPStatus.PRECONDITION_REQUIRED, "Assistant connection is unavailable") from exc
+    except assistant_account_flow.AccountFlowError as exc:
+        raise ApiError(HTTPStatus.PRECONDITION_REQUIRED, "Assistant account is unavailable") from exc
 
 
 def _require_hosted_power_rpc_envelope(
@@ -2242,12 +2240,12 @@ def _require_hosted_power_rpc_envelope(
         active.contract,
         request.power,
     )
-    connection_values = _resolve_power_connections(team_id, active, request.power)
+    account_values = _resolve_power_accounts(team_id, active, request.power)
     try:
         assistant_secret_flow.require_power_rpc_envelope(
             request.input,
             secret_values,
-            connection_values,
+            account_values,
         )
     except assistant_secret_flow.SecretFlowError as exc:
         raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Assistant Power input is too large") from exc
@@ -2287,22 +2285,22 @@ def _assistant_secret_inventory(
     raise AssertionError("unreachable")
 
 
-def _assistant_connection_inventory(
+def _assistant_account_inventory(
     team_id: str,
     lease: _AuthorizationLease,
 ) -> dict[str, object]:
     with _lock_for(team_id):
         _require_current_authorization(team_id, lease, require_isolation=False)
         try:
-            payload = assistant_connection_flow.inventory_payload(
+            payload = assistant_account_flow.inventory_payload(
                 team_id,
                 _installed_assistant_secret_specs(team_id),
-                _assistant_connections,
+                _assistant_accounts,
             )
-        except oauth_connection_store.OAuthConnectionStoreError as exc:
-            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant connection state is unavailable") from exc
-        except assistant_connection_flow.ConnectionFlowError as exc:
-            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection contract is unavailable") from exc
+        except oauth_account_store.OAuthAccountStoreError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable") from exc
+        except assistant_account_flow.AccountFlowError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant account contract is unavailable") from exc
     return {"team_id": team_id, **payload}
 
 
@@ -2395,7 +2393,7 @@ def _invoke_assistant_power(
     power_spec = contract.powers[power]
     secret_values = _resolve_power_secrets(team_id, assistant_id, contract, power)
     active = _ActiveAssistant(assistant_id, contract, container)
-    connection_values = _resolve_power_connections(team_id, active, power)
+    account_values = _resolve_power_accounts(team_id, active, power)
     audit.log(
         "assistant_power",
         team_id,
@@ -2415,7 +2413,7 @@ def _invoke_assistant_power(
             {
                 "input": safe_input,
                 "secrets": secret_values,
-                "connections": connection_values,
+                "accounts": account_values,
             },
         )
     except ApiError as exc:
@@ -2430,10 +2428,7 @@ def _invoke_assistant_power(
         raise
     private_values = {
         **secret_values,
-        **{
-            f"connection:{connection_id}": envelope["access_token"]
-            for connection_id, envelope in connection_values.items()
-        },
+        **{f"account:{account_id}": envelope["access_token"] for account_id, envelope in account_values.items()},
     }
     if _contains_secret(raw_result, private_values):
         audit.log(
@@ -2631,23 +2626,23 @@ def _hosted_private_requirements(
     bindings: dict[str, _ActiveAssistant],
     requests: tuple[brain_runtime_client.PowerRequest, ...],
 ) -> tuple[
-    tuple[assistant_connection_challenges.ConnectionRequirement, ...],
+    tuple[assistant_account_challenges.AccountRequirement, ...],
     tuple[assistant_secret_challenges.SecretRequirement, ...],
 ]:
     try:
-        connections = assistant_connection_flow.requirements_for_batch(
+        accounts = assistant_account_flow.requirements_for_batch(
             team_id,
             _secret_bindings(bindings),
             requests,
-            _assistant_connections,
+            _assistant_accounts,
         )
     except (
-        assistant_connection_flow.ConnectionFlowError,
-        oauth_connection_store.OAuthConnectionStoreError,
+        assistant_account_flow.AccountFlowError,
+        oauth_account_store.OAuthAccountStoreError,
     ) as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection contract is unavailable") from exc
-    if connections:
-        return connections, ()
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant account contract is unavailable") from exc
+    if accounts:
+        return accounts, ()
     try:
         secrets_required = assistant_secret_flow.requirements_for_batch(
             team_id,
@@ -2677,7 +2672,7 @@ def _run_hosted_chat_segment(
     str,
     tuple[object, ...],
     chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension,
-    tuple[assistant_connection_challenges.ConnectionRequirement, ...],
+    tuple[assistant_account_challenges.AccountRequirement, ...],
     tuple[assistant_secret_challenges.SecretRequirement, ...],
 ]:
     if (message is None) == (continuation is None):
@@ -2751,23 +2746,23 @@ def _run_hosted_chat_segment(
             bindings[request.assistant_id],
             request.power,
         ),
-        lambda request: _power_connection_generations(
+        lambda request: _power_account_generations(
             team_id,
             bindings[request.assistant_id],
             request.power,
         ),
     )
-    connection_requirements: tuple[assistant_connection_challenges.ConnectionRequirement, ...] = ()
+    account_requirements: tuple[assistant_account_challenges.AccountRequirement, ...] = ()
     secret_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...] = ()
 
     def pause_for_private_inputs(requests: tuple[brain_runtime_client.PowerRequest, ...]) -> bool:
-        nonlocal connection_requirements, secret_requirements
-        connection_requirements, secret_requirements = _hosted_private_requirements(
+        nonlocal account_requirements, secret_requirements
+        account_requirements, secret_requirements = _hosted_private_requirements(
             team_id,
             bindings,
             requests,
         )
-        return bool(connection_requirements or secret_requirements)
+        return bool(account_requirements or secret_requirements)
 
     def validate_context() -> None:
         current_anchor = _current_team_anchor(team_id, container.id, owner)
@@ -2795,10 +2790,10 @@ def _run_hosted_chat_segment(
     require_current_credential()
     if (
         isinstance(outcome, chat_orchestrator.ChatSuspension)
-        and sum(bool(item) for item in (connection_requirements, secret_requirements)) != 1
+        and sum(bool(item) for item in (account_requirements, secret_requirements)) != 1
     ):
         raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat suspension")
-    return team_name, initial_identity, outcome, connection_requirements, secret_requirements
+    return team_name, initial_identity, outcome, account_requirements, secret_requirements
 
 
 def _pause_hosted_chat(
@@ -2818,8 +2813,8 @@ def _pause_hosted_chat(
     return assistant_secret_flow.challenge_payload(challenge)
 
 
-def _hosted_connection_challenge_payload(
-    challenge: assistant_connection_challenges.PendingConnectionChallenge,
+def _hosted_account_challenge_payload(
+    challenge: assistant_account_challenges.PendingAccountChallenge,
 ) -> dict[str, object]:
     bindings: dict[str, _HostedAssistantSecretBinding] = {}
     try:
@@ -2830,26 +2825,26 @@ def _hosted_connection_challenge_payload(
             )
             active = _ActiveAssistant(assistant_id, contract, container)
             bindings[assistant_id] = _HostedAssistantSecretBinding(_hosted_secret_spec(active))
-        return assistant_connection_flow.challenge_payload(challenge, bindings)
-    except (marketplace.MarketplaceError, assistant_connection_flow.ConnectionFlowError) as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection contract changed; retry the message") from exc
+        return assistant_account_flow.challenge_payload(challenge, bindings)
+    except (marketplace.MarketplaceError, assistant_account_flow.AccountFlowError) as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant account contract changed; retry the message") from exc
 
 
 def _pause_hosted_connection(
     team_id: str,
     token: str,
     outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[assistant_connection_challenges.ConnectionRequirement, ...],
+    requirements: tuple[assistant_account_challenges.AccountRequirement, ...],
     pending: _PendingHostedChat,
 ) -> dict[str, object]:
     try:
-        challenge = _assistant_connection_challenges.create(team_id, requirements, pending)
-    except assistant_connection_challenges.ConnectionChallengeError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection request is already pending") from exc
+        challenge = _assistant_account_challenges.create(team_id, requirements, pending)
+    except assistant_account_challenges.AccountChallengeError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant account request is already pending") from exc
     if outcome.continuation != pending.continuation or not _commit_chat_terminal(team_id, token):
-        _assistant_connection_challenges.cancel_team(team_id)
+        _assistant_account_challenges.cancel_team(team_id)
         raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped")
-    return _hosted_connection_challenge_payload(challenge)
+    return _hosted_account_challenge_payload(challenge)
 
 
 def _chat_in_turn(
@@ -2861,7 +2856,7 @@ def _chat_in_turn(
     container,
     owner: str,
 ) -> dict[str, object]:
-    team_name, identity, outcome, connection_requirements, secret_requirements = _run_hosted_chat_segment(
+    team_name, identity, outcome, account_requirements, secret_requirements = _run_hosted_chat_segment(
         team_id,
         file_ids,
         assistant_ids,
@@ -2878,12 +2873,12 @@ def _chat_in_turn(
             owner=owner,
             identity=identity,
         )
-        if connection_requirements:
+        if account_requirements:
             return _pause_hosted_connection(
                 team_id,
                 token,
                 outcome,
-                connection_requirements,
+                account_requirements,
                 pending,
             )
         return _pause_hosted_chat(
@@ -2923,34 +2918,34 @@ def _chat(
 
 
 def _pending_hosted_chat(team_id: str) -> dict[str, object] | None:
-    connection = _assistant_connection_challenges.current(team_id)
+    account = _assistant_account_challenges.current(team_id)
     secret = _assistant_secret_challenges.current(team_id)
-    if connection is not None and secret is not None:
+    if account is not None and secret is not None:
         raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team chat continuation state is unavailable")
-    if connection is not None:
-        return _hosted_connection_challenge_payload(connection)
+    if account is not None:
+        return _hosted_account_challenge_payload(account)
     if secret is not None:
         return assistant_secret_flow.challenge_payload(secret)
     return None
 
 
-def _current_connection_declaration(team_id: str, assistant_id: str, connection_id: str) -> object:
+def _current_account_declaration(team_id: str, assistant_id: str, account_id: str) -> object:
     try:
         installed_id, contract, _container = _installed_assistant(team_id, assistant_id)
-        declaration = contract.connections.get(connection_id)
+        declaration = contract.accounts.get(account_id)
         if installed_id != assistant_id or declaration is None:
-            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection declaration changed")
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant account declaration changed")
     except ApiError, marketplace.MarketplaceError:
         # The OAuth service intentionally receives one opaque typed failure so
         # registry, Docker, and manifest details cannot reach the callback response.
-        raise oauth_connection_service.OAuthConnectionDeclarationError(
-            "installed Assistant connection declaration is unavailable"
+        raise oauth_account_service.OAuthAccountDeclarationError(
+            "installed Assistant account declaration is unavailable"
         ) from None
     else:
         return declaration
 
 
-def _start_oauth_connection(
+def _start_oauth_account(
     team_id: str,
     challenge_id: object,
     session_binding: object,
@@ -2958,52 +2953,52 @@ def _start_oauth_connection(
 ) -> dict[str, object]:
     _require_current_authorization(team_id, lease, require_isolation=False)
     try:
-        challenge = _assistant_connection_challenges.get(team_id, challenge_id)
-    except assistant_connection_challenges.ConnectionChallengeNotFoundError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection request expired; retry the message") from exc
+        challenge = _assistant_account_challenges.get(team_id, challenge_id)
+    except assistant_account_challenges.AccountChallengeNotFoundError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant account request expired; retry the message") from exc
     pending = challenge.payload
     if not isinstance(pending, _PendingHostedChat) or pending.owner != lease.owner:
         raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
     try:
-        authorization_url = _oauth_connections.authorization_url(challenge, session_binding)
-    except oauth_connection_service.OAuthConnectionUnavailableError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connections are already configured") from exc
-    except oauth_connection_service.OAuthConnectionServiceError as exc:
-        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant connection could not be started") from exc
+        authorization_url = _oauth_accounts.authorization_url(challenge, session_binding)
+    except oauth_account_service.OAuthAccountUnavailableError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant accounts are already configured") from exc
+    except oauth_account_service.OAuthAccountServiceError as exc:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account could not be started") from exc
     return {"authorization_url": authorization_url}
 
 
-def _complete_oauth_connection(
+def _complete_oauth_account(
     body: object,
     principal: tuple[str, str | None],
 ) -> dict[str, object]:
     if not isinstance(body, dict) or set(body) != {"state", "code", "session_binding"}:
         raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "OAuth callback is invalid")
     try:
-        completion = _oauth_connections.complete(
+        completion = _oauth_accounts.complete(
             body["state"],
             body["code"],
             body["session_binding"],
-            _current_connection_declaration,
+            _current_account_declaration,
         )
-    except oauth_connection_service.OAuthConnectionServiceError as exc:
-        raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant connection could not be completed") from exc
+    except oauth_account_service.OAuthAccountServiceError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "Assistant account could not be completed") from exc
     try:
         _authorize(completion.team_id, principal)
     except Exception:
-        with contextlib.suppress(oauth_connection_service.OAuthConnectionServiceError):
-            _oauth_connections.disconnect(
+        with contextlib.suppress(oauth_account_service.OAuthAccountServiceError):
+            _oauth_accounts.disconnect(
                 completion.team_id,
                 completion.assistant_id,
-                completion.connection_id,
+                completion.account_id,
             )
         raise
-    pending = _assistant_connection_challenges.current(completion.team_id)
+    pending = _assistant_account_challenges.current(completion.team_id)
     return {
         "connected": True,
         "team_id": completion.team_id,
         "assistant_id": completion.assistant_id,
-        "connection_id": completion.connection_id,
+        "account_id": completion.account_id,
         "provider": completion.provider,
         "scopes": list(completion.scopes),
         "challenge_id": pending.id if pending is not None else None,
@@ -3011,32 +3006,32 @@ def _complete_oauth_connection(
 
 
 @_serialize_against_team_chat
-def _disconnect_oauth_connection(
+def _disconnect_oauth_account(
     team_id: str,
     assistant_id: str,
-    connection_id: str,
+    account_id: str,
     lease: _AuthorizationLease,
 ) -> dict[str, object]:
     with _lock_for(team_id):
         _require_current_authorization(team_id, lease, require_isolation=False)
-        _current_connection_declaration(team_id, assistant_id, connection_id)
-        _assistant_connection_challenges.cancel_team(team_id)
+        _current_account_declaration(team_id, assistant_id, account_id)
+        _assistant_account_challenges.cancel_team(team_id)
         try:
-            disconnected = _oauth_connections.disconnect(team_id, assistant_id, connection_id)
-        except oauth_connection_service.OAuthConnectionServiceError as exc:
-            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant connection could not be disconnected") from exc
+            disconnected = _oauth_accounts.disconnect(team_id, assistant_id, account_id)
+        except oauth_account_service.OAuthAccountServiceError as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account could not be disconnected") from exc
     return {"disconnected": disconnected}
 
 
-def _resume_chat_connections(
+def _resume_chat_accounts(
     team_id: str,
     challenge_id: object,
     lease: _AuthorizationLease,
 ) -> dict[str, object]:
     try:
-        challenge = _assistant_connection_challenges.get(team_id, challenge_id)
-    except assistant_connection_challenges.ConnectionChallengeNotFoundError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection request expired; retry the message") from exc
+        challenge = _assistant_account_challenges.get(team_id, challenge_id)
+    except assistant_account_challenges.AccountChallengeNotFoundError as exc:
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant account request expired; retry the message") from exc
     pending = challenge.payload
     if not isinstance(pending, _PendingHostedChat) or pending.owner != lease.owner:
         raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
@@ -3050,31 +3045,31 @@ def _resume_chat_connections(
             lease.owner,
         )
         if current_identity != pending.identity:
-            _assistant_connection_challenges.cancel_team(team_id)
+            _assistant_account_challenges.cancel_team(team_id)
             raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
         bindings = {active.assistant_id: active for active in assistants}
         try:
-            requirements = assistant_connection_flow.requirements_for_batch(
+            requirements = assistant_account_flow.requirements_for_batch(
                 team_id,
                 _secret_bindings(bindings),
                 pending.continuation.turn.powers,
-                _assistant_connections,
+                _assistant_accounts,
             )
         except (
-            assistant_connection_flow.ConnectionFlowError,
-            oauth_connection_store.OAuthConnectionStoreError,
+            assistant_account_flow.AccountFlowError,
+            oauth_account_store.OAuthAccountStoreError,
         ) as exc:
-            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection contract is unavailable") from exc
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant account contract is unavailable") from exc
         if requirements:
-            return _hosted_connection_challenge_payload(challenge)
+            return _hosted_account_challenge_payload(challenge)
         try:
-            claimed = _assistant_connection_challenges.claim(team_id, challenge.id)
-        except assistant_connection_challenges.ConnectionChallengeNotFoundError as exc:
-            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection request expired; retry the message") from exc
+            claimed = _assistant_account_challenges.claim(team_id, challenge.id)
+        except assistant_account_challenges.AccountChallengeNotFoundError as exc:
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant account request expired; retry the message") from exc
         if claimed is not challenge:
-            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection request expired; retry the message")
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant account request expired; retry the message")
 
-        team_name, identity, outcome, connection_requirements, secret_requirements = _run_hosted_chat_segment(
+        team_name, identity, outcome, account_requirements, secret_requirements = _run_hosted_chat_segment(
             team_id,
             list(pending.file_ids),
             pending.assistant_ids,
@@ -3092,12 +3087,12 @@ def _resume_chat_connections(
                 owner=pending.owner,
                 identity=identity,
             )
-            if connection_requirements:
+            if account_requirements:
                 return _pause_hosted_connection(
                     team_id,
                     token,
                     outcome,
-                    connection_requirements,
+                    account_requirements,
                     next_pending,
                 )
             return _pause_hosted_chat(
@@ -3163,7 +3158,7 @@ def _submit_chat_secrets(
         except assistant_secret_store.AssistantSecretError as exc:
             _raise_assistant_secret_error(exc)
 
-        team_name, identity, outcome, connection_requirements, secret_requirements = _run_hosted_chat_segment(
+        team_name, identity, outcome, account_requirements, secret_requirements = _run_hosted_chat_segment(
             team_id,
             list(pending.file_ids),
             pending.assistant_ids,
@@ -3181,12 +3176,12 @@ def _submit_chat_secrets(
                 owner=pending.owner,
                 identity=identity,
             )
-            if connection_requirements:
+            if account_requirements:
                 return _pause_hosted_connection(
                     team_id,
                     token,
                     outcome,
-                    connection_requirements,
+                    account_requirements,
                     next_pending,
                 )
             return _pause_hosted_chat(
@@ -3225,8 +3220,8 @@ def _stop_active_power(team_id: str, token: str | None) -> bool:
 def _stop_chat(team_id: str, lease: _AuthorizationLease) -> dict:
     """Cancel one Controller-owned turn and fail-stop a Power already executing."""
     secret_cancelled = _assistant_secret_challenges.cancel_team(team_id)
-    connection_cancelled = _assistant_connection_challenges.cancel_team(team_id)
-    challenge_cancelled = secret_cancelled or connection_cancelled
+    account_cancelled = _assistant_account_challenges.cancel_team(team_id)
+    challenge_cancelled = secret_cancelled or account_cancelled
     with _lock_for(team_id):
         container = _require_current_authorization(team_id, lease)
         container.reload()
@@ -3420,11 +3415,11 @@ def _teardown_assistant_secrets(team_id: str) -> bool:
     return True
 
 
-def _teardown_assistant_connections(team_id: str) -> bool:
-    _assistant_connection_challenges.cancel_team(team_id)
+def _teardown_assistant_accounts(team_id: str) -> bool:
+    _assistant_account_challenges.cancel_team(team_id)
     try:
-        _assistant_connections.delete_team(team_id)
-    except oauth_connection_store.OAuthConnectionStoreError:
+        _assistant_accounts.delete_team(team_id)
+    except oauth_account_store.OAuthAccountStoreError:
         return False
     return True
 
@@ -3496,7 +3491,7 @@ def _teardown(team_id: str, *, owner: str, brain_id: str) -> _CleanupResult:
         or not _teardown_storage(team_id)
         or not _teardown_inference(team_id)
         or not _teardown_assistant_secrets(team_id)
-        or not _teardown_assistant_connections(team_id)
+        or not _teardown_assistant_accounts(team_id)
         or not _teardown_network_planes(team_id)
     ):
         return _CleanupResult(False, record.db_dropped)
@@ -3871,7 +3866,7 @@ class Handler(BaseHTTPRequestHandler):
                     container,
                     lease.owner,
                 )
-                paused = result.get("status") in {"connections-required", "secrets-required"}
+                paused = result.get("status") in {"accounts-required", "secrets-required"}
                 terminal = (
                     {"type": str(result["status"]), **result}
                     if paused
@@ -3903,7 +3898,7 @@ class Handler(BaseHTTPRequestHandler):
         audit.log(
             "chat",
             team_id,
-            result="ok" if terminal["type"] in {"done", "connections-required", "secrets-required"} else "error",
+            result="ok" if terminal["type"] in {"done", "accounts-required", "secrets-required"} else "error",
             streamed=True,
             status=terminal.get("status"),
             reason=stream_error,
@@ -3987,13 +3982,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if method == "POST" and path == "/v1/oauth/x/callback":
-            result = _complete_oauth_connection(self._read_body(), principal)
+            result = _complete_oauth_account(self._read_body(), principal)
             audit.log(
-                "assistant_connection_complete",
+                "assistant_account_complete",
                 result["team_id"],
                 result="ok",
                 assistant=result["assistant_id"],
-                connection=result["connection_id"],
+                account=result["account_id"],
                 provider=result["provider"],
             )
             self._send_json(HTTPStatus.OK, result, no_store=True)
@@ -4030,8 +4025,8 @@ class Handler(BaseHTTPRequestHandler):
             if sub == "assistant-secrets":
                 self._route_assistant_secrets(method, parts, team_id, lease, principal)
                 return
-            if sub == "assistant-connections":
-                self._route_assistant_connections(method, parts, team_id, lease)
+            if sub == "assistant-accounts":
+                self._route_assistant_accounts(method, parts, team_id, lease)
                 return
             if sub == "assistants":
                 if len(parts) >= 6 and parts[5] == "help" and (parsed.query or parsed.fragment or "%" in parsed.path):
@@ -4052,7 +4047,7 @@ class Handler(BaseHTTPRequestHandler):
 
         raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} {path}")
 
-    def _route_assistant_connections(
+    def _route_assistant_accounts(
         self,
         method: str,
         parts: list[str],
@@ -4062,7 +4057,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and len(parts) == 4:
             self._send_json(
                 HTTPStatus.OK,
-                _assistant_connection_inventory(team_id, lease),
+                _assistant_account_inventory(team_id, lease),
                 no_store=True,
             )
             return
@@ -4070,23 +4065,23 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             if not isinstance(body, dict) or set(body) != {"session_binding"}:
                 raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "OAuth authorization request is invalid")
-            result = _start_oauth_connection(
+            result = _start_oauth_account(
                 team_id,
                 parts[5],
                 body["session_binding"],
                 lease,
             )
-            audit.log("assistant_connection_start", team_id, result="ok")
+            audit.log("assistant_account_start", team_id, result="ok")
             self._send_json(HTTPStatus.OK, result, no_store=True)
             return
         if method == "DELETE" and len(parts) == 6:
-            result = _disconnect_oauth_connection(team_id, parts[4], parts[5], lease)
+            result = _disconnect_oauth_account(team_id, parts[4], parts[5], lease)
             audit.log(
-                "assistant_connection_disconnect",
+                "assistant_account_disconnect",
                 team_id,
                 result="ok",
                 assistant=parts[4],
-                connection=parts[5],
+                account=parts[5],
                 disconnected=result["disconnected"],
             )
             self._send_json(HTTPStatus.OK, result, no_store=True)
@@ -4333,22 +4328,22 @@ class Handler(BaseHTTPRequestHandler):
                 result="ok",
                 chars_in=len(message),
                 chars_out=len(str(result.get("reply", ""))),
-                paused=result.get("status") in {"connections-required", "secrets-required"},
+                paused=result.get("status") in {"accounts-required", "secrets-required"},
             )
-            paused = result.get("status") in {"connections-required", "secrets-required"}
+            paused = result.get("status") in {"accounts-required", "secrets-required"}
             self._send_json(
                 HTTPStatus.PRECONDITION_REQUIRED if paused else HTTPStatus.OK,
                 result,
                 no_store=paused,
             )
             return
-        if sub2 == "connections" and len(parts) == 5:
+        if sub2 == "accounts" and len(parts) == 5:
             if method == "GET":
-                pending = _assistant_connection_challenges.current(team_id)
+                pending = _assistant_account_challenges.current(team_id)
                 self._send_json(
                     HTTPStatus.OK,
                     (
-                        _hosted_connection_challenge_payload(pending)
+                        _hosted_account_challenge_payload(pending)
                         if pending is not None
                         else {"team_id": team_id, "status": "none"}
                     ),
@@ -4359,9 +4354,9 @@ class Handler(BaseHTTPRequestHandler):
                 _enforce_rate("chat", principal)
                 body = self._read_body()
                 if not isinstance(body, dict) or set(body) != {"challenge_id"}:
-                    raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "connection continuation is invalid")
-                result = _resume_chat_connections(team_id, body["challenge_id"], lease)
-                paused = result.get("status") in {"connections-required", "secrets-required"}
+                    raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "account continuation is invalid")
+                result = _resume_chat_accounts(team_id, body["challenge_id"], lease)
+                paused = result.get("status") in {"accounts-required", "secrets-required"}
                 self._send_json(
                     HTTPStatus.PRECONDITION_REQUIRED if paused else HTTPStatus.OK,
                     result,
@@ -4383,7 +4378,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._read_body(max_bytes=MAX_ASSISTANT_SECRET_BODY_BYTES),
                     lease,
                 )
-                paused = result.get("status") in {"connections-required", "secrets-required"}
+                paused = result.get("status") in {"accounts-required", "secrets-required"}
                 self._send_json(
                     HTTPStatus.PRECONDITION_REQUIRED if paused else HTTPStatus.OK,
                     result,

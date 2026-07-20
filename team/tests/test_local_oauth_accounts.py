@@ -12,16 +12,16 @@ from types import SimpleNamespace
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_connection_challenges
+import assistant_account_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
 import local_app
 import local_registry
-import oauth_connection_store
+import oauth_account_store
 
 
-class LocalOAuthConnectionTests(unittest.TestCase):
+class LocalOAuthAccountTests(unittest.TestCase):
     @staticmethod
     def _registry() -> dict[str, local_registry.AssistantSpec]:
         with tempfile.TemporaryDirectory() as directory:
@@ -37,9 +37,9 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             )
             return local_registry.load_registry(path)
 
-    def test_controller_accepts_injected_connection_state(self) -> None:
+    def test_controller_accepts_injected_account_state(self) -> None:
         injected_store = SimpleNamespace()
-        injected_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+        injected_challenges = assistant_account_challenges.AccountChallengeStore()
         controller = local_app.LocalController(
             SimpleNamespace(info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2}),
             "local-space",
@@ -50,35 +50,35 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             power_state=SimpleNamespace(),
             assistant_secrets=SimpleNamespace(),
             secret_challenges=SimpleNamespace(),
-            assistant_connections=injected_store,
-            connection_challenges=injected_challenges,
+            assistant_accounts=injected_store,
+            account_challenges=injected_challenges,
             oauth_service=SimpleNamespace(),
             approval_challenges=SimpleNamespace(),
             approval_grants=SimpleNamespace(),
         )
 
-        self.assertIs(controller.assistant_connections, injected_store)
-        self.assertIs(controller.connection_challenges, injected_challenges)
+        self.assertIs(controller.assistant_accounts, injected_store)
+        self.assertIs(controller.account_challenges, injected_challenges)
 
-    def test_connection_inventory_is_exact_and_never_contains_tokens(self) -> None:
+    def test_account_inventory_is_exact_and_never_contains_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
             controller._locks = tuple(threading.RLock() for _ in range(64))
             controller.registry = self._registry()
-            controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
-                Path(directory) / "state" / "connections.json",
+            controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
+                Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
             controller.list_assistants = lambda _team: {
                 "assistants": [{"assistant": "shimpz-assistant", "status": "running"}]
             }
 
-            payload = controller.list_assistant_connections("team_1")
+            payload = controller.list_assistant_accounts("team_1")
 
-        self.assertEqual(set(payload), {"team_id", "connections"})
+        self.assertEqual(set(payload), {"team_id", "accounts"})
         self.assertEqual(payload["team_id"], "team_1")
         self.assertEqual(
-            payload["connections"],
+            payload["accounts"],
             [
                 {
                     "assistant_id": "shimpz-assistant",
@@ -99,22 +99,20 @@ class LocalOAuthConnectionTests(unittest.TestCase):
         self.assertNotIn("refresh_token", encoded)
         self.assertNotIn("generation", encoded)
 
-    def test_connection_inventory_route_has_one_exact_internal_shape(self) -> None:
-        expected = {"team_id": "team_1", "connections": []}
+    def test_account_inventory_route_has_one_exact_internal_shape(self) -> None:
+        expected = {"team_id": "team_1", "accounts": []}
         handler = object.__new__(local_app.Handler)
         handler.command = "GET"
-        handler.server = SimpleNamespace(
-            controller=SimpleNamespace(list_assistant_connections=lambda team_id: expected)
-        )
+        handler.server = SimpleNamespace(controller=SimpleNamespace(list_assistant_accounts=lambda team_id: expected))
 
-        route = handler._assistant_connection_route(["v1", "teams", "team_1", "assistant-connections"])
+        route = handler._assistant_account_route(["v1", "teams", "team_1", "assistant-accounts"])
 
         self.assertEqual(
             route,
-            (HTTPStatus.OK, expected, "assistant-connection-list", "team_1", None),
+            (HTTPStatus.OK, expected, "assistant-account-list", "team_1", None),
         )
 
-    def test_chat_pauses_before_any_power_when_connection_is_missing(self) -> None:
+    def test_chat_pauses_before_any_power_when_account_is_missing(self) -> None:
         spec = self._registry()["shimpz-assistant"]
         request = brain_runtime_client.PowerRequest(
             interrupt_id="call-1",
@@ -136,13 +134,13 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             controller.space_id = "local-space"
             controller.brain_runtime = Runtime()
             controller.power_state = SimpleNamespace()
-            controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
-                Path(directory) / "state" / "connections.json",
+            controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
+                Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
             controller.assistant_secrets = SimpleNamespace(
                 metadata=lambda *_args: (_ for _ in ()).throw(
-                    AssertionError("secret gate must run only after the connection gate")
+                    AssertionError("secret gate must run only after the account gate")
                 )
             )
             controller.approval_grants = SimpleNamespace()
@@ -173,10 +171,10 @@ class LocalOAuthConnectionTests(unittest.TestCase):
 
         self.assertIsInstance(result[2], chat_orchestrator.ChatSuspension)
         self.assertEqual(len(result[3]), 1)
-        self.assertEqual(result[3][0].connections[0][0], "x")
+        self.assertEqual(result[3][0].accounts[0][0], "x")
         self.assertEqual(result[4:], ((), ()))
 
-    def test_connection_resume_is_one_use_and_returns_completed_turn(self) -> None:
+    def test_account_resume_is_one_use_and_returns_completed_turn(self) -> None:
         registry = self._registry()
         spec = registry["shimpz-assistant"]
         request = brain_runtime_client.PowerRequest(
@@ -193,11 +191,11 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             round_index=0,
         )
         requirements = (
-            assistant_connection_challenges.ConnectionRequirement(
+            assistant_account_challenges.AccountRequirement(
                 assistant_id=spec.assistant_id,
                 assistant_name=spec.name,
                 power_ids=("identity-me",),
-                connections=(("x", "x", spec.connections["x"].scopes),),
+                accounts=(("x", "x", spec.accounts["x"].scopes),),
             ),
         )
 
@@ -210,10 +208,10 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             controller._active_chat_tokens = {}
             controller._active_power_containers = {}
             controller._cancelled_chat_tokens = set()
-            controller.connection_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+            controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
             controller.oauth_pkce = SimpleNamespace(cancel_team=lambda _team: 0)
-            controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
-                Path(directory) / "state" / "connections.json",
+            controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
+                Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
             config = inference_config.InferenceConfig("openai", "gpt-5-nano")
@@ -228,17 +226,17 @@ class LocalOAuthConnectionTests(unittest.TestCase):
                 provider="openai",
                 identity=identity,
             )
-            challenge = controller.connection_challenges.create("team_1", requirements, pending)
-            controller.assistant_connections.put(
+            challenge = controller.account_challenges.create("team_1", requirements, pending)
+            controller.assistant_accounts.put(
                 "team_1",
                 spec.assistant_id,
                 "x",
                 "x",
-                spec.connections["x"].scopes,
+                spec.accounts["x"].scopes,
                 SimpleNamespace(
                     access_token="a" * 32,
                     refresh_token="r" * 32,
-                    scopes=spec.connections["x"].scopes,
+                    scopes=spec.accounts["x"].scopes,
                     expires_in=3600,
                 ),
             )
@@ -251,7 +249,7 @@ class LocalOAuthConnectionTests(unittest.TestCase):
                 (),
             )
 
-            response = controller.resume_chat_connections(
+            response = controller.resume_chat_accounts(
                 "team_1",
                 {"challenge_id": challenge.id},
                 "openai",
@@ -259,22 +257,22 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             )
 
             self.assertEqual(response, {"team_id": "team_1", "team_name": "Team One", "reply": "Done"})
-            self.assertIsNone(controller.connection_challenges.current("team_1"))
+            self.assertIsNone(controller.account_challenges.current("team_1"))
             with self.assertRaises(local_app.ApiProblem) as replay:
-                controller.resume_chat_connections(
+                controller.resume_chat_accounts(
                     "team_1",
                     {"challenge_id": challenge.id},
                     "openai",
                     "test-api-key",
                 )
-            self.assertEqual(replay.exception.code, "assistant-connection-challenge-expired")
+            self.assertEqual(replay.exception.code, "assistant-account-challenge-expired")
 
-    def test_chat_connection_routes_are_exact(self) -> None:
-        pending = {"team_id": "team_1", "status": "connections-required"}
+    def test_chat_account_routes_are_exact(self) -> None:
+        pending = {"team_id": "team_1", "status": "accounts-required"}
         completed = {"team_id": "team_1", "team_name": "Team One", "reply": "Done"}
         controller = SimpleNamespace(
-            pending_chat_connections=lambda team_id: pending,
-            resume_chat_connections=lambda team_id, body, provider, api_key: completed,
+            pending_chat_accounts=lambda team_id: pending,
+            resume_chat_accounts=lambda team_id, body, provider, api_key: completed,
         )
         handler = object.__new__(local_app.Handler)
         handler.server = SimpleNamespace(controller=controller)
@@ -283,13 +281,13 @@ class LocalOAuthConnectionTests(unittest.TestCase):
 
         handler.command = "GET"
         self.assertEqual(
-            handler._chat_route(["v1", "teams", "team_1", "chat", "connections"]),
-            (HTTPStatus.OK, pending, "chat-connection-pending", "team_1", None),
+            handler._chat_route(["v1", "teams", "team_1", "chat", "accounts"]),
+            (HTTPStatus.OK, pending, "chat-account-pending", "team_1", None),
         )
         handler.command = "POST"
         self.assertEqual(
-            handler._chat_route(["v1", "teams", "team_1", "chat", "connections"]),
-            (HTTPStatus.OK, completed, "chat-connection-submit", "team_1", None),
+            handler._chat_route(["v1", "teams", "team_1", "chat", "accounts"]),
+            (HTTPStatus.OK, completed, "chat-account-submit", "team_1", None),
         )
 
 

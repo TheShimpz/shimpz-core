@@ -18,13 +18,13 @@ def manifest(
     allowed_hosts: tuple[str, ...] = ("api.example.com",),
     secrets: dict[str, tuple[str, str]] | None = None,
     powers: dict[str, tuple[str, ...]] | None = None,
-    connections: dict[str, tuple[str, tuple[str, ...]]] | None = None,
-    power_connections: dict[str, tuple[str, ...]] | None = None,
+    accounts: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+    power_accounts: dict[str, tuple[str, ...]] | None = None,
 ) -> bytes:
     declarations = secrets if secrets is not None else {"api-token": ("API Token", "Token for the public API.")}
     bindings = powers if powers is not None else {"lookup": tuple(declarations)}
-    connection_declarations = connections if connections is not None else {}
-    connection_bindings = power_connections if power_connections is not None else dict.fromkeys(bindings, ())
+    account_declarations = accounts if accounts is not None else {}
+    account_bindings = power_accounts if power_accounts is not None else dict.fromkeys(bindings, ())
     lines = [
         "schema_version = 2",
         'name = "Fixture Assistant"',
@@ -40,10 +40,10 @@ def manifest(
                 f"summary = {json.dumps(summary)}",
             )
         )
-    for connection_id, (provider, scopes) in connection_declarations.items():
+    for account_id, (provider, scopes) in account_declarations.items():
         lines.extend(
             (
-                f"[connections.{connection_id}]",
+                f"[accounts.{account_id}]",
                 f"provider = {json.dumps(provider)}",
                 f"scopes = {json.dumps(list(scopes))}",
             )
@@ -55,7 +55,7 @@ def manifest(
                 f"summary = {json.dumps(f'Run {power_id}.')}",
                 'approval = "never"',
                 f"secrets = {json.dumps(list(refs))}",
-                f"connections = {json.dumps(list(connection_bindings.get(power_id, ())))}",
+                f"accounts = {json.dumps(list(account_bindings.get(power_id, ())))}",
             )
         )
     return ("\n".join(lines) + "\n").encode()
@@ -109,9 +109,9 @@ class AssistantManifestTests(unittest.TestCase):
                 power_id: SimpleNamespace(**metadata)
                 for power_id, metadata in assistant_contract.power_contracts().items()
             },
-            connections={
-                connection_id: SimpleNamespace(**metadata)
-                for connection_id, metadata in assistant_contract.connection_contracts().items()
+            accounts={
+                account_id: SimpleNamespace(**metadata)
+                for account_id, metadata in assistant_contract.account_contracts().items()
             },
         )
 
@@ -148,8 +148,8 @@ class AssistantManifestTests(unittest.TestCase):
                 "read-key": ("Read Key", "Authorizes reviewed reads."),
             },
             powers={"write": ("write-key",), "read": ("read-key",)},
-            connections={"social": ("x", ("users.read", "tweet.read"))},
-            power_connections={"write": ("social",), "read": ("social",)},
+            accounts={"social": ("x", ("users.read", "tweet.read"))},
+            power_accounts={"write": ("social",), "read": ("social",)},
         )
 
         contract = assistant_manifest.read_container_manifest_contract(Container("container-one", content))
@@ -163,9 +163,9 @@ class AssistantManifestTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            contract.connections,
+            contract.accounts,
             (
-                assistant_manifest.ConnectionDeclaration(
+                assistant_manifest.AccountDeclaration(
                     "social",
                     "x",
                     ("tweet.read", "users.read"),
@@ -173,7 +173,7 @@ class AssistantManifestTests(unittest.TestCase):
             ),
         )
         self.assertEqual(contract.power_secrets, (("read", ("read-key",)), ("write", ("write-key",))))
-        self.assertEqual(contract.power_connections, (("read", ("social",)), ("write", ("social",))))
+        self.assertEqual(contract.power_accounts, (("read", ("social",)), ("write", ("social",))))
 
     def test_empty_lists_are_valid_and_security_intent_is_required(self):
         empty = manifest(allowed_hosts=(), secrets={}, powers={"hello": ()})
@@ -230,30 +230,30 @@ class AssistantManifestTests(unittest.TestCase):
             with self.subTest(content=content), self.assertRaises(assistant_manifest.ManifestError):
                 assistant_manifest.parse_manifest_contract(content)
 
-    def test_connection_declarations_and_power_references_fail_closed(self):
+    def test_account_declarations_and_power_references_fail_closed(self):
         valid = manifest(
             secrets={},
             powers={"lookup": ()},
-            connections={"x": ("x", ("tweet.read", "users.read"))},
-            power_connections={"lookup": ("x",)},
+            accounts={"x": ("x", ("tweet.read", "users.read"))},
+            power_accounts={"lookup": ("x",)},
         )
         contract = assistant_manifest.parse_manifest_contract(valid)
-        self.assertEqual(contract.connections[0].provider, "x")
-        self.assertEqual(contract.connections[0].scopes, ("tweet.read", "users.read"))
+        self.assertEqual(contract.accounts[0].provider, "x")
+        self.assertEqual(contract.accounts[0].scopes, ("tweet.read", "users.read"))
 
         invalid = (
             manifest(
                 secrets={},
                 powers={"lookup": ()},
-                connections={"x": ("x", ("tweet.read",))},
-                power_connections={"lookup": ()},
+                accounts={"x": ("x", ("tweet.read",))},
+                power_accounts={"lookup": ()},
             ),
-            manifest(secrets={}, powers={"lookup": ()}, power_connections={"lookup": ("missing",)}),
+            manifest(secrets={}, powers={"lookup": ()}, power_accounts={"lookup": ("missing",)}),
             manifest(
                 secrets={},
                 powers={"lookup": ()},
-                connections={"x": ("x", ("tweet.read", "tweet.read"))},
-                power_connections={"lookup": ("x",)},
+                accounts={"x": ("x", ("tweet.read", "tweet.read"))},
+                power_accounts={"lookup": ("x",)},
             ),
             valid.replace(b'scopes = ["tweet.read", "users.read"]', b"scopes = []"),
             valid.replace(b'provider = "x"', b'provider = "X"'),
@@ -266,6 +266,25 @@ class AssistantManifestTests(unittest.TestCase):
         for content in invalid:
             with self.subTest(content=content), self.assertRaises(assistant_manifest.ManifestError):
                 assistant_manifest.parse_manifest_contract(content)
+
+    def test_obsolete_connections_contract_fails_closed(self):
+        valid = manifest(
+            secrets={},
+            powers={"lookup": ()},
+            accounts={"x": ("x", ("tweet.read",))},
+            power_accounts={"lookup": ("x",)},
+        )
+        for obsolete in (
+            valid.replace(b"[accounts.x]", b"[connections.x]"),
+            valid.replace(b'accounts = ["x"]', b'connections = ["x"]'),
+        ):
+            with self.subTest(obsolete=obsolete), self.assertRaises(assistant_manifest.ManifestError):
+                assistant_manifest.parse_manifest_contract(obsolete)
+
+    def test_unknown_top_level_fields_fail_closed(self):
+        for field in (b'homepage = "https://example.com"\n', b"[runtime]\nport = 8080\n"):
+            with self.subTest(field=field), self.assertRaises(assistant_manifest.ManifestError):
+                assistant_manifest.parse_manifest_contract(manifest() + field)
 
     def test_archive_shape_and_metadata_fail_closed(self):
         valid = manifest()
@@ -300,8 +319,8 @@ class AssistantManifestTests(unittest.TestCase):
             allowed_hosts=("api.example.com", "cdn.example.com"),
             secrets={"api-token": ("API Token", "Token for the public API.")},
             powers={"lookup": ("api-token",)},
-            connections={"social": ("x", ("tweet.read", "users.read"))},
-            power_connections={"lookup": ("social",)},
+            accounts={"social": ("x", ("tweet.read", "users.read"))},
+            power_accounts={"lookup": ("social",)},
         )
         container = Container("container-one", content)
         cache = assistant_manifest.ManifestContractCache(max_entries=1)
@@ -310,8 +329,8 @@ class AssistantManifestTests(unittest.TestCase):
             allowed_hosts=("cdn.example.com", "api.example.com"),
             secret_declarations={"api-token": ("API Token", "Token for the public API.")},
             power_secret_refs={"lookup": ("api-token",)},
-            connection_declarations={"social": ("x", ("users.read", "tweet.read"))},
-            power_connection_refs={"lookup": ("social",)},
+            account_declarations={"social": ("x", ("users.read", "tweet.read"))},
+            power_account_refs={"lookup": ("social",)},
         )
         self.assertEqual(cache.get(container, expected), expected)
         self.assertEqual(cache.get(container, expected), expected)
@@ -321,29 +340,29 @@ class AssistantManifestTests(unittest.TestCase):
                 allowed_hosts=("api.example.com", "evil.example.com"),
                 secret_declarations={"api-token": ("API Token", "Token for the public API.")},
                 power_secret_refs={"lookup": ("api-token",)},
-                connection_declarations={"social": ("x", ("tweet.read", "users.read"))},
-                power_connection_refs={"lookup": ("social",)},
+                account_declarations={"social": ("x", ("tweet.read", "users.read"))},
+                power_account_refs={"lookup": ("social",)},
             ),
             assistant_manifest.canonical_manifest_contract(
                 allowed_hosts=("api.example.com", "cdn.example.com"),
                 secret_declarations={"api-token": ("Different Name", "Token for the public API.")},
                 power_secret_refs={"lookup": ("api-token",)},
-                connection_declarations={"social": ("x", ("tweet.read", "users.read"))},
-                power_connection_refs={"lookup": ("social",)},
+                account_declarations={"social": ("x", ("tweet.read", "users.read"))},
+                power_account_refs={"lookup": ("social",)},
             ),
             assistant_manifest.canonical_manifest_contract(
                 allowed_hosts=("api.example.com", "cdn.example.com"),
                 secret_declarations={"api-token": ("API Token", "Token for the public API.")},
                 power_secret_refs={"other-power": ("api-token",)},
-                connection_declarations={"social": ("x", ("tweet.read", "users.read"))},
-                power_connection_refs={"other-power": ("social",)},
+                account_declarations={"social": ("x", ("tweet.read", "users.read"))},
+                power_account_refs={"other-power": ("social",)},
             ),
             assistant_manifest.canonical_manifest_contract(
                 allowed_hosts=("api.example.com", "cdn.example.com"),
                 secret_declarations={"api-token": ("API Token", "Token for the public API.")},
                 power_secret_refs={"lookup": ("api-token",)},
-                connection_declarations={"social": ("other", ("tweet.read", "users.read"))},
-                power_connection_refs={"lookup": ("social",)},
+                account_declarations={"social": ("other", ("tweet.read", "users.read"))},
+                power_account_refs={"lookup": ("social",)},
             ),
             assistant_manifest.canonical_manifest_contract(
                 allowed_hosts=("api.example.com", "cdn.example.com"),

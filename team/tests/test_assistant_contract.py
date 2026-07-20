@@ -11,13 +11,28 @@ class AssistantContractTests(unittest.TestCase):
         self.assertEqual(assistant_contract.ASSISTANT_NAME, "Shimpz Assistant")
         self.assertEqual(
             assistant_contract.ASSISTANT_ALLOWED_HOSTS,
-            ("api.x.com",),
+            ("api.mux.com", "api.x.com"),
         )
         powers = assistant_contract.power_contracts()
-        self.assertEqual(set(powers), {"public-user-lookup", "identity-me", "create-post", "delete-post"})
-        self.assertEqual(assistant_contract.secret_contracts(), {})
         self.assertEqual(
-            assistant_contract.connection_contracts(),
+            set(powers),
+            {
+                "public-user-lookup",
+                "identity-me",
+                "create-post",
+                "delete-post",
+                "list-direct-uploads",
+                "create-test-direct-upload",
+                "cancel-direct-upload",
+                "verify-mux-webhook",
+            },
+        )
+        self.assertEqual(
+            set(assistant_contract.secret_contracts()),
+            {"mux-token-id", "mux-token-secret", "mux-webhook-signing-secret"},
+        )
+        self.assertEqual(
+            assistant_contract.account_contracts(),
             {
                 "x": {
                     "provider": "x",
@@ -25,12 +40,22 @@ class AssistantContractTests(unittest.TestCase):
                 }
             },
         )
+        approved = {"create-post", "delete-post", "create-test-direct-upload", "cancel-direct-upload"}
+        mux_api = {"list-direct-uploads", "create-test-direct-upload", "cancel-direct-upload"}
+        x_powers = {"public-user-lookup", "identity-me", "create-post", "delete-post"}
         for power_id, power in powers.items():
-            self.assertEqual(power["approval"], "each-run" if power_id in {"create-post", "delete-post"} else "none")
+            self.assertEqual(power["approval"], "each-run" if power_id in approved else "none")
             self.assertFalse(power["input_schema"]["additionalProperties"])
             self.assertFalse(power["output_schema"]["additionalProperties"])
-            self.assertEqual(power["secrets"], ())
-            self.assertEqual(power["connections"], ("x",))
+            self.assertEqual(
+                power["secrets"],
+                ("mux-token-id", "mux-token-secret")
+                if power_id in mux_api
+                else ("mux-webhook-signing-secret",)
+                if power_id == "verify-mux-webhook"
+                else (),
+            )
+            self.assertEqual(power["accounts"], ("x",) if power_id in x_powers else ())
 
     def test_each_power_normalizes_only_its_declared_input(self) -> None:
         self.assertEqual(
@@ -60,8 +85,13 @@ class AssistantContractTests(unittest.TestCase):
         for power, payload in (
             ("public-user-lookup", {"username": "invalid-user"}),
             ("identity-me", {"extra": True}),
-            ("create-post", {"text": "x" * 281}),
+            ("create-post", {"text": "x" * 8193}),
             ("delete-post", {"id": "not-a-snowflake"}),
+            ("list-direct-uploads", {"limit": True}),
+            ("list-direct-uploads", {"limit": 26}),
+            ("create-test-direct-upload", {"extra": True}),
+            ("cancel-direct-upload", {"id": "../escape"}),
+            ("verify-mux-webhook", {"body": "", "signature": "safe"}),
         ):
             with self.subTest(power=power), self.assertRaises(ValueError):
                 assistant_contract.validate_power_input("shimpz-assistant", power, payload)
@@ -81,6 +111,17 @@ class AssistantContractTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             assistant_contract.validate_power_output("shimpz-assistant", "delete-post", {"deleted": False})
+        upload = {"id": "upload_1", "status": "waiting", "timeout": 60}
+        self.assertEqual(
+            assistant_contract.validate_power_output("shimpz-assistant", "create-test-direct-upload", upload),
+            upload,
+        )
+        with self.assertRaises(ValueError):
+            assistant_contract.validate_power_output(
+                "shimpz-assistant",
+                "verify-mux-webhook",
+                {"valid": True, "timestamp": -1, "event_type": "video.upload.asset_created"},
+            )
 
     def test_help_is_exact_utf8_markdown_bounded_to_32_kib(self) -> None:
         self.assertEqual(

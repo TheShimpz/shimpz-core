@@ -224,29 +224,29 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             {power_id: tuple(sorted(power.secrets)) for power_id, power in spec.assistant.powers.items()},
         )
         self.assertEqual(
+            {account.id: (account.provider, account.scopes) for account in reviewed_contracts[0].accounts},
             {
-                connection.id: (connection.provider, connection.scopes)
-                for connection in reviewed_contracts[0].connections
-            },
-            {
-                connection_id: (connection.provider, tuple(sorted(connection.scopes)))
-                for connection_id, connection in spec.assistant.connections.items()
+                account_id: (account.provider, tuple(sorted(account.scopes)))
+                for account_id, account in spec.assistant.accounts.items()
             },
         )
         self.assertEqual(
-            dict(reviewed_contracts[0].power_connections),
-            {power_id: tuple(sorted(power.connections)) for power_id, power in spec.assistant.powers.items()},
+            dict(reviewed_contracts[0].power_accounts),
+            {power_id: tuple(sorted(power.accounts)) for power_id, power in spec.assistant.powers.items()},
         )
 
         exact = reviewed_contracts[0]
-        connection = exact.connections[0]
-        first_power, _first_refs = exact.power_connections[0]
+        account = exact.accounts[0]
+        first_power, _first_refs = next(item for item in exact.power_accounts if item[1])
         drifted = (
-            replace(exact, connections=(replace(connection, provider="other"),)),
-            replace(exact, connections=(replace(connection, scopes=("tweet.read",)),)),
+            replace(exact, accounts=(replace(account, provider="other"),)),
+            replace(exact, accounts=(replace(account, scopes=("tweet.read",)),)),
             replace(
                 exact,
-                power_connections=((first_power, ()), *exact.power_connections[1:]),
+                power_accounts=tuple(
+                    (power_id, ()) if power_id == first_power else (power_id, refs)
+                    for power_id, refs in exact.power_accounts
+                ),
             ),
         )
         with (
@@ -414,11 +414,11 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
 class HostedCredentialLeaseTests(unittest.TestCase):
     def setUp(self) -> None:
         """Keep pending private-input state isolated from every hosted test."""
-        original_connections = app._assistant_connection_challenges
+        original_accounts = app._assistant_account_challenges
         original_secrets = app._assistant_secret_challenges
-        app._assistant_connection_challenges = app.assistant_connection_challenges.ConnectionChallengeStore()
+        app._assistant_account_challenges = app.assistant_account_challenges.AccountChallengeStore()
         app._assistant_secret_challenges = app.assistant_secret_challenges.SecretChallengeStore()
-        self.addCleanup(setattr, app, "_assistant_connection_challenges", original_connections)
+        self.addCleanup(setattr, app, "_assistant_account_challenges", original_accounts)
         self.addCleanup(setattr, app, "_assistant_secret_challenges", original_secrets)
 
     def _journal_chat_environment(self, journal, runtime, rpc):
@@ -443,20 +443,20 @@ class HostedCredentialLeaseTests(unittest.TestCase):
                 "configured-test-secret",
             ),
         )
-        connection_store = app.oauth_connection_store.OAuthConnectionStore(
-            journal.path.parent / "oauth-state" / "connections.json",
+        account_store = app.oauth_account_store.OAuthAccountStore(
+            journal.path.parent / "oauth-state" / "accounts.json",
             journal.path.parent / "oauth-key" / "aes256.key",
         )
-        for connection_id, declaration in contract.connections.items():
-            connection_store.put(
+        for account_id, declaration in contract.accounts.items():
+            account_store.put(
                 "team_1",
                 "shimpz-assistant",
-                connection_id,
+                account_id,
                 declaration.provider,
                 declaration.scopes,
                 app.oauth_http_client.OAuthTokenSet(
-                    f"synthetic-hosted-access-token-{connection_id}",
-                    f"synthetic-hosted-refresh-token-{connection_id}",
+                    f"synthetic-hosted-access-token-{account_id}",
+                    f"synthetic-hosted-refresh-token-{account_id}",
                     declaration.scopes,
                     3600,
                 ),
@@ -472,7 +472,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             _brain_runtime=runtime,
             _power_execution_journal=lambda: journal,
             _assistant_secrets=secret_store,
-            _assistant_connections=connection_store,
+            _assistant_accounts=account_store,
             _invoke_assistant_power=rpc,
             _commit_chat_terminal=lambda _team_id, _token: True,
         )
@@ -875,7 +875,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             operation = app._power_operation(
                 normalized,
                 "b" * 64,
-                connection_generations=(("x", 1),),
+                account_generations=(("x", 1),),
             )
             batch = journal.prepare_batch(ANCHOR_ID, thread_id, (operation,))
             journal.begin(batch, operation)

@@ -68,7 +68,7 @@ class MarketplaceImageTests(unittest.TestCase):
         self.assertTrue(marketplace.is_digest_image(spec.image))
         self.assertEqual((spec.port, spec.health_path), (8080, "/health"))
         self.assertFalse(spec.db)
-        self.assertEqual(spec.allowed_hosts, ("api.x.com",))
+        self.assertEqual(spec.allowed_hosts, ("api.mux.com", "api.x.com"))
         self.assertTrue(spec.first_party)
         self.assertEqual(
             dict(spec.required_image_labels),
@@ -77,24 +77,46 @@ class MarketplaceImageTests(unittest.TestCase):
         self.assertIsNotNone(spec.assistant)
         self.assertEqual(
             set(spec.assistant.powers),
-            {"public-user-lookup", "identity-me", "create-post", "delete-post"},
+            {
+                "public-user-lookup",
+                "identity-me",
+                "create-post",
+                "delete-post",
+                "list-direct-uploads",
+                "create-test-direct-upload",
+                "cancel-direct-upload",
+                "verify-mux-webhook",
+            },
         )
         self.assertEqual(spec.assistant.powers["identity-me"].path, "/v1/powers/identity-me")
-        self.assertEqual(spec.assistant.secrets, {})
-        self.assertEqual(spec.assistant.connections["x"].provider, "x")
         self.assertEqual(
-            spec.assistant.connections["x"].scopes,
+            set(spec.assistant.secrets),
+            {"mux-token-id", "mux-token-secret", "mux-webhook-signing-secret"},
+        )
+        self.assertEqual(spec.assistant.accounts["x"].provider, "x")
+        self.assertEqual(
+            spec.assistant.accounts["x"].scopes,
             ("offline.access", "tweet.read", "tweet.write", "users.read"),
         )
-        for power in spec.assistant.powers.values():
-            self.assertEqual(power.secrets, ())
-            self.assertEqual(power.connections, ("x",))
+        x_powers = {"public-user-lookup", "identity-me", "create-post", "delete-post"}
+        mux_api_powers = {"list-direct-uploads", "create-test-direct-upload", "cancel-direct-upload"}
+        for power_id, power in spec.assistant.powers.items():
+            self.assertEqual(power.accounts, ("x",) if power_id in x_powers else ())
+            self.assertEqual(
+                power.secrets,
+                ("mux-token-id", "mux-token-secret")
+                if power_id in mux_api_powers
+                else ("mux-webhook-signing-secret",)
+                if power_id == "verify-mux-webhook"
+                else (),
+            )
 
     def test_x_powers_expose_closed_runtime_schemas_and_explicit_approval(self) -> None:
         powers = marketplace.APPS["shimpz-assistant"].assistant.powers
 
+        approved = {"create-post", "delete-post", "create-test-direct-upload", "cancel-direct-upload"}
         for power_id, power in powers.items():
-            self.assertEqual(power.approval, "each-run" if power_id in {"create-post", "delete-post"} else "none")
+            self.assertEqual(power.approval, "each-run" if power_id in approved else "none")
             self.assertEqual(power.input_schema["type"], "object")
             self.assertFalse(power.input_schema["additionalProperties"])
             self.assertFalse(power.output_schema["additionalProperties"])

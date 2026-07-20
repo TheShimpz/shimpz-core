@@ -35,7 +35,7 @@ class PowerSpec:
     output_schema: dict[str, object]
     approval: Literal["none", "once", "each-run"]
     secrets: tuple[str, ...]
-    connections: tuple[str, ...] = ()
+    accounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +45,7 @@ class SecretSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectionSpec:
+class AccountSpec:
     provider: str
     scopes: tuple[str, ...]
 
@@ -61,7 +61,7 @@ class AssistantSpec:
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
     allowed_hosts: tuple[str, ...]
-    connections: dict[str, ConnectionSpec] = field(default_factory=dict)
+    accounts: dict[str, AccountSpec] = field(default_factory=dict)
 
 
 def is_digest_ref(value: object) -> bool:
@@ -105,9 +105,9 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
             secret_id: SecretSpec(**contract) for secret_id, contract in assistant_contract.secret_contracts().items()
         },
         allowed_hosts=assistant_contract.ASSISTANT_ALLOWED_HOSTS,
-        connections={
-            connection_id: ConnectionSpec(**contract)
-            for connection_id, contract in assistant_contract.connection_contracts().items()
+        accounts={
+            account_id: AccountSpec(**contract)
+            for account_id, contract in assistant_contract.account_contracts().items()
         },
     )
     return {shimpz_assistant.assistant_id: shimpz_assistant}

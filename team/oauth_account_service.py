@@ -1,4 +1,4 @@
-"""Narrow controller-owned orchestration for Assistant OAuth connections.
+"""Narrow controller-owned orchestration for Assistant OAuth accounts.
 
 This module composes the one-use PKCE challenge store, the fixed-endpoint OAuth
 HTTP adapter, and the encrypted token store.  It deliberately owns no routes,
@@ -12,8 +12,8 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-import assistant_connection_challenges
-import oauth_connection_store
+import assistant_account_challenges
+import oauth_account_store
 import oauth_http_client
 import oauth_pkce_challenges
 import oauth_providers
@@ -29,28 +29,28 @@ _REDIRECT_URIS = frozenset(
     }
 )
 MAX_REQUIREMENTS = 32
-MAX_CONNECTIONS_PER_REQUIREMENT = 16
+MAX_ACCOUNTS_PER_REQUIREMENT = 16
 
 
-class OAuthConnectionServiceError(RuntimeError):
-    """An OAuth connection could not be started or safely completed."""
+class OAuthAccountServiceError(RuntimeError):
+    """An OAuth account could not be started or safely completed."""
 
 
-class OAuthConnectionUnavailableError(OAuthConnectionServiceError):
-    """No pending connection currently requires provider authorization."""
+class OAuthAccountUnavailableError(OAuthAccountServiceError):
+    """No pending account currently requires provider authorization."""
 
 
-class OAuthConnectionDeclarationError(RuntimeError):
+class OAuthAccountDeclarationError(RuntimeError):
     """The trusted installed-Assistant resolver could not return a declaration."""
 
 
 @dataclass(frozen=True, slots=True)
-class OAuthConnectionCompletion:
+class OAuthAccountCompletion:
     """Public completion identifiers; no authorization material is retained."""
 
     team_id: str
     assistant_id: str
-    connection_id: str
+    account_id: str
     provider: str
     scopes: tuple[str, ...]
     generation: int
@@ -60,14 +60,14 @@ class OAuthConnectionCompletion:
 class _Candidate:
     team_id: str
     assistant_id: str
-    connection_id: str
+    account_id: str
     provider: str
     scopes: tuple[str, ...]
 
 
 def _identifier(value: object, label: str) -> str:
     if not isinstance(value, str) or len(value) > 64 or _COMPONENT_ID.fullmatch(value) is None:
-        raise OAuthConnectionServiceError(f"pending OAuth {label} is unavailable")
+        raise OAuthAccountServiceError(f"pending OAuth {label} is unavailable")
     return value
 
 
@@ -80,19 +80,19 @@ def _declaration(value: object) -> tuple[str, tuple[str, ...]]:
             provider = value.provider  # type: ignore[attr-defined]
             scopes = value.scopes  # type: ignore[attr-defined]
         except (AttributeError, TypeError) as exc:
-            raise OAuthConnectionServiceError("OAuth connection declaration is unavailable") from exc
+            raise OAuthAccountServiceError("OAuth account declaration is unavailable") from exc
     try:
-        intent = oauth_providers.connection_intent(provider, scopes)
+        intent = oauth_providers.account_intent(provider, scopes)
     except oauth_providers.OAuthProviderError as exc:
-        raise OAuthConnectionServiceError("OAuth connection declaration is unavailable") from exc
+        raise OAuthAccountServiceError("OAuth account declaration is unavailable") from exc
     return intent.provider.id, intent.scopes
 
 
 def _candidates(
     pending: object,
 ) -> tuple[_Candidate, ...]:
-    if not isinstance(pending, assistant_connection_challenges.PendingConnectionChallenge):
-        raise OAuthConnectionServiceError("pending OAuth connection is unavailable")
+    if not isinstance(pending, assistant_account_challenges.PendingAccountChallenge):
+        raise OAuthAccountServiceError("pending OAuth account is unavailable")
     if (
         not isinstance(pending.requirements, tuple)
         or not 1 <= len(pending.requirements) <= MAX_REQUIREMENTS
@@ -104,40 +104,40 @@ def _candidates(
         or isinstance(pending.expires_at, bool)
         or pending.expires_at <= time.monotonic()
     ):
-        raise OAuthConnectionServiceError("pending OAuth connection is unavailable")
+        raise OAuthAccountServiceError("pending OAuth account is unavailable")
     candidates: list[_Candidate] = []
     seen: set[tuple[str, str]] = set()
     for requirement in pending.requirements:
         if (
-            not isinstance(requirement, assistant_connection_challenges.ConnectionRequirement)
-            or not isinstance(requirement.connections, tuple)
-            or not 1 <= len(requirement.connections) <= MAX_CONNECTIONS_PER_REQUIREMENT
+            not isinstance(requirement, assistant_account_challenges.AccountRequirement)
+            or not isinstance(requirement.accounts, tuple)
+            or not 1 <= len(requirement.accounts) <= MAX_ACCOUNTS_PER_REQUIREMENT
         ):
-            raise OAuthConnectionServiceError("pending OAuth connection is unavailable")
+            raise OAuthAccountServiceError("pending OAuth account is unavailable")
         assistant_id = _identifier(requirement.assistant_id, "Assistant")
-        for raw_connection in requirement.connections:
-            if not isinstance(raw_connection, tuple) or len(raw_connection) != 3:
-                raise OAuthConnectionServiceError("pending OAuth connection is unavailable")
-            connection_id, raw_provider, raw_scopes = raw_connection
-            connection_id = _identifier(connection_id, "connection")
+        for raw_account in requirement.accounts:
+            if not isinstance(raw_account, tuple) or len(raw_account) != 3:
+                raise OAuthAccountServiceError("pending OAuth account is unavailable")
+            account_id, raw_provider, raw_scopes = raw_account
+            account_id = _identifier(account_id, "account")
             provider, scopes = _declaration({"provider": raw_provider, "scopes": raw_scopes})
-            binding = (assistant_id, connection_id)
+            binding = (assistant_id, account_id)
             if binding in seen:
-                raise OAuthConnectionServiceError("pending OAuth connection is unavailable")
+                raise OAuthAccountServiceError("pending OAuth account is unavailable")
             seen.add(binding)
             candidates.append(
                 _Candidate(
                     team_id=pending.team_id,
                     assistant_id=assistant_id,
-                    connection_id=connection_id,
+                    account_id=account_id,
                     provider=provider,
                     scopes=scopes,
                 )
             )
-    return tuple(sorted(candidates, key=lambda item: (item.assistant_id, item.connection_id)))
+    return tuple(sorted(candidates, key=lambda item: (item.assistant_id, item.account_id)))
 
 
-class OAuthConnectionService:
+class OAuthAccountService:
     """Start and complete only controller-reviewed OAuth Authorization Code flows."""
 
     def __init__(
@@ -146,16 +146,16 @@ class OAuthConnectionService:
         client_id: object,
         redirect_uri: object,
         challenge: oauth_pkce_challenges.OAuthPKCEChallengeStore,
-        store: oauth_connection_store.OAuthConnectionStore,
+        store: oauth_account_store.OAuthAccountStore,
         http: oauth_http_client.OAuthHTTPClient,
     ) -> None:
         if (
             not isinstance(challenge, oauth_pkce_challenges.OAuthPKCEChallengeStore)
-            or not isinstance(store, oauth_connection_store.OAuthConnectionStore)
+            or not isinstance(store, oauth_account_store.OAuthAccountStore)
             or not isinstance(http, oauth_http_client.OAuthHTTPClient)
             or redirect_uri not in _REDIRECT_URIS
         ):
-            raise OAuthConnectionServiceError("OAuth connection service configuration is invalid")
+            raise OAuthAccountServiceError("OAuth account service configuration is invalid")
         # A self-hosted Admin may boot before its public X client id is configured.
         # Validation is deliberately lazy so only starting/completing OAuth fails.
         self._client_id = client_id
@@ -165,29 +165,29 @@ class OAuthConnectionService:
         self._http = http
 
     def __repr__(self) -> str:
-        return "<OAuthConnectionService configured>"
+        return "<OAuthAccountService configured>"
 
     def _client_configuration(self) -> tuple[str, str]:
         if not isinstance(self._client_id, str) or _CLIENT_ID.fullmatch(self._client_id) is None:
-            raise OAuthConnectionServiceError("OAuth connection client is not configured")
+            raise OAuthAccountServiceError("OAuth account client is not configured")
         return self._client_id, self._redirect_uri
 
     def authorization_url(
         self,
-        pending: assistant_connection_challenges.PendingConnectionChallenge,
+        pending: assistant_account_challenges.PendingAccountChallenge,
         session_binding: object,
     ) -> str:
-        """Create one trusted URL for the first deterministic missing connection."""
+        """Create one trusted URL for the first deterministic missing account."""
         client_id, redirect_uri = self._client_configuration()
         try:
             candidates = _candidates(pending)
             metadata_by_binding: dict[
                 tuple[str, str],
-                oauth_connection_store.OAuthConnectionMetadata,
+                oauth_account_store.OAuthAccountMetadata,
             ] = {}
             by_assistant: dict[str, dict[str, dict[str, object]]] = {}
             for candidate in candidates:
-                by_assistant.setdefault(candidate.assistant_id, {})[candidate.connection_id] = {
+                by_assistant.setdefault(candidate.assistant_id, {})[candidate.account_id] = {
                     "provider": candidate.provider,
                     "scopes": candidate.scopes,
                 }
@@ -198,18 +198,18 @@ class OAuthConnectionService:
                 (
                     candidate
                     for candidate in candidates
-                    if metadata_by_binding[(candidate.assistant_id, candidate.connection_id)].status
+                    if metadata_by_binding[(candidate.assistant_id, candidate.account_id)].status
                     in {"missing", "refresh-required", "reauthorization-required"}
                 ),
                 None,
             )
             if selected is None:
-                raise OAuthConnectionUnavailableError("all pending OAuth connections are already configured")
+                raise OAuthAccountUnavailableError("all pending OAuth accounts are already configured")
             public = self._challenge.create(
                 session_binding=session_binding,
                 team_id=selected.team_id,
                 assistant_id=selected.assistant_id,
-                connection_id=selected.connection_id,
+                account_id=selected.account_id,
                 provider_id=selected.provider,
                 scopes=selected.scopes,
             )
@@ -221,19 +221,19 @@ class OAuthConnectionService:
                 code_challenge=public.code_challenge,
                 scopes=public.scopes,
             )
-        except OAuthConnectionUnavailableError:
+        except OAuthAccountUnavailableError:
             raise
         except (
-            assistant_connection_challenges.ConnectionChallengeError,
-            oauth_connection_store.OAuthConnectionStoreError,
+            assistant_account_challenges.AccountChallengeError,
+            oauth_account_store.OAuthAccountStoreError,
             oauth_http_client.OAuthHTTPError,
             oauth_pkce_challenges.OAuthChallengeError,
             oauth_providers.OAuthProviderError,
-            OAuthConnectionServiceError,
+            OAuthAccountServiceError,
             KeyError,
             TypeError,
         ):
-            raise OAuthConnectionServiceError("OAuth connection could not be started") from None
+            raise OAuthAccountServiceError("OAuth account could not be started") from None
 
     def complete(
         self,
@@ -241,11 +241,11 @@ class OAuthConnectionService:
         code: object,
         session_binding: object,
         current_declaration_callback: Callable[[str, str, str], object],
-    ) -> OAuthConnectionCompletion:
+    ) -> OAuthAccountCompletion:
         """Claim once, revalidate the installed declaration, exchange, and seal tokens."""
         client_id, redirect_uri = self._client_configuration()
         if not callable(current_declaration_callback):
-            raise OAuthConnectionServiceError("OAuth declaration resolver is unavailable")
+            raise OAuthAccountServiceError("OAuth declaration resolver is unavailable")
         try:
             exchange = self._challenge.claim_callback(
                 state=state,
@@ -255,13 +255,13 @@ class OAuthConnectionService:
                 current = current_declaration_callback(
                     exchange.team_id,
                     exchange.assistant_id,
-                    exchange.connection_id,
+                    exchange.account_id,
                 )
-            except OAuthConnectionDeclarationError:
-                raise OAuthConnectionServiceError("OAuth connection declaration is unavailable") from None
+            except OAuthAccountDeclarationError:
+                raise OAuthAccountServiceError("OAuth account declaration is unavailable") from None
             provider, scopes = _declaration(current)
             if provider != exchange.provider_id or scopes != exchange.scopes:
-                raise OAuthConnectionServiceError("OAuth connection declaration changed")
+                raise OAuthAccountServiceError("OAuth account declaration changed")
             token_set = self._http.exchange_code(
                 provider_id=provider,
                 client_id=client_id,
@@ -273,30 +273,30 @@ class OAuthConnectionService:
             metadata = self._store.put(
                 exchange.team_id,
                 exchange.assistant_id,
-                exchange.connection_id,
+                exchange.account_id,
                 provider,
                 scopes,
                 token_set,
                 None,
             )
-            return OAuthConnectionCompletion(
+            return OAuthAccountCompletion(
                 team_id=exchange.team_id,
                 assistant_id=exchange.assistant_id,
-                connection_id=exchange.connection_id,
+                account_id=exchange.account_id,
                 provider=metadata.provider,
                 scopes=metadata.scopes,
                 generation=metadata.generation,
             )
         except (
-            oauth_connection_store.OAuthConnectionStoreError,
+            oauth_account_store.OAuthAccountStoreError,
             oauth_http_client.OAuthHTTPError,
             oauth_pkce_challenges.OAuthChallengeError,
             oauth_providers.OAuthProviderError,
-            OAuthConnectionServiceError,
+            OAuthAccountServiceError,
         ):
-            raise OAuthConnectionServiceError("OAuth connection could not be completed") from None
+            raise OAuthAccountServiceError("OAuth account could not be completed") from None
 
-    def disconnect(self, team_id: object, assistant_id: object, connection_id: object) -> bool:
+    def disconnect(self, team_id: object, assistant_id: object, account_id: object) -> bool:
         """Revoke each upstream token before atomically deleting local custody."""
 
         def revoke(provider: str, access_token: str, refresh_token: str | None) -> None:
@@ -313,12 +313,12 @@ class OAuthConnectionService:
             return self._store.revoke_then_delete(
                 team_id,
                 assistant_id,
-                connection_id,
+                account_id,
                 revoke,
             )
         except (
-            oauth_connection_store.OAuthConnectionStoreError,
+            oauth_account_store.OAuthAccountStoreError,
             oauth_http_client.OAuthHTTPError,
-            OAuthConnectionServiceError,
+            OAuthAccountServiceError,
         ):
-            raise OAuthConnectionServiceError("OAuth connection could not be disconnected") from None
+            raise OAuthAccountServiceError("OAuth account could not be disconnected") from None

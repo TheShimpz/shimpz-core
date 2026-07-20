@@ -183,7 +183,7 @@ def authorization_url(
     if not isinstance(code_challenge, str) or _PKCE.fullmatch(code_challenge) is None:
         raise OAuthHTTPError("OAuth challenge is invalid")
     try:
-        intent = oauth_providers.connection_intent(provider.id, scopes)
+        intent = oauth_providers.account_intent(provider.id, scopes)
     except oauth_providers.OAuthProviderError as exc:
         raise OAuthHTTPError("OAuth scopes are invalid") from exc
     query = urlencode(
@@ -281,7 +281,7 @@ class OAuthHTTPClient:
         if not 43 <= len(verifier) <= 128:
             raise OAuthHTTPError("OAuth challenge is invalid")
         try:
-            expected_scopes = oauth_providers.connection_intent(provider.id, scopes).scopes
+            expected_scopes = oauth_providers.account_intent(provider.id, scopes).scopes
         except oauth_providers.OAuthProviderError as exc:
             raise OAuthHTTPError("OAuth scopes are invalid") from exc
         response = self._post(
@@ -308,7 +308,7 @@ class OAuthHTTPClient:
         client = _client_id(client_id)
         previous = _token(refresh_token)
         try:
-            expected_scopes = oauth_providers.connection_intent(provider.id, scopes).scopes
+            expected_scopes = oauth_providers.account_intent(provider.id, scopes).scopes
         except oauth_providers.OAuthProviderError as exc:
             raise OAuthHTTPError("OAuth scopes are invalid") from exc
         response = self._post(

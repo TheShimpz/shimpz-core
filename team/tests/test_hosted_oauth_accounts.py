@@ -46,13 +46,13 @@ class _Runtime:
         return app.brain_runtime_client.RuntimeTurn("completed", "Connected lookup complete.", ())
 
 
-class HostedOAuthConnectionTests(unittest.TestCase):
+class HostedOAuthAccountTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        self.store = app.oauth_connection_store.OAuthConnectionStore(
-            root / "state" / "connections.json",
+        self.store = app.oauth_account_store.OAuthAccountStore(
+            root / "state" / "accounts.json",
             root / "key" / "aes256.key",
         )
         trusted = app.marketplace.APPS[ASSISTANT_ID].assistant
@@ -63,12 +63,12 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 power_id: replace(
                     power,
                     secrets=(),
-                    connections=("x",) if power_id == "public-user-lookup" else (),
+                    accounts=("x",) if power_id == "public-user-lookup" else (),
                 )
                 for power_id, power in trusted.powers.items()
             },
             secrets={},
-            connections={"x": app.marketplace.ConnectionSpec("x", SCOPES)},
+            accounts={"x": app.marketplace.AccountSpec("x", SCOPES)},
         )
         self.container = types.SimpleNamespace(id="b" * 64)
         self.active = app._ActiveAssistant(ASSISTANT_ID, self.contract, self.container)
@@ -92,7 +92,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             return {"id": "123", "name": "X Developers", "username": "XDevelopers"}
 
         with _patched(
-            _assistant_connections=self.store,
+            _assistant_accounts=self.store,
             _installed_assistant=lambda *_args: (ASSISTANT_ID, self.contract, self.container),
             _assistant_rpc=rpc,
         ):
@@ -105,7 +105,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 "public-user-lookup",
                 {"username": "XDevelopers"},
             )
-            payload = app.assistant_connection_flow.inventory_payload(
+            payload = app.assistant_account_flow.inventory_payload(
                 TEAM_ID,
                 [app._hosted_secret_spec(self.active)],
                 self.store,
@@ -118,7 +118,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 {
                     "input": {"username": "XDevelopers"},
                     "secrets": {},
-                    "connections": {
+                    "accounts": {
                         "x": {"type": "oauth2-bearer", "access_token": ACCESS_TOKEN},
                     },
                 }
@@ -128,13 +128,13 @@ class HostedOAuthConnectionTests(unittest.TestCase):
         self.assertNotIn(ACCESS_TOKEN, serialized)
         self.assertNotIn("refresh-token", serialized)
         self.assertNotIn("generation", serialized)
-        self.assertEqual(payload["connections"][0]["status"], "connected")
+        self.assertEqual(payload["accounts"][0]["status"], "connected")
 
-    def test_connection_token_exposure_is_rejected_without_echoing_it(self) -> None:
+    def test_account_token_exposure_is_rejected_without_echoing_it(self) -> None:
         self._connect()
         with (
             _patched(
-                _assistant_connections=self.store,
+                _assistant_accounts=self.store,
                 _installed_assistant=lambda *_args: (ASSISTANT_ID, self.contract, self.container),
                 _assistant_rpc=lambda *_args, **_kwargs: {"id": "123", "name": ACCESS_TOKEN},
             ),
@@ -153,32 +153,32 @@ class HostedOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, app.HTTPStatus.BAD_GATEWAY)
         self.assertNotIn(ACCESS_TOKEN, caught.exception.message)
 
-    def test_admitted_contract_prunes_removed_connections_and_cancels_paused_turn(self) -> None:
+    def test_admitted_contract_prunes_removed_accounts_and_cancels_paused_turn(self) -> None:
         self._connect()
-        challenge_store = app.assistant_connection_challenges.ConnectionChallengeStore()
-        requirement = app.assistant_connection_challenges.ConnectionRequirement(
+        challenge_store = app.assistant_account_challenges.AccountChallengeStore()
+        requirement = app.assistant_account_challenges.AccountRequirement(
             ASSISTANT_ID,
             "Shimpz Assistant",
             ("public-user-lookup",),
             (("x", "x", SCOPES),),
         )
         challenge_store.create(TEAM_ID, (requirement,), object())
-        without_connections = replace(
+        without_accounts = replace(
             app.marketplace.APPS[ASSISTANT_ID],
-            assistant=replace(self.contract, connections={}),
+            assistant=replace(self.contract, accounts={}),
         )
 
         with _patched(
-            _assistant_connections=self.store,
-            _assistant_connection_challenges=challenge_store,
+            _assistant_accounts=self.store,
+            _assistant_account_challenges=challenge_store,
         ):
-            app._retain_admitted_assistant_connections(TEAM_ID, ASSISTANT_ID, without_connections)
+            app._retain_admitted_assistant_accounts(TEAM_ID, ASSISTANT_ID, without_accounts)
 
         self.assertIsNone(challenge_store.current(TEAM_ID))
         self.assertEqual(self.store.metadata(TEAM_ID, ASSISTANT_ID, {}), ())
         self.assertNotIn(ACCESS_TOKEN, self.store.state_path.read_text(encoding="utf-8"))
 
-    def test_connection_resume_can_pause_for_secrets_before_any_power_runs(self) -> None:
+    def test_account_resume_can_pause_for_secrets_before_any_power_runs(self) -> None:
         private_contract = replace(
             self.contract,
             powers={
@@ -196,7 +196,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             labels={"team.name": "Marketing", "team.owner": "account_1"},
         )
         runtime = _Runtime()
-        connection_challenges = app.assistant_connection_challenges.ConnectionChallengeStore()
+        account_challenges = app.assistant_account_challenges.AccountChallengeStore()
         secret_challenges = app.assistant_secret_challenges.SecretChallengeStore()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -228,15 +228,15 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 _current_team_anchor=lambda *_args: anchor,
                 _brain_runtime=runtime,
                 _power_execution_journal=lambda: journal,
-                _assistant_connections=self.store,
-                _assistant_connection_challenges=connection_challenges,
+                _assistant_accounts=self.store,
+                _assistant_account_challenges=account_challenges,
                 _assistant_secrets=secret_store,
                 _assistant_secret_challenges=secret_challenges,
                 _installed_assistant=lambda *_args: (ASSISTANT_ID, private_contract, self.container),
                 _assistant_rpc=rpc,
                 _commit_chat_terminal=lambda *_args: True,
             ):
-                connection_prompt = app._chat_in_turn(
+                account_prompt = app._chat_in_turn(
                     TEAM_ID,
                     "Look up XDevelopers.",
                     [],
@@ -245,16 +245,16 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                     anchor,
                     "account_1",
                 )
-                self.assertEqual(connection_prompt["status"], "connections-required")
+                self.assertEqual(account_prompt["status"], "accounts-required")
                 self.assertEqual(runtime.start_calls, 1)
                 self.assertEqual(runtime.resume_calls, 0)
                 self.assertEqual(rpc_calls, [])
 
                 self._connect()
                 with _patched(_exclusive_chat_turn=exclusive):
-                    secret_prompt = app._resume_chat_connections(
+                    secret_prompt = app._resume_chat_accounts(
                         TEAM_ID,
-                        connection_prompt["challenge_id"],
+                        account_prompt["challenge_id"],
                         app._AuthorizationLease(
                             TEAM_ID,
                             ANCHOR_ID,
@@ -267,11 +267,11 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             self.assertEqual(runtime.start_calls, 1)
             self.assertEqual(runtime.resume_calls, 0)
             self.assertEqual(rpc_calls, [])
-            self.assertIsNone(connection_challenges.current(TEAM_ID))
+            self.assertIsNone(account_challenges.current(TEAM_ID))
             self.assertIsNotNone(secret_challenges.current(TEAM_ID))
 
     def test_authorize_and_callback_expose_no_oauth_private_material(self) -> None:
-        challenge_store = app.assistant_connection_challenges.ConnectionChallengeStore()
+        challenge_store = app.assistant_account_challenges.AccountChallengeStore()
         continuation = app.chat_orchestrator.ChatContinuation(
             app.brain_runtime_client.RuntimeTurn("power-required", "", ()),
             (),
@@ -288,7 +288,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
         challenge = challenge_store.create(
             TEAM_ID,
             (
-                app.assistant_connection_challenges.ConnectionRequirement(
+                app.assistant_account_challenges.AccountRequirement(
                     ASSISTANT_ID,
                     "Shimpz Assistant",
                     ("public-user-lookup",),
@@ -306,7 +306,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             complete=lambda state, code, session, resolver: types.SimpleNamespace(
                 team_id=TEAM_ID,
                 assistant_id=ASSISTANT_ID,
-                connection_id="x",
+                account_id="x",
                 provider="x",
                 scopes=SCOPES,
                 generation=9,
@@ -320,18 +320,18 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             ("account", "account_1"),
         )
         with _patched(
-            _assistant_connection_challenges=challenge_store,
-            _oauth_connections=fake_service,
+            _assistant_account_challenges=challenge_store,
+            _oauth_accounts=fake_service,
             _require_current_authorization=lambda *_args, **_kwargs: object(),
             _authorize=lambda *_args, **_kwargs: lease,
         ):
-            started = app._start_oauth_connection(
+            started = app._start_oauth_account(
                 TEAM_ID,
                 challenge.id,
                 "browser-session-binding-value",
                 lease,
             )
-            completed = app._complete_oauth_connection(
+            completed = app._complete_oauth_account(
                 {
                     "state": "provider-state-value",
                     "code": "provider-code-value",
@@ -340,7 +340,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 ("account", "account_1"),
             )
             with self.assertRaises(app.ApiError) as extra_field:
-                app._complete_oauth_connection(
+                app._complete_oauth_account(
                     {
                         "state": "provider-state-value",
                         "code": "provider-code-value",
@@ -358,7 +358,7 @@ class HostedOAuthConnectionTests(unittest.TestCase):
                 "connected": True,
                 "team_id": TEAM_ID,
                 "assistant_id": ASSISTANT_ID,
-                "connection_id": "x",
+                "account_id": "x",
                 "provider": "x",
                 "scopes": list(SCOPES),
                 "challenge_id": challenge.id,
@@ -376,13 +376,13 @@ class HostedOAuthConnectionTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, serialized)
 
-    def test_team_teardown_cancels_connection_turn_and_purges_tokens(self) -> None:
+    def test_team_teardown_cancels_account_turn_and_purges_tokens(self) -> None:
         self._connect()
-        challenges = app.assistant_connection_challenges.ConnectionChallengeStore()
+        challenges = app.assistant_account_challenges.AccountChallengeStore()
         challenges.create(
             TEAM_ID,
             (
-                app.assistant_connection_challenges.ConnectionRequirement(
+                app.assistant_account_challenges.AccountRequirement(
                     ASSISTANT_ID,
                     "Shimpz Assistant",
                     ("public-user-lookup",),
@@ -392,13 +392,13 @@ class HostedOAuthConnectionTests(unittest.TestCase):
             object(),
         )
         with _patched(
-            _assistant_connections=self.store,
-            _assistant_connection_challenges=challenges,
+            _assistant_accounts=self.store,
+            _assistant_account_challenges=challenges,
         ):
-            self.assertTrue(app._teardown_assistant_connections(TEAM_ID))
+            self.assertTrue(app._teardown_assistant_accounts(TEAM_ID))
 
         self.assertIsNone(challenges.current(TEAM_ID))
-        self.assertEqual(self.store.metadata(TEAM_ID, ASSISTANT_ID, self.contract.connections)[0].status, "missing")
+        self.assertEqual(self.store.metadata(TEAM_ID, ASSISTANT_ID, self.contract.accounts)[0].status, "missing")
 
 
 if __name__ == "__main__":

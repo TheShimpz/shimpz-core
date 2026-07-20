@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import assistant_connection_challenges
-import oauth_connection_service
-import oauth_connection_store
+import assistant_account_challenges
+import oauth_account_service
+import oauth_account_store
 import oauth_http_client
 import oauth_pkce_challenges
 
@@ -59,39 +59,39 @@ def requirement(
     *,
     provider: str = "x",
     scopes: tuple[str, ...] = SCOPES,
-) -> assistant_connection_challenges.ConnectionRequirement:
-    return assistant_connection_challenges.ConnectionRequirement(
+) -> assistant_account_challenges.AccountRequirement:
+    return assistant_account_challenges.AccountRequirement(
         assistant_id=assistant,
         assistant_name=assistant,
         power_ids=("identity-me",),
-        connections=(("x", provider, scopes),),
+        accounts=(("x", provider, scopes),),
     )
 
 
 def pending(
-    *requirements: assistant_connection_challenges.ConnectionRequirement,
+    *requirements: assistant_account_challenges.AccountRequirement,
     team: str = "team_1",
-) -> assistant_connection_challenges.PendingConnectionChallenge:
-    return assistant_connection_challenges.ConnectionChallengeStore().create(
+) -> assistant_account_challenges.PendingAccountChallenge:
+    return assistant_account_challenges.AccountChallengeStore().create(
         team,
         tuple(requirements or (requirement(),)),
         {"private": "paused user input"},
     )
 
 
-class OAuthConnectionServiceTests(unittest.TestCase):
+class OAuthAccountServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
-        self.store = oauth_connection_store.OAuthConnectionStore(
-            root / "state" / "connections.json",
+        self.store = oauth_account_store.OAuthAccountStore(
+            root / "state" / "accounts.json",
             root / "key" / "aes256.key",
             clock=lambda: 1_000_000_000,
         )
         self.challenges = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         self.transport = SyntheticTransport()
         self.http = oauth_http_client.OAuthHTTPClient(self.transport)
-        self.service = oauth_connection_service.OAuthConnectionService(
+        self.service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
@@ -111,7 +111,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             state,
             CODE,
             session,
-            lambda _team, _assistant, _connection: DECLARATION,
+            lambda _team, _assistant, _account: DECLARATION,
         )
 
     def test_trusted_url_selects_first_deterministic_unconfigured_requirement(self) -> None:
@@ -136,7 +136,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
 
         completed = self._complete(query["state"][0])
         self.assertEqual(
-            (completed.team_id, completed.assistant_id, completed.connection_id),
+            (completed.team_id, completed.assistant_id, completed.account_id),
             ("team_1", "z-assistant", "x"),
         )
         self.assertEqual(completed.provider, "x")
@@ -149,14 +149,14 @@ class OAuthConnectionServiceTests(unittest.TestCase):
 
     def test_wrong_session_does_not_consume_but_success_and_replay_are_one_use(self) -> None:
         state = self._state(self.service.authorization_url(pending(requirement()), SESSION))
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
             self._complete(state, session=OTHER_SESSION)
         self.assertEqual(self.transport.requests, [])
 
         completed = self._complete(state)
-        self.assertEqual(completed.connection_id, "x")
+        self.assertEqual(completed.account_id, "x")
         self.assertEqual(len(self.transport.requests), 1)
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
             self._complete(state)
         self.assertEqual(len(self.transport.requests), 1)
 
@@ -168,15 +168,15 @@ class OAuthConnectionServiceTests(unittest.TestCase):
         for current in drifted:
             with self.subTest(current=current):
                 state = self._state(self.service.authorization_url(pending(requirement()), SESSION))
-                with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+                with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
                     self.service.complete(
                         state,
                         CODE,
                         SESSION,
-                        lambda _team, _assistant, _connection, value=current: value,
+                        lambda _team, _assistant, _account, value=current: value,
                     )
                 self.assertEqual(self.transport.requests, [])
-                with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+                with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
                     self._complete(state)
 
     def test_provider_scope_and_configuration_injection_fail_closed(self) -> None:
@@ -186,23 +186,23 @@ class OAuthConnectionServiceTests(unittest.TestCase):
         ):
             with (
                 self.subTest(malicious=malicious),
-                self.assertRaises(oauth_connection_service.OAuthConnectionServiceError),
+                self.assertRaises(oauth_account_service.OAuthAccountServiceError),
             ):
                 self.service.authorization_url(pending(malicious), SESSION)
         self.assertEqual(self.challenges.cancel_all(), 0)
         self.assertEqual(self.transport.requests, [])
 
-        malformed = assistant_connection_challenges.PendingConnectionChallenge(
+        malformed = assistant_account_challenges.PendingAccountChallenge(
             id="0" * 32,
             team_id="team_1",
             expires_at=0,
             requirements=(requirement(),),
             payload=None,
         )
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
             self.service.authorization_url(malformed, SESSION)
 
-        lazy = oauth_connection_service.OAuthConnectionService(
+        lazy = oauth_account_service.OAuthAccountService(
             client_id=None,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
@@ -211,12 +211,12 @@ class OAuthConnectionServiceTests(unittest.TestCase):
         )
         self.assertNotIn(CLIENT_ID, repr(self.service))
         with self.assertRaisesRegex(
-            oauth_connection_service.OAuthConnectionServiceError,
+            oauth_account_service.OAuthAccountServiceError,
             "not configured",
         ):
             lazy.authorization_url(pending(requirement()), SESSION)
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
-            oauth_connection_service.OAuthConnectionService(
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
+            oauth_account_service.OAuthAccountService(
                 client_id=CLIENT_ID,
                 redirect_uri="https://evil.example/callback",
                 challenge=self.challenges,
@@ -224,11 +224,11 @@ class OAuthConnectionServiceTests(unittest.TestCase):
                 http=self.http,
             )
 
-    def test_expired_stored_connection_can_start_fresh_authorization(self) -> None:
+    def test_expired_stored_account_can_start_fresh_authorization(self) -> None:
         root = Path(self.temporary.name)
         now = [1_000]
-        store = oauth_connection_store.OAuthConnectionStore(
-            root / "expired-state" / "connections.json",
+        store = oauth_account_store.OAuthAccountStore(
+            root / "expired-state" / "accounts.json",
             root / "expired-key" / "aes256.key",
             clock=lambda: now[0],
         )
@@ -241,7 +241,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             oauth_http_client.OAuthTokenSet(ACCESS, REFRESH, SCOPES, 30),
         )
         now[0] = 1_031
-        service = oauth_connection_service.OAuthConnectionService(
+        service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=oauth_pkce_challenges.OAuthPKCEChallengeStore(),
@@ -268,7 +268,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
                 ).encode(),
             )
         )
-        service = oauth_connection_service.OAuthConnectionService(
+        service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
@@ -276,12 +276,12 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             http=oauth_http_client.OAuthHTTPClient(transport),
         )
         state = self._state(service.authorization_url(pending(requirement()), SESSION))
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError) as captured:
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError) as captured:
             service.complete(
                 state,
                 CODE,
                 SESSION,
-                lambda _team, _assistant, _connection: DECLARATION,
+                lambda _team, _assistant, _account: DECLARATION,
             )
         rendered = f"{captured.exception!r} {captured.exception}"
         for private in (leaked, ACCESS, REFRESH, CODE, CLIENT_ID, state, "verifier"):
@@ -289,13 +289,13 @@ class OAuthConnectionServiceTests(unittest.TestCase):
 
         next_state = self._state(service.authorization_url(pending(requirement()), SESSION))
         callback_secret = "-".join(("manifest", "parser", "private", "value", "123456789"))
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError) as callback:
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError) as callback:
             service.complete(
                 next_state,
                 CODE,
                 SESSION,
-                lambda _team, _assistant, _connection: (_ for _ in ()).throw(
-                    oauth_connection_service.OAuthConnectionDeclarationError(callback_secret)
+                lambda _team, _assistant, _account: (_ for _ in ()).throw(
+                    oauth_account_service.OAuthAccountDeclarationError(callback_secret)
                 ),
             )
         self.assertNotIn(callback_secret, f"{callback.exception!r} {callback.exception}")
@@ -304,7 +304,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
         state = self._state(self.service.authorization_url(pending(requirement()), SESSION))
         self._complete(state)
         requests = len(self.transport.requests)
-        with self.assertRaises(oauth_connection_service.OAuthConnectionUnavailableError):
+        with self.assertRaises(oauth_account_service.OAuthAccountUnavailableError):
             self.service.authorization_url(pending(requirement()), SESSION)
         self.assertTrue(self.service.disconnect("team_1", "shimpz-assistant", "x"))
         self.assertFalse(self.service.disconnect("team_1", "shimpz-assistant", "x"))
@@ -338,7 +338,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
                 oauth_http_client.OAuthHTTPResponse(503, "application/json", private_provider_body),
             ]
         )
-        service = oauth_connection_service.OAuthConnectionService(
+        service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
@@ -346,7 +346,7 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             http=oauth_http_client.OAuthHTTPClient(transport),
         )
 
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError) as failed:
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError) as failed:
             service.disconnect("team_1", "shimpz-assistant", "x")
         rendered = f"{failed.exception!r} {failed.exception}"
         for private in (ACCESS, REFRESH, CLIENT_ID, "private-provider-detail"):
@@ -379,14 +379,14 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             SCOPES,
             oauth_http_client.OAuthTokenSet(ACCESS, REFRESH, SCOPES, 3600),
         )
-        service = oauth_connection_service.OAuthConnectionService(
+        service = oauth_account_service.OAuthAccountService(
             client_id=None,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
             store=self.store,
             http=self.http,
         )
-        with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError):
+        with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
             service.disconnect("team_1", "shimpz-assistant", "x")
         self.assertEqual(self.transport.requests, [])
         self.assertEqual(
