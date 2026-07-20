@@ -2235,6 +2235,55 @@ class LocalContractTests(unittest.TestCase):
             dict(reviewed_contracts[0].power_secrets),
             {power_id: tuple(sorted(power.secrets)) for power_id, power in spec.powers.items()},
         )
+        self.assertEqual(
+            {
+                connection.id: (connection.provider, connection.scopes)
+                for connection in reviewed_contracts[0].connections
+            },
+            {
+                connection_id: (connection.provider, tuple(sorted(connection.scopes)))
+                for connection_id, connection in spec.connections.items()
+            },
+        )
+        self.assertEqual(
+            dict(reviewed_contracts[0].power_connections),
+            {power_id: tuple(sorted(power.connections)) for power_id, power in spec.powers.items()},
+        )
+
+        exact = reviewed_contracts[0]
+        connection = exact.connections[0]
+        first_power, _first_refs = exact.power_connections[0]
+        drifted = (
+            replace(exact, connections=(replace(connection, provider="other"),)),
+            replace(exact, connections=(replace(connection, scopes=("tweet.read",)),)),
+            replace(
+                exact,
+                power_connections=((first_power, ()), *exact.power_connections[1:]),
+            ),
+        )
+        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
+        with mock.patch.object(
+            local_app.assistant_manifest,
+            "read_container_manifest_contract",
+            return_value=exact,
+        ):
+            self.assertEqual(
+                controller._admit_assistant_allowed_hosts(SimpleNamespace(id="exact-generation"), spec),
+                exact.allowed_hosts,
+            )
+        for index, declared in enumerate(drifted):
+            controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
+            with (
+                self.subTest(declared=declared),
+                mock.patch.object(
+                    local_app.assistant_manifest,
+                    "read_container_manifest_contract",
+                    return_value=declared,
+                ),
+                self.assertRaises(local_app.ApiProblem) as drift,
+            ):
+                controller._admit_assistant_allowed_hosts(SimpleNamespace(id=f"drift-generation-{index}"), spec)
+            self.assertEqual(drift.exception.code, "assistant-manifest-invalid")
 
     def test_manifest_mismatch_removes_stopped_container_without_activating_egress(self) -> None:
         events: list[object] = []

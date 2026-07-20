@@ -1620,6 +1620,7 @@ def _require_assistant_allowed_hosts(spec: marketplace.AppSpec, container) -> tu
             allowed_hosts=spec.allowed_hosts,
             secrets=contract.secrets,
             powers=contract.powers,
+            connections=contract.connections,
         )
         return _assistant_allowed_hosts_cache.get(container, reviewed).allowed_hosts
     except assistant_manifest.ManifestError as exc:

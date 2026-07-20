@@ -1243,6 +1243,7 @@ class LocalController:
                 allowed_hosts=spec.allowed_hosts,
                 secrets=spec.secrets,
                 powers=spec.powers,
+                connections=spec.connections,
             )
             return self._assistant_allowed_hosts_cache.get(container, reviewed).allowed_hosts
         except assistant_manifest.ManifestError as exc:

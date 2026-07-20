@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -222,6 +223,50 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             dict(reviewed_contracts[0].power_secrets),
             {power_id: tuple(sorted(power.secrets)) for power_id, power in spec.assistant.powers.items()},
         )
+        self.assertEqual(
+            {
+                connection.id: (connection.provider, connection.scopes)
+                for connection in reviewed_contracts[0].connections
+            },
+            {
+                connection_id: (connection.provider, tuple(sorted(connection.scopes)))
+                for connection_id, connection in spec.assistant.connections.items()
+            },
+        )
+        self.assertEqual(
+            dict(reviewed_contracts[0].power_connections),
+            {power_id: tuple(sorted(power.connections)) for power_id, power in spec.assistant.powers.items()},
+        )
+
+        exact = reviewed_contracts[0]
+        connection = exact.connections[0]
+        first_power, _first_refs = exact.power_connections[0]
+        drifted = (
+            replace(exact, connections=(replace(connection, provider="other"),)),
+            replace(exact, connections=(replace(connection, scopes=("tweet.read",)),)),
+            replace(
+                exact,
+                power_connections=((first_power, ()), *exact.power_connections[1:]),
+            ),
+        )
+        with (
+            _patched(_assistant_allowed_hosts_cache=app.assistant_manifest.ManifestContractCache()),
+            mock.patch.object(app.assistant_manifest, "read_container_manifest_contract", return_value=exact),
+        ):
+            self.assertEqual(app._require_assistant_allowed_hosts(spec, container), exact.allowed_hosts)
+        for declared in drifted:
+            with (
+                self.subTest(declared=declared),
+                _patched(_assistant_allowed_hosts_cache=app.assistant_manifest.ManifestContractCache()),
+                mock.patch.object(
+                    app.assistant_manifest,
+                    "read_container_manifest_contract",
+                    return_value=declared,
+                ),
+                self.assertRaises(app.ApiError) as drift,
+            ):
+                app._require_assistant_allowed_hosts(spec, container)
+            self.assertEqual(drift.exception.status, HTTPStatus.CONFLICT)
 
         def reject(_container, _reviewed):
             raise app.assistant_manifest.ManifestError("mismatch")
