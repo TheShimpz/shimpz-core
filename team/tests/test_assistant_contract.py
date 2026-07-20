@@ -15,9 +15,10 @@ class AssistantContractTests(unittest.TestCase):
         )
         powers = assistant_contract.power_contracts()
         self.assertEqual(set(powers), {"public-user-lookup", "identity-me", "create-post", "delete-post"})
-        self.assertEqual(set(assistant_contract.secret_contracts()), {
-            "x-bearer-token", "x-api-key", "x-api-key-secret", "x-access-token", "x-access-token-secret"
-        })
+        self.assertEqual(
+            set(assistant_contract.secret_contracts()),
+            {"x-bearer-token", "x-api-key", "x-api-key-secret", "x-access-token", "x-access-token-secret"},
+        )
         for power_id, power in powers.items():
             self.assertEqual(power["approval"], "each-run" if power_id in {"create-post", "delete-post"} else "none")
             self.assertFalse(power["input_schema"]["additionalProperties"])

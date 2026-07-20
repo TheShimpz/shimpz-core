@@ -99,8 +99,7 @@ class AssistantSecretFlowTests(unittest.TestCase):
             {**valid, "values": valid["values"][:1]},
             {
                 **valid,
-                "values": valid["values"]
-                + [{"assistant_id": "x-assistant", "secret_id": "extra", "value": "charlie"}],
+                "values": valid["values"] + [{"assistant_id": "x-assistant", "secret_id": "extra", "value": "charlie"}],
             },
             {**valid, "values": [valid["values"][0], valid["values"][0]]},
         ):

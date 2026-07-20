@@ -68,8 +68,7 @@ def requirements_for_batch(
                 assistant_name=spec.name,
                 power_ids=tuple(sorted({power_id for secret_id in missing for power_id in group[secret_id]})),
                 secrets=tuple(
-                    (secret_id, spec.secrets[secret_id].name, spec.secrets[secret_id].summary)
-                    for secret_id in missing
+                    (secret_id, spec.secrets[secret_id].name, spec.secrets[secret_id].summary) for secret_id in missing
                 ),
             )
         )
