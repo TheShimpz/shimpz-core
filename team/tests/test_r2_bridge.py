@@ -412,6 +412,15 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
 
 
 class HostedCredentialLeaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        """Keep pending private-input state isolated from every hosted test."""
+        original_connections = app._assistant_connection_challenges
+        original_secrets = app._assistant_secret_challenges
+        app._assistant_connection_challenges = app.assistant_connection_challenges.ConnectionChallengeStore()
+        app._assistant_secret_challenges = app.assistant_secret_challenges.SecretChallengeStore()
+        self.addCleanup(setattr, app, "_assistant_connection_challenges", original_connections)
+        self.addCleanup(setattr, app, "_assistant_secret_challenges", original_secrets)
+
     def _journal_chat_environment(self, journal, runtime, rpc):
         contract = app.marketplace.APPS["shimpz-assistant"].assistant
         assert contract is not None
@@ -434,6 +443,24 @@ class HostedCredentialLeaseTests(unittest.TestCase):
                 "configured-test-secret",
             ),
         )
+        connection_store = app.oauth_connection_store.OAuthConnectionStore(
+            journal.path.parent / "oauth-state" / "connections.json",
+            journal.path.parent / "oauth-key" / "aes256.key",
+        )
+        for connection_id, declaration in contract.connections.items():
+            connection_store.put(
+                "team_1",
+                "shimpz-assistant",
+                connection_id,
+                declaration.provider,
+                declaration.scopes,
+                app.oauth_http_client.OAuthTokenSet(
+                    f"synthetic-hosted-access-token-{connection_id}",
+                    f"synthetic-hosted-refresh-token-{connection_id}",
+                    declaration.scopes,
+                    3600,
+                ),
+            )
         return anchor, _patched(
             _active_team_assistants=lambda _team_id: (assistant,),
             _require_assistant_genesis=lambda _container: "Use only the declared X Powers.",
@@ -445,6 +472,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             _brain_runtime=runtime,
             _power_execution_journal=lambda: journal,
             _assistant_secrets=secret_store,
+            _assistant_connections=connection_store,
             _invoke_assistant_power=rpc,
             _commit_chat_terminal=lambda _team_id, _token: True,
         )
@@ -844,7 +872,11 @@ class HostedCredentialLeaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             journal = app.power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
             self.addCleanup(journal.close)
-            operation = app._power_operation(normalized, "b" * 64)
+            operation = app._power_operation(
+                normalized,
+                "b" * 64,
+                connection_generations=(("x", 1),),
+            )
             batch = journal.prepare_batch(ANCHOR_ID, thread_id, (operation,))
             journal.begin(batch, operation)
             anchor, environment = self._journal_chat_environment(journal, runtime, rpc)
