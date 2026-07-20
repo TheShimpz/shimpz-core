@@ -2252,7 +2252,7 @@ def _invoke_assistant_power(
             contract.rpc_command,
             power_spec.method,
             power_spec.path,
-            {"input": safe_input, "secrets": secret_values},
+            {"input": safe_input, "secrets": secret_values, "connections": {}},
         )
     except ApiError as exc:
         audit.log(

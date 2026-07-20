@@ -35,9 +35,19 @@ def encode_private_rpc_envelope(payload: object) -> bytes:
     return encoded
 
 
-def require_power_rpc_envelope(power_input: object, secret_values: Mapping[str, str]) -> None:
-    """Prove the complete secret-bearing Power request fits before journaling it."""
-    encode_private_rpc_envelope({"input": power_input, "secrets": dict(secret_values)})
+def require_power_rpc_envelope(
+    power_input: object,
+    secret_values: Mapping[str, str],
+    connection_values: Mapping[str, object] | None = None,
+) -> None:
+    """Prove the complete private Power request fits before journaling it."""
+    encode_private_rpc_envelope(
+        {
+            "input": power_input,
+            "secrets": dict(secret_values),
+            "connections": dict(connection_values or {}),
+        }
+    )
 
 
 class _ActiveBinding(Protocol):

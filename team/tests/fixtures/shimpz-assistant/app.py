@@ -26,11 +26,12 @@ POST_ID_RE = re.compile(r"[0-9]{1,19}\Z")
 
 
 def _power_input(payload: object, power: str) -> dict[str, object]:
-    if not isinstance(payload, dict) or set(payload) != {"input", "secrets"}:
+    if not isinstance(payload, dict) or set(payload) != {"input", "secrets", "connections"}:
         raise ValueError
     power_input = payload["input"]
     secrets = payload["secrets"]
-    if not isinstance(power_input, dict) or not isinstance(secrets, dict):
+    connections = payload["connections"]
+    if not isinstance(power_input, dict) or not isinstance(secrets, dict) or connections != {}:
         raise ValueError
     if set(secrets) != POWER_SECRETS[power]:
         raise ValueError

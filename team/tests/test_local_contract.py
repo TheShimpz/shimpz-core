@@ -1146,7 +1146,7 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(rejected.exception.code, "assistant-secret-challenge-expired")
         self.assertEqual(stored, replacements)
 
-    def test_power_rpc_receives_only_the_validated_input_and_declared_secrets(self) -> None:
+    def test_power_rpc_receives_only_the_validated_input_and_private_envelopes(self) -> None:
         captured: list[object] = []
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
@@ -1173,7 +1173,8 @@ class LocalContractTests(unittest.TestCase):
                     "/v1/powers/public-user-lookup",
                     {
                         "input": LOOKUP_INPUT,
-                        "secrets": {"x-bearer-token": ASSISTANT_SECRET_VALUES["x-bearer-token"]},
+                        "secrets": {},
+                        "connections": {},
                     },
                 )
             ],

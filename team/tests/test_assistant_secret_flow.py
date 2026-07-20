@@ -71,10 +71,17 @@ class AssistantSecretFlowTests(unittest.TestCase):
             )
 
     def test_private_rpc_envelope_uses_one_exact_bounded_encoding(self) -> None:
-        payload = {"input": {"city": "São Paulo"}, "secrets": {"token": "private-value"}}
+        payload = {
+            "input": {"city": "São Paulo"},
+            "secrets": {"token": "private-value"},
+            "connections": {},
+        }
         encoded = assistant_secret_flow.encode_private_rpc_envelope(payload)
 
-        self.assertEqual(encoded, b'{"input":{"city":"S\\u00e3o Paulo"},"secrets":{"token":"private-value"}}')
+        self.assertEqual(
+            encoded,
+            b'{"input":{"city":"S\\u00e3o Paulo"},"secrets":{"token":"private-value"},"connections":{}}',
+        )
         with self.assertRaises(assistant_secret_flow.SecretFlowError):
             assistant_secret_flow.require_power_rpc_envelope(
                 {},

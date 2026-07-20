@@ -2962,7 +2962,7 @@ class LocalController:
                     spec,
                     power_spec.method,
                     power_spec.path,
-                    {"input": safe_payload, "secrets": secret_values},
+                    {"input": safe_payload, "secrets": secret_values, "connections": {}},
                 )
             except ApiProblem:
                 local_audit.record(
