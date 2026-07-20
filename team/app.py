@@ -1493,7 +1493,6 @@ CHAT_OUTPUT_CAP = 60000
 MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024
 # Base64 expands by 4/3; leave a small fixed envelope for the JSON keys and filename.
 MAX_FILE_BODY_BYTES = 4 * ((MAX_INBOX_FILE_BYTES + 2) // 3) + 8192
-MAX_ASSISTANT_RPC_INPUT_BYTES = 16 * 1024
 MAX_ASSISTANT_RPC_OUTPUT_BYTES = assistant_contract.MAX_HELP_BYTES * 6 + 1024
 ASSISTANT_RPC_TIMEOUT_SECONDS = 8
 MAX_CHAT_FILES = 8
@@ -1633,6 +1632,7 @@ class _HostedPowerBatch:
         thread_id: str,
         bindings: dict[str, _ActiveAssistant],
         execute: Callable[[brain_runtime_client.PowerRequest], object],
+        preflight: Callable[[brain_runtime_client.PowerRequest], None],
         secret_generations: Callable[
             [brain_runtime_client.PowerRequest],
             tuple[tuple[str, int], ...],
@@ -1642,6 +1642,7 @@ class _HostedPowerBatch:
         self._thread_id = thread_id
         self._bindings = bindings
         self._execute = execute
+        self._preflight = preflight
         self._secret_generations = secret_generations
         self._journal: power_journal.PowerJournal | None = None
         self._batch: power_journal.Batch | None = None
@@ -1655,6 +1656,7 @@ class _HostedPowerBatch:
             active = self._bindings.get(request.assistant_id)
             if active is None:
                 raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
+            self._preflight(request)
             operations.append(
                 _power_operation(
                     request,
@@ -1875,9 +1877,10 @@ def _assistant_rpc_exchange(
     operation: str,
     detect_unsupported_path: bool = False,
 ) -> object:
-    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-    if len(encoded) > MAX_ASSISTANT_RPC_INPUT_BYTES:
-        raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Power input is too large")
+    try:
+        encoded = assistant_secret_flow.encode_private_rpc_envelope(payload)
+    except assistant_secret_flow.SecretFlowError as exc:
+        raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Power input is too large") from exc
     _register_optional_power(team_id, token, container)
     stream = None
     try:
@@ -2046,6 +2049,26 @@ def _resolve_power_secrets(
     except assistant_secret_store.AssistantSecretError as exc:
         _raise_assistant_secret_error(exc)
     raise AssertionError("unreachable")
+
+
+def _require_hosted_power_rpc_envelope(
+    team_id: str,
+    bindings: dict[str, _ActiveAssistant],
+    request: brain_runtime_client.PowerRequest,
+) -> None:
+    active = bindings.get(request.assistant_id)
+    if active is None:
+        raise ApiError(HTTPStatus.CONFLICT, "Brain requested an unavailable Assistant")
+    secret_values = _resolve_power_secrets(
+        team_id,
+        request.assistant_id,
+        active.contract,
+        request.power,
+    )
+    try:
+        assistant_secret_flow.require_power_rpc_envelope(request.input, secret_values)
+    except assistant_secret_flow.SecretFlowError as exc:
+        raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Assistant Power input is too large") from exc
 
 
 def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
@@ -2432,6 +2455,7 @@ def _run_hosted_chat_segment(
         runtime_context.thread_id,
         bindings,
         execute_power,
+        lambda request: _require_hosted_power_rpc_envelope(team_id, bindings, request),
         lambda request: _power_secret_generations(
             team_id,
             bindings[request.assistant_id],

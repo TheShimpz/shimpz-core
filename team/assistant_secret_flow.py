@@ -7,6 +7,7 @@ per-Assistant mappings only at the controller boundary.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
@@ -16,10 +17,27 @@ import brain_runtime_client
 from local_registry import AssistantSpec
 
 MAX_CHALLENGE_SECRETS = 64
+MAX_PRIVATE_RPC_ENVELOPE_BYTES = 16 * 1024
 
 
 class SecretFlowError(RuntimeError):
     """A secret request or submission violated its closed contract."""
+
+
+def encode_private_rpc_envelope(payload: object) -> bytes:
+    """Encode one bounded Controller-to-Assistant envelope exactly once."""
+    try:
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+        raise SecretFlowError("private Assistant RPC envelope is invalid") from exc
+    if len(encoded) > MAX_PRIVATE_RPC_ENVELOPE_BYTES:
+        raise SecretFlowError("private Assistant RPC envelope is too large")
+    return encoded
+
+
+def require_power_rpc_envelope(power_input: object, secret_values: Mapping[str, str]) -> None:
+    """Prove the complete secret-bearing Power request fits before journaling it."""
+    encode_private_rpc_envelope({"input": power_input, "secrets": dict(secret_values)})
 
 
 class _ActiveBinding(Protocol):

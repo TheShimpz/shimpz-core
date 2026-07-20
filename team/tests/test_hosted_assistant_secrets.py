@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
@@ -190,6 +192,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
                 "secrets": {"x-bearer-token": SECRET_VALUES["x-bearer-token"]},
             },
         )
+
         self.assertEqual(
             payloads["/v1/powers/identity-me"],
             {
@@ -226,6 +229,28 @@ class HostedAssistantSecretTests(unittest.TestCase):
                 app._AuthorizationLease(TEAM_ID, ANCHOR_ID, "account_1", ("account", "account_1")),
             )
         self.assertEqual(replay.exception.status, HTTPStatus.CONFLICT)
+
+    def test_oversized_secret_envelope_is_rejected_before_the_power_journal(self) -> None:
+        oversized = dict(SECRET_VALUES)
+        oversized["x-bearer-token"] = "x" * app.assistant_secret_store.MAX_SECRET_BYTES
+        self.secret_store.put_many(TEAM_ID, ASSISTANT_ID, oversized)
+
+        with self._environment(), self.assertRaises(app.ApiError) as caught:
+            app._chat_in_turn(
+                TEAM_ID,
+                "Read the public profile and my connected identity.",
+                [],
+                (ASSISTANT_ID,),
+                "oversized-turn",
+                self.anchor,
+                "account_1",
+            )
+        with closing(sqlite3.connect(self.journal.path)) as connection:
+            batches = connection.execute("SELECT COUNT(*) FROM batches").fetchone()
+
+        self.assertEqual(caught.exception.status, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        self.assertEqual(batches, (0,))
+        self.assertEqual(self.rpc_calls, [])
 
     def test_invalid_submission_is_rejected_before_claim_or_storage(self) -> None:
         with self._environment():

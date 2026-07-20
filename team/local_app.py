@@ -227,6 +227,7 @@ class _LocalPowerBatch:
         thread_id: str,
         bindings: dict[str, _ActiveAssistant],
         execute: Callable[[brain_runtime_client.PowerRequest], object],
+        preflight: Callable[[brain_runtime_client.PowerRequest], None],
         secret_generations: Callable[[brain_runtime_client.PowerRequest], tuple[tuple[str, int], ...]],
     ) -> None:
         self._journal = journal
@@ -234,6 +235,7 @@ class _LocalPowerBatch:
         self._thread_id = thread_id
         self._bindings = bindings
         self._execute = execute
+        self._preflight = preflight
         self._secret_generations = secret_generations
         self._batch: power_journal.Batch | None = None
         self._operations: dict[str, power_journal.Operation] = {}
@@ -246,6 +248,7 @@ class _LocalPowerBatch:
             active = self._bindings.get(request.assistant_id)
             if active is None:
                 raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
+            self._preflight(request)
             operations.append(_power_operation(request, active, self._secret_generations(request)))
         self._batch = self._journal.prepare_batch(self._generation, self._thread_id, operations)
         self._operations = {operation.interrupt_id: operation for operation in operations}
@@ -1356,6 +1359,23 @@ class LocalController:
             self._raise_secret_problem(exc)
         raise AssertionError("unreachable")
 
+    def _require_power_rpc_envelope(
+        self,
+        team_id: str,
+        bindings: dict[str, _ActiveAssistant],
+        request: brain_runtime_client.PowerRequest,
+    ) -> None:
+        active = _required_active_assistant(bindings, request.assistant_id)
+        secret_values = self._resolve_power_secrets(team_id, active.spec, request.power)
+        try:
+            assistant_secret_flow.require_power_rpc_envelope(request.input, secret_values)
+        except assistant_secret_flow.SecretFlowError as exc:
+            raise ApiProblem(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Assistant Power input is too large",
+                code="assistant-power-input-too-large",
+            ) from exc
+
     @staticmethod
     def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
         secret_values = tuple(secret for secret in secrets_by_id.values() if secret)
@@ -1704,6 +1724,7 @@ class LocalController:
             context.thread_id,
             bindings,
             execute_power,
+            lambda request: self._require_power_rpc_envelope(team_id, bindings, request),
             lambda request: self._power_secret_generations(
                 team_id,
                 _required_active_assistant(bindings, request.assistant_id),
@@ -2449,9 +2470,14 @@ class LocalController:
         *,
         detect_unsupported_path: bool = False,
     ) -> object:
-        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        if len(encoded) > MAX_BODY_BYTES:
-            raise ApiProblem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request is too large", code="body-too-large")
+        try:
+            encoded = assistant_secret_flow.encode_private_rpc_envelope(payload)
+        except assistant_secret_flow.SecretFlowError as exc:
+            raise ApiProblem(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "request is too large",
+                code="body-too-large",
+            ) from exc
         try:
             created = self.client.api.exec_create(
                 container.id,

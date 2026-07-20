@@ -718,6 +718,44 @@ class LocalContractTests(unittest.TestCase):
         self.assertNotIn(LOOKUP_INPUT["username"], repr(response))
         self.assertEqual(pending_batches, (0,))
 
+    def test_oversized_secret_envelope_is_rejected_before_the_local_power_journal(self) -> None:
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="lookup",
+            assistant_id="shimpz-assistant",
+            power="public-user-lookup",
+            input=LOOKUP_INPUT,
+            approval="none",
+        )
+
+        class Runtime:
+            def start(self, _context, _message):
+                return brain_runtime_client.RuntimeTurn(status="power-required", reply="", powers=(request,))
+
+            def resume(self, _context, _results):
+                raise AssertionError("an oversized Power envelope must not reach resume")
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self._chat_controller(directory, Runtime())
+            controller.assistant_secrets.put_many(
+                "team_1",
+                "shimpz-assistant",
+                {"x-bearer-token": "x" * assistant_secret_store.MAX_SECRET_BYTES},
+            )
+            controller.invoke = lambda *_args: self.fail("an oversized Power envelope executed")
+
+            with self.assertRaises(local_app.ApiProblem) as caught:
+                controller.chat(
+                    "team_1",
+                    {"message": "Find OpenAI", "files": [], "assistant_ids": ["shimpz-assistant"]},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+            with closing(sqlite3.connect(controller.power_state.path)) as connection:
+                pending_batches = connection.execute("SELECT COUNT(*) FROM batches").fetchone()
+
+        self.assertEqual(caught.exception.code, "assistant-power-input-too-large")
+        self.assertEqual(pending_batches, (0,))
+
     def test_secret_submission_is_exact_team_bound_and_single_use(self) -> None:
         request = brain_runtime_client.PowerRequest(
             interrupt_id="identity",
