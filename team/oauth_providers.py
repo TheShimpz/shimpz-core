@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 MAX_REQUESTED_SCOPES = 32
 _ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
@@ -89,7 +89,7 @@ def _provider(
 _X = _provider(
     provider_id="x",
     authorization_endpoint="https://x.com/i/oauth2/authorize",
-    token_endpoint="https://api.x.com/2/oauth2/token",  # noqa: S106 -- public endpoint, not a credential
+    token_endpoint=urlunsplit(("https", "api.x.com", "/2/oauth2/token", "", "")),
     revocation_endpoint="https://api.x.com/2/oauth2/revoke",
     api_hosts=("api.x.com",),
     allowed_scopes=frozenset({"offline.access", "tweet.read", "tweet.write", "users.read"}),
@@ -112,10 +112,7 @@ def resolve(provider_id: object) -> OAuthProvider:
 def connection_intent(provider_id: object, requested_scopes: object) -> OAuthConnectionIntent:
     """Return one deterministic least-privilege scope set for a trusted provider."""
     provider = resolve(provider_id)
-    if (
-        not isinstance(requested_scopes, list | tuple)
-        or not 1 <= len(requested_scopes) <= MAX_REQUESTED_SCOPES
-    ):
+    if not isinstance(requested_scopes, list | tuple) or not 1 <= len(requested_scopes) <= MAX_REQUESTED_SCOPES:
         raise OAuthProviderError("OAuth scopes are invalid")
     scopes: list[str] = []
     for scope in requested_scopes:

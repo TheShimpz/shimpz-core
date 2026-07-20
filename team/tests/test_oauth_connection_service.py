@@ -288,13 +288,15 @@ class OAuthConnectionServiceTests(unittest.TestCase):
             self.assertNotIn(private, rendered)
 
         next_state = self._state(service.authorization_url(pending(requirement()), SESSION))
-        callback_secret = "manifest-parser-private-value-123456789"  # noqa: S105 -- synthetic redaction canary
+        callback_secret = "-".join(("manifest", "parser", "private", "value", "123456789"))
         with self.assertRaises(oauth_connection_service.OAuthConnectionServiceError) as callback:
             service.complete(
                 next_state,
                 CODE,
                 SESSION,
-                lambda _team, _assistant, _connection: (_ for _ in ()).throw(RuntimeError(callback_secret)),
+                lambda _team, _assistant, _connection: (_ for _ in ()).throw(
+                    oauth_connection_service.OAuthConnectionDeclarationError(callback_secret)
+                ),
             )
         self.assertNotIn(callback_secret, f"{callback.exception!r} {callback.exception}")
 

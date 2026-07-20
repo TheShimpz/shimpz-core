@@ -40,6 +40,10 @@ class OAuthConnectionUnavailableError(OAuthConnectionServiceError):
     """No pending connection currently requires provider authorization."""
 
 
+class OAuthConnectionDeclarationError(RuntimeError):
+    """The trusted installed-Assistant resolver could not return a declaration."""
+
+
 @dataclass(frozen=True, slots=True)
 class OAuthConnectionCompletion:
     """Public completion identifiers; no authorization material is retained."""
@@ -253,7 +257,7 @@ class OAuthConnectionService:
                     exchange.assistant_id,
                     exchange.connection_id,
                 )
-            except Exception:  # noqa: BLE001 -- redact every registry/parser failure at this boundary
+            except OAuthConnectionDeclarationError:
                 raise OAuthConnectionServiceError("OAuth connection declaration is unavailable") from None
             provider, scopes = _declaration(current)
             if provider != exchange.provider_id or scopes != exchange.scopes:

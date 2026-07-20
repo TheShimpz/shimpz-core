@@ -2935,11 +2935,19 @@ def _pending_hosted_chat(team_id: str) -> dict[str, object] | None:
 
 
 def _current_connection_declaration(team_id: str, assistant_id: str, connection_id: str) -> object:
-    installed_id, contract, _container = _installed_assistant(team_id, assistant_id)
-    declaration = contract.connections.get(connection_id)
-    if installed_id != assistant_id or declaration is None:
-        raise ApiError(HTTPStatus.CONFLICT, "Assistant connection declaration changed")
-    return declaration
+    try:
+        installed_id, contract, _container = _installed_assistant(team_id, assistant_id)
+        declaration = contract.connections.get(connection_id)
+        if installed_id != assistant_id or declaration is None:
+            raise ApiError(HTTPStatus.CONFLICT, "Assistant connection declaration changed")
+    except ApiError, marketplace.MarketplaceError:
+        # The OAuth service intentionally receives one opaque typed failure so
+        # registry, Docker, and manifest details cannot reach the callback response.
+        raise oauth_connection_service.OAuthConnectionDeclarationError(
+            "installed Assistant connection declaration is unavailable"
+        ) from None
+    else:
+        return declaration
 
 
 def _start_oauth_connection(
@@ -4058,12 +4066,7 @@ class Handler(BaseHTTPRequestHandler):
                 no_store=True,
             )
             return
-        if (
-            method == "POST"
-            and len(parts) == 7
-            and parts[4] == "challenges"
-            and parts[6] == "authorize"
-        ):
+        if method == "POST" and len(parts) == 7 and parts[4] == "challenges" and parts[6] == "authorize":
             body = self._read_body()
             if not isinstance(body, dict) or set(body) != {"session_binding"}:
                 raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "OAuth authorization request is invalid")

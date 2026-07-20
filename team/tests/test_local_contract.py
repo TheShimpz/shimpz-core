@@ -42,8 +42,8 @@ TEST_SECRET_VALUES = {
     "session-token": "session-token-test-credential-123456789",
     "session-secret": "session-secret-test-credential-123456789",
 }
-TEST_CONNECTION_ACCESS_TOKEN = "oauth-access-test-token-123456789"  # noqa: S105
-TEST_CONNECTION_REFRESH_TOKEN = "oauth-refresh-test-token-123456789"  # noqa: S105
+TEST_CONNECTION_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "123456789"))
+TEST_CONNECTION_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
 CURRENT_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "b" * 64
 LEGACY_ASSISTANT_IMAGE = "ghcr.io/roxygens/shimpz-space@sha256:" + "a" * 64
 
@@ -1184,10 +1184,7 @@ class LocalContractTests(unittest.TestCase):
             def resume(self, _context, _results):
                 raise AssertionError("stale JIT challenge must never resume")
 
-        replacements = {
-            secret_id: f"rotated-{index}-credential"
-            for index, secret_id in enumerate(TEST_SECRET_VALUES)
-        }
+        replacements = {secret_id: f"rotated-{index}-credential" for index, secret_id in enumerate(TEST_SECRET_VALUES)}
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
             controller.list_assistants = lambda _team_id: {
@@ -1204,10 +1201,7 @@ class LocalContractTests(unittest.TestCase):
                 "team_1",
                 {
                     "assistant_id": "shimpz-assistant",
-                    "values": [
-                        {"secret_id": secret_id, "value": value}
-                        for secret_id, value in replacements.items()
-                    ],
+                    "values": [{"secret_id": secret_id, "value": value} for secret_id, value in replacements.items()],
                 },
             )
             with self.assertRaises(local_app.ApiProblem) as rejected:

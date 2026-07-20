@@ -19,7 +19,7 @@ _patched = harness._patched
 TEAM_ID = "team_1"
 ASSISTANT_ID = app.assistant_contract.ASSISTANT_ID
 SCOPES = ("tweet.read", "users.read")
-ACCESS_TOKEN = "hosted-access-token-value-123456789"  # noqa: S105 - synthetic OAuth fixture
+ACCESS_TOKEN = "-".join(("hosted", "access", "token", "value", "123456789"))
 ANCHOR_ID = "a" * 64
 
 

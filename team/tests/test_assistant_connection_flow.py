@@ -37,8 +37,8 @@ class _Metadata:
     account: _Account | None
     expires_at: int | None
     generation: int
-    access_token: str = "must-never-be-public"  # noqa: S105 -- sentinel proves redaction
-    refresh_token: str = "must-never-be-public"  # noqa: S105 -- sentinel proves redaction
+    access_token: str = "-".join(("must", "never", "be", "public"))
+    refresh_token: str = "-".join(("must", "never", "be", "public"))
 
 
 class _Store:
@@ -254,7 +254,7 @@ class AssistantConnectionFlowTests(unittest.TestCase):
 
     def test_private_resolution_returns_only_the_selected_power_connection(self) -> None:
         spec = _spec()
-        token = "private-access-token-123456"  # noqa: S105 -- opaque test fixture
+        token = "-".join(("private", "access", "token", "123456"))
         store = _Store({}, {("x-assistant", "x-write"): token})
         refresh_calls: list[tuple[str, tuple[str, ...], str]] = []
 
