@@ -12,7 +12,7 @@ summary = "Explore safe OAuth Accounts and just-in-time BYOK Secrets through rea
 creators = ["@roxygens"]
 
 # Optional public source repository. This is not a creator profile.
-github = "https://github.com/roxygens/shimpz-assistant"
+github = "https://github.com/TheShimpz/shimpz-assistant"
 
 # Exact public DNS hosts this Assistant needs. The Team egress proxy denies
 # every host not listed here; schemes, paths, ports, wildcards and IPs are not

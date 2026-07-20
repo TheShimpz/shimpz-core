@@ -77,7 +77,7 @@ RUN groupadd --gid 10001 shimpzlocal && \
         /var/lib/shimpz-local/assistant-accounts/state /var/lib/shimpz-local/assistant-accounts/key && \
     chmod 0555 /app/local_healthcheck.py && chmod 0444 /etc/shimpz/local-assistants.json
 
-LABEL org.opencontainers.image.source="https://github.com/roxygens/shimpz-drivers" \
+LABEL org.opencontainers.image.source="https://github.com/TheShimpz/shimpz-core" \
       org.shimpz.component="team-driver-local" \
       org.shimpz.local.profile="single-owner-local-v1"
 
