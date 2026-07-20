@@ -13,6 +13,9 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
 import assistant_connection_challenges
+import brain_runtime_client
+import chat_orchestrator
+import inference_config
 import local_app
 import local_registry
 import oauth_connection_store
@@ -49,6 +52,7 @@ class LocalOAuthConnectionTests(unittest.TestCase):
             secret_challenges=SimpleNamespace(),
             assistant_connections=injected_store,
             connection_challenges=injected_challenges,
+            oauth_service=SimpleNamespace(),
             approval_challenges=SimpleNamespace(),
             approval_grants=SimpleNamespace(),
         )
@@ -110,6 +114,184 @@ class LocalOAuthConnectionTests(unittest.TestCase):
         self.assertEqual(
             route,
             (HTTPStatus.OK, expected, "assistant-connection-list", "team_1", None),
+        )
+
+    def test_chat_pauses_before_any_power_when_connection_is_missing(self) -> None:
+        spec = self._registry()["shimpz-assistant"]
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="call-1",
+            assistant_id=spec.assistant_id,
+            power="public-user-lookup",
+            input={"username": "shimpz"},
+            approval="none",
+        )
+
+        class Runtime:
+            def start(self, _context, _message):
+                return brain_runtime_client.RuntimeTurn("power-required", "", (request,))
+
+            def resume(self, _context, _results):  # pragma: no cover - must stay unreachable
+                raise AssertionError("Power batch must not execute before OAuth consent")
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = object.__new__(local_app.LocalController)
+            controller.space_id = "local-space"
+            controller.brain_runtime = Runtime()
+            controller.power_state = SimpleNamespace()
+            controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
+                Path(directory) / "state" / "connections.json",
+                Path(directory) / "key" / "aes256.key",
+            )
+            controller.assistant_secrets = SimpleNamespace(
+                metadata=lambda *_args: (_ for _ in ()).throw(
+                    AssertionError("secret gate must run only after the connection gate")
+                )
+            )
+            controller.approval_grants = SimpleNamespace()
+            active = local_app._ActiveAssistant(spec, "b" * 64)
+            setup = (
+                "Team One",
+                "c" * 64,
+                (active,),
+                [],
+                inference_config.InferenceConfig("openai", "gpt-5-nano"),
+            )
+            controller._chat_setup = lambda *_args: setup
+            controller._active_assistant_genesis = lambda _active: "Use reviewed Powers only."
+            controller._chat_cancelled = lambda _token: False
+            controller._invoke_chat_power = lambda *_args: (_ for _ in ()).throw(
+                AssertionError("Power must not execute before OAuth consent")
+            )
+
+            result = controller._run_chat_segment(
+                "team_1",
+                [],
+                (spec.assistant_id,),
+                "openai",
+                "test-api-key",
+                "turn-token",
+                message="Find @shimpz on X",
+            )
+
+        self.assertIsInstance(result[2], chat_orchestrator.ChatSuspension)
+        self.assertEqual(len(result[3]), 1)
+        self.assertEqual(result[3][0].connections[0][0], "x")
+        self.assertEqual(result[4:], ((), ()))
+
+    def test_connection_resume_is_one_use_and_returns_completed_turn(self) -> None:
+        registry = self._registry()
+        spec = registry["shimpz-assistant"]
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="call-1",
+            assistant_id=spec.assistant_id,
+            power="identity-me",
+            input={},
+            approval="none",
+        )
+        continuation = chat_orchestrator.ChatContinuation(
+            turn=brain_runtime_client.RuntimeTurn("power-required", "", (request,)),
+            seen_interrupts=(),
+            invoked=(),
+            round_index=0,
+        )
+        requirements = (
+            assistant_connection_challenges.ConnectionRequirement(
+                assistant_id=spec.assistant_id,
+                assistant_name=spec.name,
+                power_ids=("identity-me",),
+                connections=(("x", "x", spec.connections["x"].scopes),),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            controller = object.__new__(local_app.LocalController)
+            controller.registry = registry
+            controller._locks = tuple(threading.RLock() for _ in range(64))
+            controller._active_chat_guard = threading.Lock()
+            controller._chat_locks = {}
+            controller._active_chat_tokens = {}
+            controller._active_power_containers = {}
+            controller._cancelled_chat_tokens = set()
+            controller.connection_challenges = assistant_connection_challenges.ConnectionChallengeStore()
+            controller.oauth_pkce = SimpleNamespace(cancel_team=lambda _team: 0)
+            controller.assistant_connections = oauth_connection_store.OAuthConnectionStore(
+                Path(directory) / "state" / "connections.json",
+                Path(directory) / "key" / "aes256.key",
+            )
+            config = inference_config.InferenceConfig("openai", "gpt-5-nano")
+            active = local_app._ActiveAssistant(spec, "b" * 64)
+            setup = ("Team One", "c" * 64, (active,), [], config)
+            identity = controller._chat_identity(*setup)
+            controller._chat_setup = lambda *_args: setup
+            pending = local_app._PendingLocalChat(
+                continuation=continuation,
+                assistant_ids=(spec.assistant_id,),
+                file_ids=(),
+                provider="openai",
+                identity=identity,
+            )
+            challenge = controller.connection_challenges.create("team_1", requirements, pending)
+            controller.assistant_connections.put(
+                "team_1",
+                spec.assistant_id,
+                "x",
+                "x",
+                spec.connections["x"].scopes,
+                SimpleNamespace(
+                    access_token="a" * 32,
+                    refresh_token="r" * 32,
+                    scopes=spec.connections["x"].scopes,
+                    expires_in=3600,
+                ),
+            )
+            controller._run_chat_segment = lambda *_args, **_kwargs: (
+                "Team One",
+                identity,
+                chat_orchestrator.ChatOutcome("Done", ()),
+                (),
+                (),
+                (),
+            )
+
+            response = controller.resume_chat_connections(
+                "team_1",
+                {"challenge_id": challenge.id},
+                "openai",
+                "test-api-key",
+            )
+
+            self.assertEqual(response, {"team_id": "team_1", "team_name": "Team One", "reply": "Done"})
+            self.assertIsNone(controller.connection_challenges.current("team_1"))
+            with self.assertRaises(local_app.ApiProblem) as replay:
+                controller.resume_chat_connections(
+                    "team_1",
+                    {"challenge_id": challenge.id},
+                    "openai",
+                    "test-api-key",
+                )
+            self.assertEqual(replay.exception.code, "assistant-connection-challenge-expired")
+
+    def test_chat_connection_routes_are_exact(self) -> None:
+        pending = {"team_id": "team_1", "status": "connections-required"}
+        completed = {"team_id": "team_1", "team_name": "Team One", "reply": "Done"}
+        controller = SimpleNamespace(
+            pending_chat_connections=lambda team_id: pending,
+            resume_chat_connections=lambda team_id, body, provider, api_key: completed,
+        )
+        handler = object.__new__(local_app.Handler)
+        handler.server = SimpleNamespace(controller=controller)
+        handler._model_credential_headers = lambda: ("openai", "test-api-key")
+        handler._body = lambda **_kwargs: {"challenge_id": "a" * 32}
+
+        handler.command = "GET"
+        self.assertEqual(
+            handler._chat_route(["v1", "teams", "team_1", "chat", "connections"]),
+            (HTTPStatus.OK, pending, "chat-connection-pending", "team_1", None),
+        )
+        handler.command = "POST"
+        self.assertEqual(
+            handler._chat_route(["v1", "teams", "team_1", "chat", "connections"]),
+            (HTTPStatus.OK, completed, "chat-connection-submit", "team_1", None),
         )
 
 

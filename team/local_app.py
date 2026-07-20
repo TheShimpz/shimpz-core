@@ -49,7 +49,10 @@ import docker
 import inference_config
 import local_audit
 import local_token_store
+import oauth_connection_service
 import oauth_connection_store
+import oauth_http_client
+import oauth_pkce_challenges
 import power_journal
 import team_storage
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
@@ -194,6 +197,7 @@ def _power_operation(
     request: brain_runtime_client.PowerRequest,
     active: _ActiveAssistant,
     secret_generations: tuple[tuple[str, int], ...],
+    connection_generations: tuple[tuple[str, int], ...],
 ) -> power_journal.Operation:
     """Commit to a normalized request and immutable Assistant runtime, never raw journal input."""
     if not active.container_id or not active.spec.image:
@@ -205,6 +209,7 @@ def _power_operation(
                 "assistant_container_id": active.container_id,
                 "assistant_id": request.assistant_id,
                 "assistant_image": active.spec.image,
+                "connection_generations": connection_generations,
                 "input": request.input,
                 "power": request.power,
                 "secret_generations": secret_generations,
@@ -231,6 +236,7 @@ class _LocalPowerBatch:
         execute: Callable[[brain_runtime_client.PowerRequest], object],
         preflight: Callable[[brain_runtime_client.PowerRequest], None],
         secret_generations: Callable[[brain_runtime_client.PowerRequest], tuple[tuple[str, int], ...]],
+        connection_generations: Callable[[brain_runtime_client.PowerRequest], tuple[tuple[str, int], ...]],
     ) -> None:
         self._journal = journal
         self._generation = generation
@@ -239,19 +245,26 @@ class _LocalPowerBatch:
         self._execute = execute
         self._preflight = preflight
         self._secret_generations = secret_generations
+        self._connection_generations = connection_generations
         self._batch: power_journal.Batch | None = None
         self._operations: dict[str, power_journal.Operation] = {}
+
+    def _operation(self, request: brain_runtime_client.PowerRequest) -> power_journal.Operation:
+        active = self._bindings.get(request.assistant_id)
+        if active is None:
+            raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
+        self._preflight(request)
+        return _power_operation(
+            request,
+            active,
+            self._secret_generations(request),
+            self._connection_generations(request),
+        )
 
     def prepare(self, requests: tuple[brain_runtime_client.PowerRequest, ...]) -> None:
         if self._batch is not None:
             raise power_journal.PowerJournalConflictError("Power batch is already prepared")
-        operations: list[power_journal.Operation] = []
-        for request in requests:
-            active = self._bindings.get(request.assistant_id)
-            if active is None:
-                raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
-            self._preflight(request)
-            operations.append(_power_operation(request, active, self._secret_generations(request)))
+        operations = [self._operation(request) for request in requests]
         self._batch = self._journal.prepare_batch(self._generation, self._thread_id, operations)
         self._operations = {operation.interrupt_id: operation for operation in operations}
 
@@ -261,6 +274,8 @@ class _LocalPowerBatch:
         operation = self._operations.get(request.interrupt_id)
         if operation is None:
             raise power_journal.PowerJournalConflictError("Power operation is not prepared")
+        if self._operation(request) != operation:
+            raise power_journal.PowerJournalConflictError("Power credential generation changed")
         decision = self._journal.begin(self._batch, operation)
         if not decision.execute:
             return decision.result
@@ -519,6 +534,10 @@ class LocalController:
         secret_challenges: assistant_secret_challenges.SecretChallengeStore | None = None,
         assistant_connections: oauth_connection_store.OAuthConnectionStore | None = None,
         connection_challenges: assistant_connection_challenges.ConnectionChallengeStore | None = None,
+        oauth_pkce: oauth_pkce_challenges.OAuthPKCEChallengeStore | None = None,
+        oauth_http: oauth_http_client.OAuthHTTPClient | None = None,
+        oauth_service: oauth_connection_service.OAuthConnectionService | None = None,
+        x_oauth_client_id: object = None,
         approval_challenges: assistant_approval_challenges.ApprovalChallengeStore | None = None,
         approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None,
     ) -> None:
@@ -536,6 +555,18 @@ class LocalController:
         self.assistant_connections = assistant_connections or oauth_connection_store.OAuthConnectionStore()
         self.connection_challenges = (
             connection_challenges or assistant_connection_challenges.ConnectionChallengeStore()
+        )
+        self.oauth_pkce = oauth_pkce or oauth_pkce_challenges.OAuthPKCEChallengeStore()
+        self.oauth_http = oauth_http or oauth_http_client.OAuthHTTPClient()
+        self.x_oauth_client_id = (
+            os.environ.get("SHIMPZ_X_OAUTH_CLIENT_ID") if x_oauth_client_id is None else x_oauth_client_id
+        )
+        self.oauth_service = oauth_service or oauth_connection_service.OAuthConnectionService(
+            client_id=self.x_oauth_client_id,
+            redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
+            challenge=self.oauth_pkce,
+            store=self.assistant_connections,
+            http=self.oauth_http,
         )
         self.approval_challenges = approval_challenges or assistant_approval_challenges.ApprovalChallengeStore()
         self.approval_grants = approval_grants or assistant_approval_grants.ApprovalGrantStore(
@@ -1390,6 +1421,68 @@ class LocalController:
             self._raise_secret_problem(exc)
         raise AssertionError("unreachable")
 
+    def _power_connection_generations(
+        self,
+        team_id: str,
+        active: _ActiveAssistant,
+        power_id: str,
+    ) -> tuple[tuple[str, int], ...]:
+        power = active.spec.powers.get(power_id)
+        if power is None:
+            raise power_journal.PowerJournalConflictError("Power connection contract is unavailable")
+        declarations = {
+            connection_id: active.spec.connections[connection_id]
+            for connection_id in power.connections
+            if connection_id in active.spec.connections
+        }
+        if len(declarations) != len(power.connections):
+            raise power_journal.PowerJournalConflictError("Power connection contract is unavailable")
+        try:
+            metadata = self.assistant_connections.metadata(
+                team_id,
+                active.spec.assistant_id,
+                declarations,
+            )
+        except oauth_connection_store.OAuthConnectionStoreError as exc:
+            raise power_journal.PowerJournalConflictError("Power connection state is unavailable") from exc
+        if any(item.status != "connected" or item.generation < 1 for item in metadata):
+            raise power_journal.PowerJournalConflictError("Power connection generation is unavailable")
+        return tuple((item.id, item.generation) for item in metadata)
+
+    def _refresh_oauth_connection(
+        self,
+        provider: str,
+        scopes: tuple[str, ...],
+        refresh_token: str,
+    ) -> object:
+        return self.oauth_http.refresh(
+            provider_id=provider,
+            client_id=self.x_oauth_client_id,
+            refresh_token=refresh_token,
+            scopes=scopes,
+        )
+
+    def _resolve_power_connections(
+        self,
+        team_id: str,
+        spec: AssistantSpec,
+        power_id: str,
+    ) -> dict[str, dict[str, str]]:
+        try:
+            return assistant_connection_flow.resolve_power_connections(
+                team_id,
+                spec,
+                power_id,
+                self.assistant_connections,
+                self._refresh_oauth_connection,
+            )
+        except assistant_connection_flow.ConnectionFlowError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant connection is unavailable",
+                code="assistant-connection-unavailable",
+            ) from exc
+
     def _require_power_rpc_envelope(
         self,
         team_id: str,
@@ -1398,8 +1491,13 @@ class LocalController:
     ) -> None:
         active = _required_active_assistant(bindings, request.assistant_id)
         secret_values = self._resolve_power_secrets(team_id, active.spec, request.power)
+        connection_values = self._resolve_power_connections(team_id, active.spec, request.power)
         try:
-            assistant_secret_flow.require_power_rpc_envelope(request.input, secret_values)
+            assistant_secret_flow.require_power_rpc_envelope(
+                request.input,
+                secret_values,
+                connection_values,
+            )
         except assistant_secret_flow.SecretFlowError as exc:
             raise ApiProblem(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -1532,6 +1630,12 @@ class LocalController:
         self._network(team_id)
         challenge = self.approval_challenges.current(team_id)
         return self._approval_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
+
+    def pending_chat_connections(self, team_id: str) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        self._network(team_id)
+        challenge = self.connection_challenges.current(team_id)
+        return self._connection_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
     def list_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
@@ -1712,6 +1816,7 @@ class LocalController:
         str,
         tuple[object, ...],
         chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension,
+        tuple[assistant_connection_challenges.ConnectionRequirement, ...],
         tuple[assistant_secret_challenges.SecretRequirement, ...],
         tuple[assistant_approval_challenges.ApprovalRequirement, ...],
     ]:
@@ -1790,14 +1895,38 @@ class LocalController:
                 _required_active_assistant(bindings, request.assistant_id),
                 request.power,
             ),
+            lambda request: self._power_connection_generations(
+                team_id,
+                _required_active_assistant(bindings, request.assistant_id),
+                request.power,
+            ),
         )
-        missing_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...] = ()
+        connection_requirements: tuple[assistant_connection_challenges.ConnectionRequirement, ...] = ()
+        secret_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...] = ()
         approval_requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...] = ()
 
-        def pause_for_secrets(requests: tuple[brain_runtime_client.PowerRequest, ...]) -> bool:
-            nonlocal missing_requirements
+        def pause_for_private_inputs(requests: tuple[brain_runtime_client.PowerRequest, ...]) -> bool:
+            nonlocal connection_requirements, secret_requirements
             try:
-                missing_requirements = assistant_secret_flow.requirements_for_batch(
+                connection_requirements = assistant_connection_flow.requirements_for_batch(
+                    team_id,
+                    bindings,
+                    requests,
+                    self.assistant_connections,
+                )
+            except (
+                assistant_connection_flow.ConnectionFlowError,
+                oauth_connection_store.OAuthConnectionStoreError,
+            ) as exc:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Assistant connection contract is unavailable",
+                    code="assistant-connection-contract-invalid",
+                ) from exc
+            if connection_requirements:
+                return True
+            try:
+                secret_requirements = assistant_secret_flow.requirements_for_batch(
                     team_id,
                     bindings,
                     requests,
@@ -1811,7 +1940,7 @@ class LocalController:
                     "Assistant secret contract is unavailable",
                     code="assistant-secret-contract-invalid",
                 ) from exc
-            return bool(missing_requirements)
+            return bool(secret_requirements)
 
         def pause_for_approval(requests: tuple[brain_runtime_client.PowerRequest, ...]) -> bool:
             nonlocal approval_requirements
@@ -1858,17 +1987,17 @@ class LocalController:
             continuation,
             validate_power,
             durable_batch,
-            pause_for_secrets,
+            pause_for_private_inputs,
             pause_for_approval,
             approval_granted,
             lambda: self._chat_cancelled(token),
             validate_context,
         )
-        if isinstance(outcome, chat_orchestrator.ChatSuspension) and bool(missing_requirements) == bool(
-            approval_requirements
-        ):
-            raise ApiProblem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat suspension", code="internal-error")
-        return team_name, identity, outcome, missing_requirements, approval_requirements
+        if isinstance(outcome, chat_orchestrator.ChatSuspension):
+            gates = sum(bool(item) for item in (connection_requirements, secret_requirements, approval_requirements))
+            if gates != 1:
+                raise ApiProblem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat suspension", code="internal-error")
+        return team_name, identity, outcome, connection_requirements, secret_requirements, approval_requirements
 
     def _pause_chat(
         self,
@@ -1890,6 +2019,44 @@ class LocalController:
             self.secret_challenges.cancel_team(team_id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._challenge_response(challenge)
+
+    def _connection_response(
+        self,
+        challenge: assistant_connection_challenges.PendingConnectionChallenge,
+    ) -> dict[str, object]:
+        bindings: dict[str, _ActiveAssistant] = {}
+        for requirement in challenge.requirements:
+            spec = self._resolve(requirement.assistant_id)
+            bindings[spec.assistant_id] = _ActiveAssistant(spec, "")
+        try:
+            return assistant_connection_flow.challenge_payload(challenge, bindings)
+        except assistant_connection_flow.ConnectionFlowError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant connection contract changed; retry the message",
+                code="assistant-connection-contract-invalid",
+            ) from exc
+
+    def _pause_connection(
+        self,
+        team_id: str,
+        token: str,
+        outcome: chat_orchestrator.ChatSuspension,
+        requirements: tuple[assistant_connection_challenges.ConnectionRequirement, ...],
+        payload: _PendingLocalChat,
+    ) -> dict[str, object]:
+        try:
+            challenge = self.connection_challenges.create(team_id, requirements, payload)
+        except assistant_connection_challenges.ConnectionChallengeError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant connection request is already pending",
+                code="assistant-connection-challenge-conflict",
+            ) from exc
+        if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
+            self.connection_challenges.cancel_team(team_id)
+            raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
+        return self._connection_response(challenge)
 
     def _pause_approval(
         self,
@@ -2041,19 +2208,53 @@ class LocalController:
         return pending
 
     def _pending_chat_continuation(self, team_id: str) -> dict[str, object] | None:
+        existing_connection = self.connection_challenges.current(team_id)
         existing_secret = self.secret_challenges.current(team_id)
         existing_approval = self.approval_challenges.current(team_id)
-        if existing_secret is not None and existing_approval is not None:
+        if sum(item is not None for item in (existing_connection, existing_secret, existing_approval)) > 1:
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Team chat continuation state is unavailable",
                 code="chat-state-unavailable",
             )
+        if existing_connection is not None:
+            return self._connection_response(existing_connection)
         if existing_secret is not None:
             return self._challenge_response(existing_secret)
         if existing_approval is not None:
             return self._approval_response(existing_approval)
         return None
+
+    def _segment_response(
+        self,
+        team_id: str,
+        token: str,
+        team_name: str,
+        identity: tuple[object, ...],
+        outcome: chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension,
+        assistant_ids: tuple[str, ...],
+        file_ids: tuple[str, ...],
+        provider: str,
+        connection_requirements: tuple[assistant_connection_challenges.ConnectionRequirement, ...],
+        secret_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...],
+        approval_requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...],
+    ) -> dict[str, object]:
+        if isinstance(outcome, chat_orchestrator.ChatSuspension):
+            pending = _PendingLocalChat(
+                continuation=outcome.continuation,
+                assistant_ids=assistant_ids,
+                file_ids=file_ids,
+                provider=provider,
+                identity=identity,
+            )
+            if connection_requirements:
+                return self._pause_connection(team_id, token, outcome, connection_requirements, pending)
+            if secret_requirements:
+                return self._pause_chat(team_id, token, outcome, secret_requirements, pending)
+            return self._pause_approval(team_id, token, outcome, approval_requirements, pending)
+        if not self._commit_chat_terminal(team_id, token):
+            raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
+        return {"team_id": team_id, "team_name": team_name, "reply": outcome.reply}
 
     def chat(
         self,
@@ -2090,7 +2291,14 @@ class LocalController:
             pending = self._pending_chat_continuation(team_id)
             if pending is not None:
                 return pending
-            team_name, identity, outcome, secret_requirements, approval_requirements = self._run_chat_segment(
+            (
+                team_name,
+                identity,
+                outcome,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            ) = self._run_chat_segment(
                 team_id,
                 file_ids,
                 assistant_ids,
@@ -2099,20 +2307,124 @@ class LocalController:
                 token,
                 message=message,
             )
-            if isinstance(outcome, chat_orchestrator.ChatSuspension):
-                pending = _PendingLocalChat(
-                    continuation=outcome.continuation,
-                    assistant_ids=assistant_ids,
-                    file_ids=tuple(file_ids),
-                    provider=provider,
-                    identity=identity,
+            return self._segment_response(
+                team_id,
+                token,
+                team_name,
+                identity,
+                outcome,
+                assistant_ids,
+                tuple(file_ids),
+                provider,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            )
+
+    def resume_chat_connections(
+        self,
+        team_id: str,
+        body: object,
+        provider: str,
+        api_key: str,
+    ) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        if not isinstance(body, dict) or set(body) != {"challenge_id"}:
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Assistant connection resume requires only challenge_id",
+                code="invalid-body",
+            )
+        challenge_id = body["challenge_id"]
+        with self._exclusive_chat_turn(team_id) as token:
+            try:
+                challenge = self.connection_challenges.get(team_id, challenge_id)
+            except assistant_connection_challenges.ConnectionChallengeNotFoundError as exc:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Assistant connection request expired; retry the message",
+                    code="assistant-connection-challenge-expired",
+                ) from exc
+            pending = challenge.payload
+            if not isinstance(pending, _PendingLocalChat) or pending.provider != provider:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Team capabilities changed; retry",
+                    code="team-context-changed",
                 )
-                if secret_requirements:
-                    return self._pause_chat(team_id, token, outcome, secret_requirements, pending)
-                return self._pause_approval(team_id, token, outcome, approval_requirements, pending)
-            if not self._commit_chat_terminal(team_id, token):
-                raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
-            return {"team_id": team_id, "team_name": team_name, "reply": outcome.reply}
+            with self._lock(team_id):
+                current = self._chat_setup(team_id, list(pending.file_ids), provider, pending.assistant_ids)
+                if self._chat_identity(*current) != pending.identity:
+                    self.connection_challenges.cancel_team(team_id)
+                    self.oauth_pkce.cancel_team(team_id)
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Team capabilities changed; retry",
+                        code="team-context-changed",
+                    )
+                bindings = {active.spec.assistant_id: active for active in current[2]}
+                try:
+                    missing = assistant_connection_flow.requirements_for_batch(
+                        team_id,
+                        bindings,
+                        pending.continuation.turn.powers,
+                        self.assistant_connections,
+                    )
+                except (
+                    assistant_connection_flow.ConnectionFlowError,
+                    oauth_connection_store.OAuthConnectionStoreError,
+                ) as exc:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Assistant connection contract is unavailable",
+                        code="assistant-connection-contract-invalid",
+                    ) from exc
+                if missing:
+                    return self._connection_response(challenge)
+                try:
+                    claimed = self.connection_challenges.claim(team_id, challenge_id)
+                except assistant_connection_challenges.ConnectionChallengeNotFoundError as exc:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Assistant connection request expired; retry the message",
+                        code="assistant-connection-challenge-expired",
+                    ) from exc
+                if claimed is not challenge:
+                    raise ApiProblem(
+                        HTTPStatus.CONFLICT,
+                        "Assistant connection request expired; retry the message",
+                        code="assistant-connection-challenge-expired",
+                    )
+            (
+                team_name,
+                identity,
+                outcome,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            ) = self._run_chat_segment(
+                team_id,
+                list(pending.file_ids),
+                pending.assistant_ids,
+                provider,
+                api_key,
+                token,
+                continuation=pending.continuation,
+                expected_identity=pending.identity,
+            )
+            return self._segment_response(
+                team_id,
+                token,
+                team_name,
+                identity,
+                outcome,
+                pending.assistant_ids,
+                pending.file_ids,
+                provider,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            )
 
     def submit_chat_secrets(
         self,
@@ -2130,7 +2442,14 @@ class LocalController:
             # The active-turn token exists before the one-use secret challenge is consumed. Stop,
             # uninstall, and rotation therefore cannot observe an unowned persisted continuation.
             pending = self._store_chat_secrets(team_id, challenge_id, provider, body)
-            team_name, identity, outcome, secret_requirements, approval_requirements = self._run_chat_segment(
+            (
+                team_name,
+                identity,
+                outcome,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            ) = self._run_chat_segment(
                 team_id,
                 list(pending.file_ids),
                 pending.assistant_ids,
@@ -2140,20 +2459,19 @@ class LocalController:
                 continuation=pending.continuation,
                 expected_identity=pending.identity,
             )
-            if isinstance(outcome, chat_orchestrator.ChatSuspension):
-                next_pending = _PendingLocalChat(
-                    continuation=outcome.continuation,
-                    assistant_ids=pending.assistant_ids,
-                    file_ids=pending.file_ids,
-                    provider=provider,
-                    identity=identity,
-                )
-                if secret_requirements:
-                    return self._pause_chat(team_id, token, outcome, secret_requirements, next_pending)
-                return self._pause_approval(team_id, token, outcome, approval_requirements, next_pending)
-            if not self._commit_chat_terminal(team_id, token):
-                raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
-            return {"team_id": team_id, "team_name": team_name, "reply": outcome.reply}
+            return self._segment_response(
+                team_id,
+                token,
+                team_name,
+                identity,
+                outcome,
+                pending.assistant_ids,
+                pending.file_ids,
+                provider,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            )
 
     def submit_chat_approval(
         self,
@@ -2168,7 +2486,14 @@ class LocalController:
             # Install the active-turn token before consuming the challenge. Stop can now always
             # cancel either the pending challenge or this exact continuation; no unowned gap exists.
             pending, approved_interrupts = self._store_chat_approval(team_id, challenge_id, provider, body)
-            team_name, identity, outcome, secret_requirements, approval_requirements = self._run_chat_segment(
+            (
+                team_name,
+                identity,
+                outcome,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            ) = self._run_chat_segment(
                 team_id,
                 list(pending.file_ids),
                 pending.assistant_ids,
@@ -2179,24 +2504,25 @@ class LocalController:
                 expected_identity=pending.identity,
                 approved_interrupts=approved_interrupts,
             )
-            if isinstance(outcome, chat_orchestrator.ChatSuspension):
-                next_pending = _PendingLocalChat(
-                    continuation=outcome.continuation,
-                    assistant_ids=pending.assistant_ids,
-                    file_ids=pending.file_ids,
-                    provider=provider,
-                    identity=identity,
-                )
-                if secret_requirements:
-                    return self._pause_chat(team_id, token, outcome, secret_requirements, next_pending)
-                return self._pause_approval(team_id, token, outcome, approval_requirements, next_pending)
-            if not self._commit_chat_terminal(team_id, token):
-                raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
-            return {"team_id": team_id, "team_name": team_name, "reply": outcome.reply}
+            return self._segment_response(
+                team_id,
+                token,
+                team_name,
+                identity,
+                outcome,
+                pending.assistant_ids,
+                pending.file_ids,
+                provider,
+                connection_requirements,
+                secret_requirements,
+                approval_requirements,
+            )
 
     def stop_chat(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         self._network(team_id)
+        connection_cancelled = self.connection_challenges.cancel_team(team_id)
+        self.oauth_pkce.cancel_team(team_id)
         challenge_cancelled = self.secret_challenges.cancel_team(team_id)
         approval_cancelled = self.approval_challenges.cancel_team(team_id)
         power_stopped = False
@@ -2208,7 +2534,7 @@ class LocalController:
             if token is not None and active is not None and active[0] == token:
                 self._fail_stop_power(active[1])
                 power_stopped = True
-        accepted = token is not None or challenge_cancelled or approval_cancelled
+        accepted = token is not None or connection_cancelled or challenge_cancelled or approval_cancelled
         return {
             "team_id": team_id,
             "requested": accepted,
@@ -2986,6 +3312,7 @@ class LocalController:
                     code="team-context-changed",
                 )
             secret_values = self._resolve_power_secrets(team_id, spec, power)
+            connection_values = self._resolve_power_connections(team_id, spec, power)
             local_audit.record(
                 "assistant-power",
                 result="ok",
@@ -2999,7 +3326,11 @@ class LocalController:
                     spec,
                     power_spec.method,
                     power_spec.path,
-                    {"input": safe_payload, "secrets": secret_values, "connections": {}},
+                    {
+                        "input": safe_payload,
+                        "secrets": secret_values,
+                        "connections": connection_values,
+                    },
                 )
             except ApiProblem:
                 local_audit.record(
@@ -3010,7 +3341,14 @@ class LocalController:
                     detail=f"failed:{power}",
                 )
                 raise
-        if self._contains_secret(raw_result, secret_values):
+        private_values = {
+            **secret_values,
+            **{
+                f"connection:{connection_id}": envelope["access_token"]
+                for connection_id, envelope in connection_values.items()
+            },
+        }
+        if self._contains_secret(raw_result, private_values):
             local_audit.record(
                 "assistant-power",
                 result="error",
@@ -3510,10 +3848,35 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.server.controller.chat(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"secrets-required", "approval-required"}
+                if payload.get("status") in {"connections-required", "secrets-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat",
+                team_id,
+                None,
+            )
+        if len(parts) == 5 and parts[4] == "connections" and self.command == "GET":
+            return (
+                HTTPStatus.OK,
+                self.server.controller.pending_chat_connections(team_id),
+                "chat-connection-pending",
+                team_id,
+                None,
+            )
+        if len(parts) == 5 and parts[4] == "connections" and self.command == "POST":
+            provider, api_key = self._model_credential_headers()
+            payload = self.server.controller.resume_chat_connections(
+                team_id,
+                self._body(max_bytes=MAX_BODY_BYTES),
+                provider,
+                api_key,
+            )
+            return (
+                HTTPStatus.PRECONDITION_REQUIRED
+                if payload.get("status") in {"connections-required", "secrets-required", "approval-required"}
+                else HTTPStatus.OK,
+                payload,
+                "chat-connection-submit",
                 team_id,
                 None,
             )
@@ -3531,7 +3894,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.server.controller.submit_chat_secrets(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"secrets-required", "approval-required"}
+                if payload.get("status") in {"connections-required", "secrets-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat-secret-submit",
@@ -3552,7 +3915,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.server.controller.submit_chat_approval(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"secrets-required", "approval-required"}
+                if payload.get("status") in {"connections-required", "secrets-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat-approval-submit",
