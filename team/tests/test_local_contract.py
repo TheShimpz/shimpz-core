@@ -357,8 +357,17 @@ class LocalContractTests(unittest.TestCase):
             "assistant_secret_store.py",
             "assistant_secret_challenges.py",
             "assistant_secret_flow.py",
+            "assistant_connection_challenges.py",
+            "assistant_connection_flow.py",
+            "oauth_connection_store.py",
+            "oauth_connection_service.py",
+            "oauth_http_client.py",
+            "oauth_pkce_challenges.py",
+            "oauth_providers.py",
             "/var/lib/shimpz-local/assistant-secrets/state",
             "/var/lib/shimpz-local/assistant-secrets/key",
+            "/var/lib/shimpz-local/assistant-connections/state",
+            "/var/lib/shimpz-local/assistant-connections/key",
         ):
             self.assertIn(marker, dockerfile)
         self.assertIn(
@@ -366,7 +375,9 @@ class LocalContractTests(unittest.TestCase):
             "        /var/lib/shimpz-local/inference /var/lib/shimpz-local/power-journal \\\n"
             "        /var/lib/shimpz-local/assistant-approvals \\\n"
             "        /var/lib/shimpz-local/assistant-secrets/state "
-            "/var/lib/shimpz-local/assistant-secrets/key &&",
+            "/var/lib/shimpz-local/assistant-secrets/key \\\n"
+            "        /var/lib/shimpz-local/assistant-connections/state "
+            "/var/lib/shimpz-local/assistant-connections/key &&",
             dockerfile,
         )
         self.assertIn(
@@ -375,7 +386,9 @@ class LocalContractTests(unittest.TestCase):
             "        /var/lib/shimpz-local/power-journal "
             "/var/lib/shimpz-local/assistant-secrets/state \\\n"
             "        /var/lib/shimpz-local/assistant-approvals \\\n"
-            "        /var/lib/shimpz-local/assistant-secrets/key &&",
+            "        /var/lib/shimpz-local/assistant-secrets/key \\\n"
+            "        /var/lib/shimpz-local/assistant-connections/state "
+            "/var/lib/shimpz-local/assistant-connections/key &&",
             dockerfile,
         )
         self.assertIn("SHIMPZ_LOCAL_POWER_JOURNAL_PATH", source)
