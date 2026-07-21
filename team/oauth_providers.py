@@ -1,4 +1,4 @@
-"""Controller-owned OAuth provider metadata for reviewed Assistant accounts.
+"""Core-owned OAuth provider metadata for reviewed Assistant accounts.
 
 Assistant packages may name a provider and request reviewed scopes. They cannot
 choose authorization endpoints, token endpoints, client authentication, or PKCE
@@ -84,19 +84,21 @@ def _provider(
     return provider
 
 
-# X documents these endpoints for OAuth 2.0 Authorization Code with PKCE. We
-# deliberately require S256 even though X also accepts the weaker plain method.
-_X = _provider(
-    provider_id="x",
-    authorization_endpoint="https://x.com/i/oauth2/authorize",
-    token_endpoint=urlunsplit(("https", "api.x.com", "/2/oauth2/token", "", "")),
-    revocation_endpoint="https://api.x.com/2/oauth2/revoke",
-    api_hosts=("api.x.com",),
-    allowed_scopes=frozenset({"offline.access", "tweet.read", "tweet.write", "users.read"}),
-    client_auth_method="none",
+# Cloudflare's server-side Authorization Code client uses a secret. PKCE S256 is
+# kept as an additional one-use binding even though it is optional for a
+# confidential client. Only read scopes needed by the first Assistant release
+# are admitted here.
+_CLOUDFLARE = _provider(
+    provider_id="cloudflare",
+    authorization_endpoint="https://dash.cloudflare.com/oauth2/auth",
+    token_endpoint=urlunsplit(("https", "dash.cloudflare.com", "/oauth2/token", "", "")),
+    revocation_endpoint="https://dash.cloudflare.com/oauth2/revoke",
+    api_hosts=("api.cloudflare.com",),
+    allowed_scopes=frozenset({"dns.read", "offline_access", "zone.read"}),
+    client_auth_method="client_secret_basic",
 )
 
-PROVIDERS = MappingProxyType({_X.id: _X})
+PROVIDERS = MappingProxyType({_CLOUDFLARE.id: _CLOUDFLARE})
 
 
 def resolve(provider_id: object) -> OAuthProvider:

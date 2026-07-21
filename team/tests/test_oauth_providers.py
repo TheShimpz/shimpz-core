@@ -6,42 +6,42 @@ import oauth_providers
 
 
 class OAuthProviderTests(unittest.TestCase):
-    def test_x_provider_is_controller_owned_and_uses_only_pkce_s256(self) -> None:
-        provider = oauth_providers.resolve("x")
+    def test_cloudflare_provider_is_core_owned_and_uses_confidential_pkce(self) -> None:
+        provider = oauth_providers.resolve("cloudflare")
 
-        self.assertEqual(provider.authorization_endpoint, "https://x.com/i/oauth2/authorize")
-        self.assertEqual(provider.token_endpoint, "https://api.x.com/2/oauth2/token")
-        self.assertEqual(provider.revocation_endpoint, "https://api.x.com/2/oauth2/revoke")
-        self.assertEqual(provider.api_hosts, ("api.x.com",))
+        self.assertEqual(provider.authorization_endpoint, "https://dash.cloudflare.com/oauth2/auth")
+        self.assertEqual(provider.token_endpoint, "https://dash.cloudflare.com/oauth2/token")
+        self.assertEqual(provider.revocation_endpoint, "https://dash.cloudflare.com/oauth2/revoke")
+        self.assertEqual(provider.api_hosts, ("api.cloudflare.com",))
         self.assertEqual(provider.pkce_method, "S256")
-        self.assertEqual(provider.client_auth_method, "none")
+        self.assertEqual(provider.client_auth_method, "client_secret_basic")
         self.assertEqual(
             provider.allowed_scopes,
-            {"offline.access", "tweet.read", "tweet.write", "users.read"},
+            {"dns.read", "offline_access", "zone.read"},
         )
         with self.assertRaises(TypeError):
             oauth_providers.PROVIDERS["evil"] = provider
 
     def test_connection_scopes_are_canonical_and_limited_to_the_trusted_provider(self) -> None:
         intent = oauth_providers.account_intent(
-            "x",
-            ("users.read", "tweet.write", "offline.access", "tweet.read"),
+            "cloudflare",
+            ("zone.read", "offline_access", "dns.read"),
         )
-        self.assertEqual(intent.provider.id, "x")
+        self.assertEqual(intent.provider.id, "cloudflare")
         self.assertEqual(
             intent.scopes,
-            ("offline.access", "tweet.read", "tweet.write", "users.read"),
+            ("dns.read", "offline_access", "zone.read"),
         )
 
         invalid = (
-            ("unknown", ("tweet.read",)),
-            ("X", ("tweet.read",)),
-            ("x", ()),
-            ("x", "tweet.read"),
-            ("x", ("tweet.read", "tweet.read")),
-            ("x", ("dm.read",)),
-            ("x", ("tweet/read",)),
-            ("x", tuple("scope" for _ in range(oauth_providers.MAX_REQUESTED_SCOPES + 1))),
+            ("unknown", ("zone.read",)),
+            ("Cloudflare", ("zone.read",)),
+            ("cloudflare", ()),
+            ("cloudflare", "zone.read"),
+            ("cloudflare", ("zone.read", "zone.read")),
+            ("cloudflare", ("dns.write",)),
+            ("cloudflare", ("zone/read",)),
+            ("cloudflare", tuple("scope" for _ in range(oauth_providers.MAX_REQUESTED_SCOPES + 1))),
         )
         for provider_id, scopes in invalid:
             with (

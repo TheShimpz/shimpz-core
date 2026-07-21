@@ -1,4 +1,4 @@
-"""Strict OAuth 2.0 HTTP adapter for controller-owned public clients.
+"""Strict OAuth 2.0 HTTP adapter for core-owned clients.
 
 Only the trusted provider registry may choose endpoints. Assistant manifests,
 browser input, and Power input cannot supply URLs, client credentials, or token
@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+from base64 import b64encode
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -20,11 +21,12 @@ import oauth_providers
 MAX_RESPONSE_BYTES = 32 * 1024
 MAX_TOKEN_BYTES = 16 * 1024
 HTTP_TIMEOUT_SECONDS = 10
-LOCAL_REDIRECT_URI = "http://127.0.0.1:7777/api/oauth/x/callback"
-HOSTED_REDIRECT_URI = "https://shimpz.com/api/oauth/x/callback"
+LOCAL_REDIRECT_URI = "http://127.0.0.1:7777/api/oauth/cloudflare/callback"
+HOSTED_REDIRECT_URI = "https://shimpz.com/api/oauth/cloudflare/callback"
 _CLIENT_ID = re.compile(r"[A-Za-z0-9._~-]{8,256}\Z")
 _STATE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _PKCE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+MAX_CLIENT_SECRET_BYTES = 1024
 
 
 class OAuthHTTPError(RuntimeError):
@@ -106,9 +108,21 @@ def _client_id(value: object) -> str:
 
 
 def _redirect_uri(provider_id: str, value: object) -> str:
-    if provider_id != "x" or value not in {LOCAL_REDIRECT_URI, HOSTED_REDIRECT_URI}:
+    if provider_id != "cloudflare" or value not in {LOCAL_REDIRECT_URI, HOSTED_REDIRECT_URI}:
         raise OAuthHTTPError("OAuth callback configuration is invalid")
     return str(value)
+
+
+def _client_secret(value: object) -> str:
+    if not isinstance(value, str):
+        raise OAuthHTTPError("OAuth client configuration is invalid")
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeError as exc:
+        raise OAuthHTTPError("OAuth client configuration is invalid") from exc
+    if not 16 <= len(encoded) <= MAX_CLIENT_SECRET_BYTES or any(byte <= 32 or byte >= 127 for byte in encoded):
+        raise OAuthHTTPError("OAuth client configuration is invalid")
+    return value
 
 
 def _authorization_code(value: object) -> str:
@@ -156,12 +170,12 @@ def _strict_object(payload: bytes) -> dict[str, object]:
     return decoded
 
 
-def _public_provider(provider_id: object) -> oauth_providers.OAuthProvider:
+def _confidential_provider(provider_id: object) -> oauth_providers.OAuthProvider:
     try:
         provider = oauth_providers.resolve(provider_id)
     except oauth_providers.OAuthProviderError as exc:
         raise OAuthHTTPError("OAuth provider is unavailable") from exc
-    if provider.client_auth_method != "none" or provider.pkce_method != "S256":
+    if provider.client_auth_method != "client_secret_basic" or provider.pkce_method != "S256":
         raise OAuthHTTPError("OAuth provider configuration is invalid")
     return provider
 
@@ -175,7 +189,7 @@ def authorization_url(
     code_challenge: object,
     scopes: object,
 ) -> str:
-    provider = _public_provider(provider_id)
+    provider = _confidential_provider(provider_id)
     client = _client_id(client_id)
     redirect = _redirect_uri(provider.id, redirect_uri)
     if not isinstance(state, str) or _STATE.fullmatch(state) is None:
@@ -204,13 +218,24 @@ class OAuthHTTPClient:
     def __init__(self, transport: OAuthTransport | None = None) -> None:
         self._transport = transport or FixedHTTPSTransport()
 
-    def _post(self, url: str, fields: Mapping[str, str]) -> OAuthHTTPResponse:
+    def _post(
+        self,
+        url: str,
+        fields: Mapping[str, str],
+        *,
+        client_id: object,
+        client_secret: object,
+    ) -> OAuthHTTPResponse:
         payload = urlencode(fields).encode("ascii")
+        client = _client_id(client_id)
+        secret = _client_secret(client_secret)
+        authorization = b64encode(f"{client}:{secret}".encode("ascii")).decode("ascii")
         response = self._transport.request(
             method="POST",
             url=url,
             headers={
                 "Accept": "application/json",
+                "Authorization": f"Basic {authorization}",
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "shimpz-team-controller/1",
             },
@@ -255,7 +280,7 @@ class OAuthHTTPClient:
         refresh = data.get("refresh_token", previous_refresh_token)
         if refresh is not None:
             refresh = _token(refresh)
-        if "offline.access" in scopes and refresh is None:
+        if "offline_access" in scopes and refresh is None:
             raise OAuthHTTPError("OAuth provider response is invalid")
         return OAuthTokenSet(
             access_token=_token(data.get("access_token")),
@@ -269,12 +294,13 @@ class OAuthHTTPClient:
         *,
         provider_id: object,
         client_id: object,
+        client_secret: object,
         redirect_uri: object,
         code: object,
         code_verifier: object,
         scopes: object,
     ) -> OAuthTokenSet:
-        provider = _public_provider(provider_id)
+        provider = _confidential_provider(provider_id)
         client = _client_id(client_id)
         redirect = _redirect_uri(provider.id, redirect_uri)
         verifier = _authorization_code(code_verifier)
@@ -289,10 +315,11 @@ class OAuthHTTPClient:
             {
                 "code": _authorization_code(code),
                 "grant_type": "authorization_code",
-                "client_id": client,
                 "redirect_uri": redirect,
                 "code_verifier": verifier,
             },
+            client_id=client,
+            client_secret=client_secret,
         )
         return self._tokens(response, expected_scopes=expected_scopes)
 
@@ -301,10 +328,11 @@ class OAuthHTTPClient:
         *,
         provider_id: object,
         client_id: object,
+        client_secret: object,
         refresh_token: object,
         scopes: object,
     ) -> OAuthTokenSet:
-        provider = _public_provider(provider_id)
+        provider = _confidential_provider(provider_id)
         client = _client_id(client_id)
         previous = _token(refresh_token)
         try:
@@ -316,8 +344,9 @@ class OAuthHTTPClient:
             {
                 "refresh_token": previous,
                 "grant_type": "refresh_token",
-                "client_id": client,
             },
+            client_id=client,
+            client_secret=client_secret,
         )
         return self._tokens(
             response,
@@ -330,12 +359,15 @@ class OAuthHTTPClient:
         *,
         provider_id: object,
         client_id: object,
+        client_secret: object,
         token: object,
     ) -> None:
-        provider = _public_provider(provider_id)
+        provider = _confidential_provider(provider_id)
         response = self._post(
             provider.revocation_endpoint,
-            {"token": _token(token), "client_id": _client_id(client_id)},
+            {"token": _token(token)},
+            client_id=client_id,
+            client_secret=client_secret,
         )
         if response.body and response.content_type.lower().split(";", 1)[0].strip() not in {
             "application/json",
