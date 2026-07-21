@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 import assistant_contract
+import cloudflare_assistant_contract
 
 REGISTRY_PATH = Path("/etc/shimpz/local-assistants.json")
 _DIGEST_REF = re.compile(
@@ -74,9 +75,9 @@ def is_digest_ref(value: object) -> bool:
 
 def _digest_ref(value: object) -> str:
     if not isinstance(value, str) or _DIGEST_REF.fullmatch(value) is None:
-        raise RegistryError("the Shimpz Assistant image must be an OCI sha256 digest reference")
+        raise RegistryError("an Assistant image must be an OCI sha256 digest reference")
     if not is_digest_ref(value):
-        raise RegistryError("the Shimpz Assistant release digest has not been bound")
+        raise RegistryError("an Assistant release digest has not been bound")
     return value
 
 
@@ -90,32 +91,43 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RegistryError("the baked Assistant registry is unreadable") from exc
-    if not isinstance(raw, dict) or set(raw) != {"schema", "shimpz_assistant_image"} or raw["schema"] != 1:
+    contracts = (assistant_contract, cloudflare_assistant_contract)
+    expected_ids = {contract.ASSISTANT_ID for contract in contracts}
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"schema", "images"}
+        or raw["schema"] != 2
+        or not isinstance(raw["images"], dict)
+        or set(raw["images"]) != expected_ids
+    ):
         raise RegistryError("the baked Assistant registry has an unsupported shape")
-
-    shimpz_assistant = AssistantSpec(
-        assistant_id=assistant_contract.ASSISTANT_ID,
-        name=assistant_contract.ASSISTANT_NAME,
-        summary=assistant_contract.ASSISTANT_SUMMARY,
-        image=_digest_ref(raw["shimpz_assistant_image"]),
-        rpc_command=assistant_contract.ASSISTANT_RPC_COMMAND,
-        health_path="/healthz",
-        powers={power_id: PowerSpec(**contract) for power_id, contract in assistant_contract.power_contracts().items()},
-        secrets={
-            secret_id: SecretSpec(**contract) for secret_id, contract in assistant_contract.secret_contracts().items()
-        },
-        allowed_hosts=assistant_contract.ASSISTANT_ALLOWED_HOSTS,
-        accounts={
-            account_id: AccountSpec(**contract)
-            for account_id, contract in assistant_contract.account_contracts().items()
-        },
-    )
-    return {shimpz_assistant.assistant_id: shimpz_assistant}
+    registry: dict[str, AssistantSpec] = {}
+    for contract in contracts:
+        spec = AssistantSpec(
+            assistant_id=contract.ASSISTANT_ID,
+            name=contract.ASSISTANT_NAME,
+            summary=contract.ASSISTANT_SUMMARY,
+            image=_digest_ref(raw["images"][contract.ASSISTANT_ID]),
+            rpc_command=contract.ASSISTANT_RPC_COMMAND,
+            health_path=getattr(contract, "ASSISTANT_HEALTH_PATH", "/healthz"),
+            powers={power_id: PowerSpec(**power) for power_id, power in contract.power_contracts().items()},
+            secrets={secret_id: SecretSpec(**secret) for secret_id, secret in contract.secret_contracts().items()},
+            allowed_hosts=contract.ASSISTANT_ALLOWED_HOSTS,
+            accounts={
+                account_id: AccountSpec(**account) for account_id, account in contract.account_contracts().items()
+            },
+        )
+        registry[spec.assistant_id] = spec
+    return registry
 
 
 def validate_power_input(assistant_id: str, power: str, payload: object) -> dict[str, object]:
+    if assistant_id == cloudflare_assistant_contract.ASSISTANT_ID:
+        return cloudflare_assistant_contract.validate_power_input(assistant_id, power, payload)
     return assistant_contract.validate_power_input(assistant_id, power, payload)
 
 
 def validate_power_output(assistant_id: str, power: str, payload: object) -> dict[str, object]:
+    if assistant_id == cloudflare_assistant_contract.ASSISTANT_ID:
+        return cloudflare_assistant_contract.validate_power_output(assistant_id, power, payload)
     return assistant_contract.validate_power_output(assistant_id, power, payload)

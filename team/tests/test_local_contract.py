@@ -85,7 +85,18 @@ class LocalContractTests(unittest.TestCase):
     ) -> dict[str, local_registry.AssistantSpec]:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "registry.json"
-            path.write_text(json.dumps({"schema": 1, "shimpz_assistant_image": image}), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": 2,
+                        "images": {
+                            "shimpz-assistant": image,
+                            "shimpz-cloudflare": image,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             registry = local_registry.load_registry(path)
         if not with_test_secrets:
             return registry
@@ -343,7 +354,13 @@ class LocalContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "registry.json"
             path.write_text(
-                json.dumps({"schema": 1, "shimpz_assistant_image": "x", "command": ["/bin/sh"]}),
+                json.dumps(
+                    {
+                        "schema": 2,
+                        "images": {"shimpz-assistant": "x", "shimpz-cloudflare": "x"},
+                        "command": ["/bin/sh"],
+                    }
+                ),
                 encoding="utf-8",
             )
             with self.assertRaises(local_registry.RegistryError):
@@ -383,6 +400,55 @@ class LocalContractTests(unittest.TestCase):
                 "public-user-lookup",
                 LOOKUP_RESULT | {"extra": True},
             )
+
+    def test_cloudflare_assistant_contract_is_read_only_closed_and_bounded(self) -> None:
+        registry = self._registry(CURRENT_ASSISTANT_IMAGE)
+        spec = registry["shimpz-cloudflare"]
+        self.assertEqual(spec.allowed_hosts, ("api.cloudflare.com",))
+        self.assertEqual(spec.health_path, "/health")
+        self.assertEqual(set(spec.powers), {"list-zones", "list-dns-records"})
+        self.assertTrue(all(power.approval == "none" for power in spec.powers.values()))
+        self.assertTrue(all(power.accounts == ("cloudflare",) for power in spec.powers.values()))
+        self.assertEqual(
+            local_registry.validate_power_input(
+                "shimpz-cloudflare",
+                "list-dns-records",
+                {"zone_id": "a" * 32, "page": 1, "per_page": 100},
+            ),
+            {"zone_id": "a" * 32, "page": 1, "per_page": 100},
+        )
+        zones = {
+            "zones": [
+                {
+                    "id": "a" * 32,
+                    "name": "example.com",
+                    "status": "active",
+                    "type": "full",
+                    "paused": False,
+                    "account": {"id": "b" * 32, "name": "Shimpz"},
+                }
+            ],
+            "pagination": {"page": 1, "per_page": 100, "count": 1, "total_count": 1, "total_pages": 1},
+        }
+        self.assertEqual(
+            local_registry.validate_power_output("shimpz-cloudflare", "list-zones", zones),
+            zones,
+        )
+        with self.assertRaises(ValueError):
+            local_registry.validate_power_output(
+                "shimpz-cloudflare",
+                "list-zones",
+                zones | {"access_token": "must-not-cross"},
+            )
+        for invalid in (
+            {"page": 0, "per_page": 100},
+            {"page": 1, "per_page": 101},
+            {"zone_id": "../zone", "page": 1, "per_page": 10},
+            {"page": 1, "per_page": 10, "access_token": "must-not-cross"},
+        ):
+            power = "list-dns-records" if "zone_id" in invalid else "list-zones"
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                local_registry.validate_power_input("shimpz-cloudflare", power, invalid)
 
     def test_identifiers_are_strict_and_bounded(self) -> None:
         self.assertEqual(local_app.validate_team_id("demo_team"), "demo_team")

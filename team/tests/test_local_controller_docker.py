@@ -311,6 +311,8 @@ class DockerFlowTests(unittest.TestCase):
                 str(TEAM / "Dockerfile.local"),
                 "--build-arg",
                 f"SHIMPZ_ASSISTANT_IMAGE={trusted_ref}",
+                "--build-arg",
+                f"SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE={trusted_ref}",
                 "--tag",
                 controller_tag,
                 str(TEAM),

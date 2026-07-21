@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import oauth_http_client
 
 CLIENT_ID = "cloudflare-client-id-123"
-CLIENT_SECRET = "cloudflare-client-secret-123"
+CLIENT_CREDENTIAL = "cloudflare-client-secret-123"
 CODE = "authorization-code-123456789"
 VERIFIER = "v" * 64
 STATE = "s" * 43
@@ -38,7 +38,7 @@ def _assert_basic(request: dict[str, object]) -> None:
     headers = request["headers"]
     assert isinstance(headers, dict)
     scheme, encoded = headers["Authorization"].split(" ", 1)
-    if scheme != "Basic" or b64decode(encoded).decode("ascii") != f"{CLIENT_ID}:{CLIENT_SECRET}":
+    if scheme != "Basic" or b64decode(encoded).decode("ascii") != f"{CLIENT_ID}:{CLIENT_CREDENTIAL}":
         raise AssertionError("invalid confidential client authentication")
 
 
@@ -100,7 +100,7 @@ class OAuthHTTPClientTests(unittest.TestCase):
         tokens = oauth_http_client.OAuthHTTPClient(transport).exchange_code(
             provider_id="cloudflare",
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             code=CODE,
             code_verifier=VERIFIER,
@@ -135,7 +135,7 @@ class OAuthHTTPClientTests(unittest.TestCase):
         tokens = client.refresh(
             provider_id="cloudflare",
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             refresh_token=REFRESH,
             scopes=SCOPES,
         )
@@ -143,7 +143,7 @@ class OAuthHTTPClientTests(unittest.TestCase):
         client.revoke(
             provider_id="cloudflare",
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             token=tokens.refresh_token,
         )
 
@@ -185,13 +185,13 @@ class OAuthHTTPClientTests(unittest.TestCase):
                 oauth_http_client.OAuthHTTPClient(transport).exchange_code(
                     provider_id="cloudflare",
                     client_id=CLIENT_ID,
-                    client_secret=CLIENT_SECRET,
+                    client_secret=CLIENT_CREDENTIAL,
                     redirect_uri=oauth_http_client.HOSTED_REDIRECT_URI,
                     code=CODE,
                     code_verifier=VERIFIER,
                     scopes=SCOPES,
                 )
-            for private in ("do-not-reflect", ACCESS, CLIENT_SECRET):
+            for private in ("do-not-reflect", ACCESS, CLIENT_CREDENTIAL):
                 self.assertNotIn(private, str(caught.exception))
 
     def test_inputs_and_response_size_are_bounded(self) -> None:
@@ -208,7 +208,7 @@ class OAuthHTTPClientTests(unittest.TestCase):
             oauth_http_client.OAuthHTTPClient(transport).exchange_code(
                 provider_id="cloudflare",
                 client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
+                client_secret=CLIENT_CREDENTIAL,
                 redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
                 code=CODE,
                 code_verifier=VERIFIER,

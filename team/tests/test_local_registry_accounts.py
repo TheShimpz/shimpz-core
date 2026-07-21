@@ -16,10 +16,19 @@ class LocalRegistryAccountTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "registry.json"
             path.write_text(
-                json.dumps({"schema": 1, "shimpz_assistant_image": digest}),
+                json.dumps(
+                    {
+                        "schema": 2,
+                        "images": {
+                            "shimpz-assistant": digest,
+                            "shimpz-cloudflare": digest,
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
-            spec = local_registry.load_registry(path)["shimpz-assistant"]
+            registry = local_registry.load_registry(path)
+            spec = registry["shimpz-assistant"]
 
         self.assertEqual(
             set(spec.secrets),
@@ -58,6 +67,16 @@ class LocalRegistryAccountTests(unittest.TestCase):
                 accounts=hosted.assistant.accounts,
             ),
         )
+
+        cloudflare = registry["shimpz-cloudflare"]
+        self.assertEqual(cloudflare.secrets, {})
+        self.assertEqual(cloudflare.accounts["cloudflare"].provider, "cloudflare")
+        self.assertEqual(
+            cloudflare.accounts["cloudflare"].scopes,
+            ("dns.read", "offline_access", "zone.read"),
+        )
+        self.assertEqual(cloudflare.allowed_hosts, ("api.cloudflare.com",))
+        self.assertTrue(all(power.accounts == ("cloudflare",) for power in cloudflare.powers.values()))
 
 
 if __name__ == "__main__":

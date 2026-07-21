@@ -29,8 +29,11 @@ class LocalOAuthAccountTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema": 1,
-                        "shimpz_assistant_image": "example.invalid/shimpz@sha256:" + ("a" * 64),
+                        "schema": 2,
+                        "images": {
+                            "shimpz-assistant": "example.invalid/shimpz@sha256:" + ("a" * 64),
+                            "shimpz-cloudflare": "example.invalid/cloudflare@sha256:" + ("b" * 64),
+                        },
                     }
                 ),
                 encoding="utf-8",

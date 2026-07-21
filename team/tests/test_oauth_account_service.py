@@ -13,7 +13,7 @@ import oauth_http_client
 import oauth_pkce_challenges
 
 CLIENT_ID = "cloudflare-client-123456789"
-CLIENT_SECRET = "cloudflare-secret-private-123456789"
+CLIENT_CREDENTIAL = "cloudflare-secret-private-123456789"
 CODE = "authorization-code-private-123456789"
 SESSION = "browser-session-private-123456789"
 OTHER_SESSION = "other-browser-session-123456789"
@@ -94,7 +94,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         self.http = oauth_http_client.OAuthHTTPClient(self.transport)
         self.service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
             store=self.store,
@@ -143,7 +143,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         )
         self.assertEqual(completed.provider, "cloudflare")
         self.assertEqual(completed.generation, 1)
-        for private in (CODE, ACCESS, REFRESH, CLIENT_ID, CLIENT_SECRET, query["state"][0], "verifier"):
+        for private in (CODE, ACCESS, REFRESH, CLIENT_ID, CLIENT_CREDENTIAL, query["state"][0], "verifier"):
             self.assertNotIn(private, repr(completed))
         metadata = self.store.metadata("team_1", "z-assistant", {"cloudflare": DECLARATION})[0]
         self.assertEqual(metadata.status, "connected")
@@ -221,7 +221,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         with self.assertRaises(oauth_account_service.OAuthAccountServiceError):
             oauth_account_service.OAuthAccountService(
                 client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET,
+                client_secret=CLIENT_CREDENTIAL,
                 redirect_uri="https://evil.example/callback",
                 challenge=self.challenges,
                 store=self.store,
@@ -247,7 +247,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         now[0] = 1_031
         service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=oauth_pkce_challenges.OAuthPKCEChallengeStore(),
             store=store,
@@ -275,7 +275,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         )
         service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
             store=self.store,
@@ -290,7 +290,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
                 lambda _team, _assistant, _account: DECLARATION,
             )
         rendered = f"{captured.exception!r} {captured.exception}"
-        for private in (leaked, ACCESS, REFRESH, CODE, CLIENT_ID, CLIENT_SECRET, state, "verifier"):
+        for private in (leaked, ACCESS, REFRESH, CODE, CLIENT_ID, CLIENT_CREDENTIAL, state, "verifier"):
             self.assertNotIn(private, rendered)
 
         next_state = self._state(service.authorization_url(pending(requirement()), SESSION))
@@ -321,7 +321,10 @@ class OAuthAccountServiceTests(unittest.TestCase):
         ]
         self.assertEqual(revoked, [REFRESH, ACCESS])
         self.assertTrue(
-            all(request["url"] == "https://dash.cloudflare.com/oauth2/revoke" for request in self.transport.requests[-2:])
+            all(
+                request["url"] == "https://dash.cloudflare.com/oauth2/revoke"
+                for request in self.transport.requests[-2:]
+            )
         )
         self.assertEqual(
             self.store.metadata("team_1", "shimpz-cloudflare", {"cloudflare": DECLARATION})[0].status,
@@ -346,7 +349,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         )
         service = oauth_account_service.OAuthAccountService(
             client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
+            client_secret=CLIENT_CREDENTIAL,
             redirect_uri=oauth_http_client.LOCAL_REDIRECT_URI,
             challenge=self.challenges,
             store=self.store,
@@ -356,7 +359,7 @@ class OAuthAccountServiceTests(unittest.TestCase):
         with self.assertRaises(oauth_account_service.OAuthAccountServiceError) as failed:
             service.disconnect("team_1", "shimpz-cloudflare", "cloudflare")
         rendered = f"{failed.exception!r} {failed.exception}"
-        for private in (ACCESS, REFRESH, CLIENT_ID, CLIENT_SECRET, "private-provider-detail"):
+        for private in (ACCESS, REFRESH, CLIENT_ID, CLIENT_CREDENTIAL, "private-provider-detail"):
             self.assertNotIn(private, rendered)
         self.assertEqual(
             self.store.metadata("team_1", "shimpz-cloudflare", {"cloudflare": DECLARATION})[0].status,
