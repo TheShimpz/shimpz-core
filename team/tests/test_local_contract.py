@@ -521,6 +521,7 @@ class LocalContractTests(unittest.TestCase):
             "assistant_account_flow.py",
             "oauth_account_store.py",
             "oauth_account_service.py",
+            "oauth_broker_client.py",
             "oauth_http_client.py",
             "oauth_pkce_challenges.py",
             "oauth_providers.py",
