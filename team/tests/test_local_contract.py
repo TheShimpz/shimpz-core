@@ -57,6 +57,8 @@ class LocalContractTests(unittest.TestCase):
             {
                 ".env",
                 ".env.*",
+                "**/.env",
+                "**/.env.*",
                 ".venv",
                 "**/__pycache__",
                 "**/*.pyc",
