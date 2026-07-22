@@ -326,6 +326,8 @@ def _wire_network_deps(network, req: validate.DeployRequest) -> None:
     _safe_connect(network, APP_EGRESS_PROXY, aliases=["app-egress-proxy"], required=True)
     if "DATABASE_URL" in req.env:
         _safe_connect(network, POSTGRES_CONTAINER, aliases=["postgres"], required=True)
+
+
 def _teardown_app_network(name: str) -> None:
     net_name = manifests.app_network_name(name)
     try:
