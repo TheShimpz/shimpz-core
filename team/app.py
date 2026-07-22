@@ -15,6 +15,7 @@ import binascii
 import contextlib
 import functools
 import hashlib
+import hmac
 import http.client
 import ipaddress
 import json
@@ -70,6 +71,19 @@ import token_store
 import validate
 
 ALL_INTERFACES = str(ipaddress.IPv4Address(0))
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -3768,7 +3782,8 @@ class Handler(BaseHTTPRequestHandler):
         against the accounts service and scopes every op to that account's OWN teams — the store holds
         no privileged secret, this driver is the enforcer.
         """
-        if self.headers.get("Authorization", "") == f"Bearer {_token}":
+        authorization = self.headers.get_all("Authorization", failobj=[])
+        if len(authorization) == 1 and hmac.compare_digest(authorization[0], f"Bearer {_token}"):
             return ("operator", None)
         account_token = self.headers.get("X-Shimpz-Account", "")
         if account_token:
@@ -3868,22 +3883,37 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _read_body(self, *, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict:
-        raw_length = self.headers.get("Content-Length", "0") or "0"
+        if self.headers.get_all("Transfer-Encoding", failobj=[]):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "chunked requests are not accepted")
+        lengths = self.headers.get_all("Content-Length", failobj=[])
+        if len(lengths) != 1:
+            raise ApiError(HTTPStatus.LENGTH_REQUIRED, "one Content-Length is required")
         try:
-            length = int(raw_length)
+            length = int(lengths[0])
         except ValueError as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
-        if length < 0:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
-        if length > max_bytes:
+        if length < 2 or length > max_bytes:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"request body too large (max {max_bytes} bytes)")
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
+        content_types = self.headers.get_all("Content-Type", failobj=[])
+        if len(content_types) != 1:
+            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
+        content_type = content_types[0].partition(";")[0].strip().lower()
+        if content_type != "application/json":
+            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError("short request body")
+            body = json.loads(
+                raw,
+                object_pairs_hook=_unique_object,
+                parse_constant=_reject_json_constant,
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "a JSON object is required")
+        return body
 
     def _read_driver_body(self, keys: set[str]) -> dict[str, object]:
         """Read one closed Driver mutation document; arbitrary scripts/shapes never cross the bridge."""

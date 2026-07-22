@@ -7,6 +7,7 @@ import tempfile
 import types
 import unittest
 from dataclasses import replace
+from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -188,6 +189,60 @@ class _RouteHarness:
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
         self.sent.append((status, payload))
+
+
+class HostedHttpBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def _handler(body: bytes, *headers: tuple[str, str]) -> app.Handler:
+        handler = object.__new__(app.Handler)
+        handler.headers = Message()
+        for name, value in headers:
+            handler.headers.add_header(name, value)
+        handler.rfile = BytesIO(body)
+        return handler
+
+    def test_operator_bearer_is_constant_time_and_duplicate_headers_fail_closed(self) -> None:
+        accepted = self._handler(b"", ("Authorization", "Bearer operator-token"))
+        wrong = self._handler(b"", ("Authorization", "Bearer operator-tokee"))
+        duplicate = self._handler(
+            b"",
+            ("Authorization", "Bearer operator-token"),
+            ("Authorization", "Bearer operator-token"),
+        )
+
+        with mock.patch.object(app.hmac, "compare_digest", wraps=app.hmac.compare_digest) as compare:
+            self.assertEqual(accepted._principal(), ("operator", None))
+            self.assertIsNone(wrong._principal())
+            self.assertIsNone(duplicate._principal())
+
+        self.assertEqual(compare.call_count, 2)
+
+    def test_read_body_accepts_one_strict_json_object(self) -> None:
+        body = b'{"team_name":"Marketing"}'
+        handler = self._handler(
+            body,
+            ("Content-Length", str(len(body))),
+            ("Content-Type", "application/json; charset=utf-8"),
+        )
+
+        self.assertEqual(handler._read_body(), {"team_name": "Marketing"})
+
+    def test_read_body_rejects_ambiguous_or_non_object_documents(self) -> None:
+        cases = (
+            (b"{}", (("Transfer-Encoding", "chunked"), ("Content-Type", "application/json")), HTTPStatus.BAD_REQUEST),
+            (b'{"a":1,"a":2}', (("Content-Type", "application/json"),), HTTPStatus.BAD_REQUEST),
+            (b'{"a":NaN}', (("Content-Type", "application/json"),), HTTPStatus.BAD_REQUEST),
+            (b"[]", (("Content-Type", "application/json"),), HTTPStatus.UNPROCESSABLE_ENTITY),
+            (b"{}", (), HTTPStatus.UNSUPPORTED_MEDIA_TYPE),
+            (b"{}", (("Content-Type", "text/plain"),), HTTPStatus.UNSUPPORTED_MEDIA_TYPE),
+        )
+
+        for body, extra_headers, expected_status in cases:
+            headers = (("Content-Length", str(len(body))), *extra_headers)
+            handler = self._handler(body, *headers)
+            with self.subTest(body=body, headers=headers), self.assertRaises(app.ApiError) as caught:
+                handler._read_body()
+            self.assertEqual(caught.exception.status, expected_status)
 
 
 class HostedAllowedHostsAdmissionTests(unittest.TestCase):
