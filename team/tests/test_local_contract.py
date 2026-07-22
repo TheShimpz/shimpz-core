@@ -55,6 +55,8 @@ TEST_ACCOUNT_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "12345
 TEST_ACCOUNT_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
 CURRENT_ASSISTANT_IMAGE = "ghcr.io/theshimpz/shimpz-space@sha256:" + "b" * 64
 OUTDATED_ASSISTANT_IMAGE = "ghcr.io/theshimpz/shimpz-space@sha256:" + "a" * 64
+
+
 class LocalContractTests(unittest.TestCase):
     def test_local_state_defaults_match_the_installer_mount_contract(self) -> None:
         self.assertEqual(local_token_store.TOKEN_PATH, Path("/run/shimpz-local/token"))
