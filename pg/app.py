@@ -57,11 +57,14 @@ def _create_app(body: dict, token: str) -> dict:
     team_id = validate.validate_team_id(body.get("team_id"))
     app_id = validate.validate_app_id(body.get("app_id"))
     project = validate.team_app_project(team_id, app_id)
+    database = pg_client.dbname(project)
     with pg_client.mutation_lock():
-        principal_store.databases(token, team_id)
+        scoped = principal_store.databases(token, team_id)
+        if database not in scoped and pg_client.project_resources_exist(project):
+            raise principal_store.PrincipalError("unregistered App database artifacts already exist")
         result = pg_client.create_db_and_role(project)
         try:
-            principal_store.add_database(token, team_id, pg_client.dbname(project))
+            principal_store.add_database(token, team_id, database)
         except (principal_store.PrincipalError, principal_store.PrincipalStoreError) as registry_error:
             try:
                 pg_client.rollback_provision(project, result)

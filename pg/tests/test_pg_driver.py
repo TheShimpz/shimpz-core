@@ -193,6 +193,43 @@ class PgDriverTests(unittest.TestCase):
         ):
             app._drop_app(body, token)
 
+    def test_app_create_refuses_to_adopt_an_unregistered_database(self) -> None:
+        token = "e" * 64
+        team_id = "attacker"
+        app_id = "notification-center"
+        project = validate.team_app_project(team_id, app_id)
+        principal_store.register(team_id, token, "proj_team_attacker")
+
+        with (
+            mock.patch.object(pg_client, "project_resources_exist", return_value=True) as exists,
+            mock.patch.object(pg_client, "create_db_and_role") as create,
+            self.assertRaisesRegex(principal_store.PrincipalError, "unregistered App database"),
+        ):
+            app._create_app({"team_id": team_id, "app_id": app_id}, token)
+
+        exists.assert_called_once_with(project)
+        create.assert_not_called()
+
+    def test_app_create_allows_a_registered_same_team_retry(self) -> None:
+        token = "f" * 64
+        team_id = "alpha"
+        app_id = "notification-center"
+        project = validate.team_app_project(team_id, app_id)
+        database = pg_client.dbname(project)
+        principal_store.register(team_id, token, "proj_team_alpha")
+        principal_store.add_database(token, team_id, database)
+        provisioned = pg_client.ProvisionResult("postgresql://redacted", False, False)
+
+        with (
+            mock.patch.object(pg_client, "project_resources_exist") as exists,
+            mock.patch.object(pg_client, "create_db_and_role", return_value=provisioned) as create,
+        ):
+            result = app._create_app({"team_id": team_id, "app_id": app_id}, token)
+
+        exists.assert_not_called()
+        create.assert_called_once_with(project)
+        self.assertEqual(result, {"database_url": "postgresql://redacted", "created": False})
+
     def test_manifest_is_closed_and_public_metadata_contains_no_credentials(self) -> None:
         manifest = driver_manifest.load()
         self.assertEqual(manifest.id, "postgresql")
