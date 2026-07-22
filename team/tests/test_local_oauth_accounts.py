@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -8,6 +9,7 @@ import unittest
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
@@ -20,6 +22,7 @@ import local_app
 import local_registry
 import oauth_account_service
 import oauth_account_store
+import oauth_broker_client
 
 
 class LocalOAuthAccountTests(unittest.TestCase):
@@ -117,14 +120,52 @@ class LocalOAuthAccountTests(unittest.TestCase):
             (HTTPStatus.OK, expected, "assistant-account-list", "team_1", None),
         )
 
-    def test_local_controller_uses_hosted_broker_without_oauth_client_credentials(self) -> None:
-        source = (TEAM / "local_app.py").read_text(encoding="utf-8")
-        self.assertIn("BrokeredOAuthAccountService", source)
-        self.assertIn("OAuthBrokerClient", source)
-        self.assertIn("SHIMPZ_OAUTH_BROKER_PROXY_HOST", source)
-        self.assertIn("SHIMPZ_OAUTH_BROKER_PROXY_TOKEN", source)
-        self.assertNotIn("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_ID", source)
-        self.assertNotIn("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_SECRET", source)
+    def test_local_controller_builds_only_the_hosted_broker_boundary(self) -> None:
+        transport = SimpleNamespace()
+        broker = SimpleNamespace()
+        service = SimpleNamespace()
+        pkce = SimpleNamespace()
+        accounts = SimpleNamespace()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SHIMPZ_OAUTH_BROKER_PROXY_HOST": "oauth-broker-proxy",
+                    "SHIMPZ_OAUTH_BROKER_PROXY_TOKEN": "a" * 64,
+                    "SHIMPZ_OAUTH_CALLBACK_MODE": "loopback",
+                },
+            ),
+            mock.patch.object(oauth_broker_client, "FixedBrokerTransport", return_value=transport) as transport_type,
+            mock.patch.object(oauth_broker_client, "OAuthBrokerClient", return_value=broker) as broker_type,
+            mock.patch.object(
+                oauth_account_service,
+                "BrokeredOAuthAccountService",
+                return_value=service,
+            ) as service_type,
+        ):
+            controller = local_app.LocalController(
+                SimpleNamespace(info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2}),
+                "local-space",
+                self._registry(),
+                SimpleNamespace(),
+                inference_store=SimpleNamespace(),
+                brain_runtime=SimpleNamespace(),
+                power_state=SimpleNamespace(),
+                assistant_secrets=SimpleNamespace(),
+                secret_challenges=SimpleNamespace(),
+                assistant_accounts=accounts,
+                account_challenges=SimpleNamespace(),
+                oauth_pkce=pkce,
+                approval_challenges=SimpleNamespace(),
+                approval_grants=SimpleNamespace(),
+            )
+
+        transport_type.assert_called_once_with(proxy_host="oauth-broker-proxy", proxy_token="a" * 64)
+        broker_type.assert_called_once_with(transport=transport, callback_mode="loopback")
+        service_type.assert_called_once_with(challenge=pkce, store=accounts, broker=broker)
+        self.assertIs(controller.oauth_broker, broker)
+        self.assertIs(controller.oauth_service, service)
 
     def test_authorization_and_callback_delegate_to_one_brokered_service(self) -> None:
         requirement = assistant_account_challenges.AccountRequirement(
