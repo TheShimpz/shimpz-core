@@ -48,6 +48,8 @@ def _records() -> dict[str, object]:
         "records": [],
         "pagination": {"page": 1, "per_page": 25, "count": 0, "total_count": 0, "total_pages": 0},
     }
+
+
 SECRET_VALUES = {
     "x-bearer-token": "bearer-test-value-123456789",
     "x-api-key": "consumer-key-value-123456789",
@@ -133,9 +135,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
             powers={
                 power_id: replace(
                     power,
-                    secrets=(
-                        tuple(SECRET_VALUES)[:1] if power_id == "list-zones" else tuple(SECRET_VALUES)[1:]
-                    ),
+                    secrets=(tuple(SECRET_VALUES)[:1] if power_id == "list-zones" else tuple(SECRET_VALUES)[1:]),
                     accounts=(),
                 )
                 for power_id, power in trusted_contract.powers.items()
