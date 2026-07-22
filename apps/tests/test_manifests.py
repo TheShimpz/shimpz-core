@@ -39,6 +39,18 @@ class ManifestTests(unittest.TestCase):
         self.assertNotIn("ports", kwargs)
         self.assertNotIn("devices", kwargs)
         self.assertNotIn("pid_mode", kwargs)
+        self.assertEqual(
+            dict(kwargs["log_config"]),
+            {
+                "Type": "fluentd",
+                "Config": {
+                    "fluentd-address": "127.0.0.1:24224",
+                    "fluentd-async": "true",
+                    "fluentd-buffer-limit": "1048576",
+                    "tag": "app.{{.Name}}",
+                },
+            },
+        )
 
         mounts = kwargs["mounts"]
         self.assertEqual(len(mounts), 1)

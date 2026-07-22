@@ -34,12 +34,19 @@ MEM_LIMIT = "1g"
 NANO_CPUS = 500_000_000  # 0.5 vCPU
 PIDS_LIMIT = 256
 
-# Log shipping: Vector reads Docker's on-disk json-file logs
-# (a read-only host-path mount, never docker.sock), but those files are named by CONTAINER ID, not
-# app name. The `labels` log-opt embeds the container's labels into every line's `attrs` field
-# ({"attrs":{"shimpz.app":"myapp"}}), so Vector derives the app name from the log line itself, with
-# no Docker API access at all.
-APP_LOG_CONFIG = docker.types.LogConfig(type=docker.types.LogConfig.types.JSON, config={"labels": "shimpz.app"})
+# The Docker daemon forwards only app stdout/stderr to Vector's loopback-bound Fluent input. Async
+# delivery keeps app startup fail-open for observability when Vector is restarting; the bounded
+# buffer prevents a hostile logger from consuming unbounded daemon memory. Vector needs neither the
+# Docker socket nor the host's container-log tree.
+APP_LOG_CONFIG = docker.types.LogConfig(
+    type="fluentd",
+    config={
+        "fluentd-address": "127.0.0.1:24224",
+        "fluentd-async": "true",
+        "fluentd-buffer-limit": "1048576",
+        "tag": "app.{{.Name}}",
+    },
+)
 
 
 def resolve_host_projects_root(client: docker.DockerClient) -> str:
