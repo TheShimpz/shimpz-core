@@ -327,16 +327,7 @@ def _validate_target(target: object, field: str) -> str:
 # it. This positive allowlist is the security boundary: ONLY this service and its own env keys —
 # `shimpz-brain`, `postgres`, `cloudflared`, and every stray key are refused BY
 # CONSTRUCTION (a bad request can never recreate the brain or a stateful datastore, nor inject PATH).
-RECREATABLE: dict[str, frozenset[str]] = {
-    "r2-driver": frozenset(
-        {
-            "R2_BUCKET",
-            "RCLONE_CONFIG_R2_ACCESS_KEY_ID",
-            "RCLONE_CONFIG_R2_SECRET_ACCESS_KEY",
-            "RCLONE_CONFIG_R2_ENDPOINT",
-        }
-    ),
-}
+RECREATABLE: dict[str, frozenset[str]] = {}
 
 
 @dataclass(frozen=True, slots=True)

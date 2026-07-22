@@ -65,7 +65,6 @@ import oauth_http_client
 import oauth_pkce_challenges
 import pgdriver_client
 import power_journal
-import r2driver_client
 import team_storage
 import token_store
 import validate
@@ -3432,15 +3431,6 @@ def _teardown_assistant_accounts(team_id: str) -> bool:
     return True
 
 
-def _retire_teardown_r2(team_id: str) -> bool:
-    """Cut off every new Team R2 operation before deleting any tenant artifact."""
-    try:
-        r2driver_client.retire_team(team_id)
-    except r2driver_client.R2DriverError:
-        return False
-    return True
-
-
 def _drop_teardown_database(team_id: str, record: cleanup_state.Record) -> cleanup_state.Record | None:
     if record.db_dropped:
         return record
@@ -3459,13 +3449,9 @@ def _drop_teardown_database(team_id: str, record: cleanup_state.Record) -> clean
 
 def _finalize_teardown(team_id: str, record: cleanup_state.Record) -> bool:
     try:
-        # R2 destroys its encrypted bundles and hashed principal first. Its local cleartext principal
-        # is removed only after that authenticated 200; both finalizers remain safe to replay.
-        r2driver_client.finalize_team_drop(team_id)
         pgdriver_client.finalize_team_drop(team_id)
         cleanup_state.finish(record)
     except (
-        r2driver_client.R2DriverError,
         pgdriver_client.PgDriverError,
         cleanup_state.CleanupStateError,
         http.client.HTTPException,
@@ -3489,10 +3475,6 @@ def _teardown(team_id: str, *, owner: str, brain_id: str) -> _CleanupResult:
     except cleanup_state.CleanupStateError:
         return _CleanupResult(False, False)
     if not _stop_teardown_brain(brain):
-        return _CleanupResult(False, record.db_dropped)
-    # Fail closed while the durable cleanup record and stopped Brain still exist. No credential,
-    # volume, network or database artifact is removed until R2 has revoked this Team principal.
-    if not _retire_teardown_r2(team_id):
         return _CleanupResult(False, record.db_dropped)
     if (
         not _teardown_apps(team_id)
@@ -3577,12 +3559,6 @@ def _create(team_id: str, body: dict, owner: str = "") -> dict:
             container = None
             try:
                 db = pgdriver_client.provision_team(team_id)
-                try:
-                    # Principal registration precedes every runnable/public Brain artifact. A retry
-                    # reuses the same local principal and the R2 lifecycle endpoint is idempotent.
-                    r2driver_client.provision_team(team_id)
-                except r2driver_client.R2DriverError as exc:
-                    raise ApiError(exc.status, exc.message) from exc
                 network = _ensure_team_network(team_id)
                 _wire_network_deps(network, manifests.core_deps())
                 _require_network_policy(
@@ -3749,23 +3725,6 @@ def _lifecycle(team_id: str, op: str, lease: _AuthorizationLease) -> dict:
         if op in {"start", "restart"} and container.status != "running":
             _start_team_with_isolation(container)
     return {"team_id": team_id, "op": op, "status": "ok"}
-
-
-def _r2_driver_operation(
-    team_id: str,
-    lease: _AuthorizationLease,
-    operation: Callable[[], dict[str, object]],
-) -> dict[str, object]:
-    """Revalidate the exact Team, lazily provision its principal, then make one fixed R2 call."""
-    with _lock_for(team_id):
-        _require_current_authorization(team_id, lease)
-        try:
-            # Existing Teams acquire R2 only here, after their owner and immutable container id
-            # have both been rechecked inside the lifecycle lock. Provision is deliberately replayable.
-            r2driver_client.ensure_provisioned(team_id)
-            return operation()
-        except r2driver_client.R2DriverError as exc:
-            raise ApiError(exc.status, exc.message) from exc
 
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
@@ -4024,9 +3983,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # every other op acts on an EXISTING team → gate on ownership first (404 if not yours)
             lease = _authorize(team_id, principal)
-            if sub == "drivers":
-                self._route_driver(method, parts, team_id, lease)
-                return
             if sub == "apps":
                 self._route_apps(method, parts, team_id, principal, lease)
                 return
@@ -4214,81 +4170,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if len(parts) == 4 and method == "PUT":
             self._send_json(HTTPStatus.OK, _configure_inference(team_id, self._read_body(), lease))
-            return
-        raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} /{'/'.join(parts)}")
-
-    def _route_driver(
-        self,
-        method: str,
-        parts: list[str],
-        team_id: str,
-        lease: _AuthorizationLease,
-    ) -> None:
-        """Closed Admin surface for the single proven Driver implementation: Cloudflare R2."""
-        if len(parts) < 5 or parts[4] != "r2":
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} /{'/'.join(parts)}")
-        if method == "GET" and len(parts) == 5:
-            result = _r2_driver_operation(team_id, lease, lambda: r2driver_client.driver_document(team_id))
-            self._send_json(HTTPStatus.OK, result)
-            return
-        if method == "POST" and len(parts) == 6 and parts[5] == "credentials":
-            body = self._read_driver_body({"profile_id", "label", "values", "idempotency_key"})
-            result = _r2_driver_operation(team_id, lease, lambda: r2driver_client.create_credential(team_id, body))
-            audit.log("driver_credential_create", team_id, result="ok", driver="r2", credential=result.get("id"))
-            self._send_json(HTTPStatus.OK, result)
-            return
-        if len(parts) == 7 and parts[5] == "credentials":
-            credential_id = parts[6]
-            if method == "PUT":
-                body = self._read_driver_body(
-                    {"profile_id", "label", "values", "expected_generation"},
-                )
-                result = _r2_driver_operation(
-                    team_id,
-                    lease,
-                    lambda: r2driver_client.rotate_credential(team_id, credential_id, body),
-                )
-                audit.log(
-                    "driver_credential_rotate",
-                    team_id,
-                    result="ok",
-                    driver="r2",
-                    credential=result.get("id"),
-                )
-                self._send_json(HTTPStatus.OK, result)
-                return
-            if method == "DELETE":
-                body = self._read_driver_body({"expected_generation"})
-                result = _r2_driver_operation(
-                    team_id,
-                    lease,
-                    lambda: r2driver_client.remove_credential(team_id, credential_id, body),
-                )
-                audit.log(
-                    "driver_credential_remove",
-                    team_id,
-                    result="ok",
-                    driver="r2",
-                    credential=result.get("id"),
-                )
-                self._send_json(HTTPStatus.OK, result)
-                return
-        if method == "POST" and len(parts) == 8 and parts[5] == "credentials" and parts[7] == "verify":
-            credential_id = parts[6]
-            self._read_driver_body(set())
-            result = _r2_driver_operation(
-                team_id,
-                lease,
-                lambda: r2driver_client.verify_credential(team_id, credential_id),
-            )
-            audit.log(
-                "driver_credential_verify",
-                team_id,
-                result="ok",
-                driver="r2",
-                credential=result.get("id"),
-            )
-            self._send_json(HTTPStatus.OK, result)
             return
         raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} /{'/'.join(parts)}")
 

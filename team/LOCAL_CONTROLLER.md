@@ -1,7 +1,7 @@
 # Local Team controller v1
 
 `Dockerfile.local` is the single-owner local controller used by an installed Shimpz Space. It is a
-separate runtime from the hosted `Dockerfile`/`app.py` controller: it has no Brain, PostgreSQL, R2,
+separate runtime from the hosted `Dockerfile`/`app.py` controller: it has no Brain, PostgreSQL,
 egress-policy, or `runsc` dependency.
 
 An empty Team is one internal Docker bridge network. Every network and Assistant container carries

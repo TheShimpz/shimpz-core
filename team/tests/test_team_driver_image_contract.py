@@ -33,7 +33,7 @@ class TeamDriverImageContractTests(unittest.TestCase):
             'groupadd -g "${SHIMPZ_BRAIN_RUNTIME_TOKEN_GID}" shimpzbrain-runtime-token',
             dockerfile,
         )
-        self.assertIn("shimpzr2provisioner-token,shimpzbrain-runtime-token", dockerfile)
+        self.assertNotIn("r2", dockerfile.lower())
         self.assertIn(
             "chown teamdriver:shimpzbrain-runtime-token /run/shimpz-brain-runtime",
             dockerfile,

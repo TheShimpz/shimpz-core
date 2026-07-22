@@ -11,7 +11,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 
-import test_r2_bridge as harness
+import test_hosted_app as harness
 
 app = harness.app
 _patched = harness._patched

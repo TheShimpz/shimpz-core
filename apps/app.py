@@ -444,7 +444,7 @@ def _recreate(body: dict) -> dict:
     failure: any failure tears down the candidate and leaves the old sidecar serving, untouched.
 
     DNS cutover is the rename itself: a sidecar's service alias EQUALS its container name (e.g.
-    `r2-driver`), so renaming the healthy candidate to that name moves Docker's embedded DNS to
+    `example-driver`), so renaming the healthy candidate to that name moves Docker's embedded DNS to
     it — the same reason _deploy needs no Caddy reconfig.
     """
     req = validate.validate_recreate_request(body)
