@@ -84,7 +84,7 @@ class OAuthBrokerClientTests(unittest.TestCase):
     def test_fixed_transport_uses_only_the_authenticated_broker_proxy(self) -> None:
         response = Mock(
             status=200,
-            read=Mock(return_value=b'{}'),
+            read=Mock(return_value=b"{}"),
             getheader=Mock(
                 side_effect=lambda name, default=None: "application/json" if name == "Content-Type" else default
             ),
