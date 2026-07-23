@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 
+import assistant_secret_flow
 import power_journal
 
 # A missing manifest Power is a missing resource; an unavailable connected account is an unmet
@@ -289,6 +290,22 @@ def account_generations(
     if len(declarations) != len(account_ids):
         raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
     return private_generations(tuple(metadata(declarations)), connected=True)
+
+
+def require_rpc_envelope(
+    active: object,
+    request: object,
+    resolve_secrets: Callable[[object, str], Mapping[str, str]],
+    resolve_accounts: Callable[[object, str], Mapping[str, Mapping[str, object]]],
+    answers: tuple[object, ...] = (),
+) -> None:
+    """Resolve and size-check one complete private RPC envelope before journaling."""
+    assistant_secret_flow.require_power_rpc_envelope(
+        request.input,
+        resolve_secrets(active, request.power),
+        resolve_accounts(active, request.power),
+        answers,
+    )
 
 
 def contains_secret(value: object, secrets_by_id: Mapping[str, str]) -> bool:

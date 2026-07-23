@@ -1417,13 +1417,12 @@ class LocalController:
         answers: tuple[object, ...] = (),
     ) -> None:
         active = _required_active_assistant(bindings, request.assistant_id)
-        secret_values = self._resolve_power_secrets(team_id, active.spec, request.power)
-        account_values = self._resolve_power_accounts(team_id, active.spec, request.power)
         try:
-            assistant_secret_flow.require_power_rpc_envelope(
-                request.input,
-                secret_values,
-                account_values,
+            power_execution.require_rpc_envelope(
+                active,
+                request,
+                lambda binding, power_id: self._resolve_power_secrets(team_id, binding.spec, power_id),
+                lambda binding, power_id: self._resolve_power_accounts(team_id, binding.spec, power_id),
                 answers,
             )
         except assistant_secret_flow.SecretFlowError as exc:

@@ -2060,7 +2060,7 @@ def _power_account_generations(
     try:
         return power_execution.account_generations(
             active.contract.powers,
-            active.contract.accounts,
+            getattr(active.contract, "accounts", {}),
             power_id,
             lambda declarations: _assistant_accounts.metadata(
                 team_id,
@@ -2116,18 +2116,17 @@ def _require_hosted_power_rpc_envelope(
     active = bindings.get(request.assistant_id)
     if active is None:
         raise ApiError(HTTPStatus.CONFLICT, "Brain requested an unavailable Assistant")
-    secret_values = _resolve_power_secrets(
-        team_id,
-        request.assistant_id,
-        active.contract,
-        request.power,
-    )
-    account_values = _resolve_power_accounts(team_id, active, request.power)
     try:
-        assistant_secret_flow.require_power_rpc_envelope(
-            request.input,
-            secret_values,
-            account_values,
+        power_execution.require_rpc_envelope(
+            active,
+            request,
+            lambda binding, power_id: _resolve_power_secrets(
+                team_id,
+                binding.assistant_id,
+                binding.contract,
+                power_id,
+            ),
+            lambda binding, power_id: _resolve_power_accounts(team_id, binding, power_id),
             answers,
         )
     except assistant_secret_flow.SecretFlowError as exc:
