@@ -48,6 +48,7 @@ import brain_runtime_token_store
 import chat_orchestrator
 import chat_turn_engine
 import cleanup_state
+import controller_routing
 import docker
 import docker.errors
 import egress_policy
@@ -3549,6 +3550,27 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
+def _hosted_route_target(
+    headers: object,
+    path: str,
+    method: str,
+) -> tuple[strict_http.RequestTarget, controller_routing.RouteMatch]:
+    try:
+        target = strict_http.parse_routed_request(
+            headers,
+            path,
+            method,
+            body_methods=frozenset({"POST", "PUT"}),
+            allow_query=True,
+        )
+    except strict_http.HttpContractError as exc:
+        raise ApiError(exc.status, exc.message) from exc
+    route = controller_routing.resolve(controller_routing.HOSTED, method, target.parts)
+    if route is None:
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} {target.path}")
+    return target, route
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "team-driver/1.0"
 
@@ -3715,26 +3737,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal driver error"})
 
     def _route(self, method: str, principal: tuple[str, str | None]) -> None:
-        try:
-            target = strict_http.parse_routed_request(
-                self.headers,
-                self.path,
-                method,
-                body_methods=frozenset({"POST", "PUT"}),
-                allow_query=True,
-            )
-        except strict_http.HttpContractError as exc:
-            raise ApiError(exc.status, exc.message) from exc
-        path = target.path
+        target, route = _hosted_route_target(self.headers, self.path, method)
         query = target.query
         parts = list(target.parts)
         kind, account_id = principal
+        operation = route.operation
 
-        if method == "GET" and path == "/v1/teams":
+        if operation == "team-list":
             self._send_json(HTTPStatus.OK, _list(owner=account_id if kind == "account" else None))
             return
 
-        if method == "POST" and path == "/v1/oauth/cloudflare/callback":
+        if operation == "assistant-account-complete":
             result = _complete_oauth_account(self._read_body(), principal)
             audit.log(
                 "assistant_account_complete",
@@ -3747,55 +3760,44 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, result, no_store=True)
             return
 
-        if len(parts) >= 3 and parts[0] == "v1" and parts[1] == "teams":
-            team_id = validate.validate_team_id(parts[2])
-            sub = parts[3] if len(parts) > 3 else ""
-            if method == "POST" and sub == "create":
-                _enforce_rate("create", principal)
-                body = self._read_body()
-                # an account owns what it creates; an operator may create-on-behalf via an explicit owner
-                owner = account_id or str(body.get("owner", "")).strip()
-                result = _create(team_id, body, owner)
-                trace = audit.log("create", team_id, result="ok", created=result.get("created"), owner=owner)
-                self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
-                return
-            if method == "DELETE" and sub == "":
-                # A completed Brain removal may leave a bounded durable cleanup record while volume
-                # deletion is retried. Only Destroy may authorize against that non-runnable successor.
-                lease = _authorize_destroy(team_id, principal)
-                result = _destroy(team_id, lease)
-                trace = audit.log("destroy", team_id, result="ok", db_dropped=result["db_dropped"])
-                self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
-                return
-            # every other op acts on an EXISTING team → gate on ownership first (404 if not yours)
-            lease = _authorize(team_id, principal)
-            if sub == "apps":
-                self._route_apps(method, parts, team_id, principal, lease)
-                return
-            if sub == "assistant-secrets":
-                self._route_assistant_secrets(method, parts, team_id, lease, principal)
-                return
-            if sub == "assistant-accounts":
-                self._route_assistant_accounts(method, parts, team_id, lease)
-                return
-            if sub == "assistants":
-                if len(parts) >= 6 and parts[5] == "help" and target.query:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted")
-                self._route_assistants(method, parts, team_id, lease)
-                return
-            if sub == "inference":
-                self._route_inference(method, parts, team_id, lease)
-                return
-            if sub == "chat":
-                self._route_chat(method, parts, team_id, principal, lease)
-                return
-            if sub == "files":
-                self._route_files(method, parts, team_id, lease, principal)
-                return
-            self._route_team_runtime(method, sub, team_id, lease, query)
+        team_id = validate.validate_team_id(route.params["team_id"])
+        if operation == "team-create":
+            _enforce_rate("create", principal)
+            body = self._read_body()
+            # an account owns what it creates; an operator may create-on-behalf via an explicit owner
+            owner = account_id or str(body.get("owner", "")).strip()
+            result = _create(team_id, body, owner)
+            trace = audit.log("create", team_id, result="ok", created=result.get("created"), owner=owner)
+            self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
             return
-
-        raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} {path}")
+        if operation == "team-destroy":
+            # A completed Brain removal may leave a bounded durable cleanup record while volume
+            # deletion is retried. Only Destroy may authorize against that non-runnable successor.
+            lease = _authorize_destroy(team_id, principal)
+            result = _destroy(team_id, lease)
+            trace = audit.log("destroy", team_id, result="ok", db_dropped=result["db_dropped"])
+            self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
+            return
+        # Every other operation acts on an existing Team and therefore gates on ownership first.
+        lease = _authorize(team_id, principal)
+        if operation.startswith("app-"):
+            self._route_apps(method, parts, team_id, principal, lease)
+        elif operation.startswith("assistant-secret-"):
+            self._route_assistant_secrets(method, parts, team_id, lease, principal)
+        elif operation.startswith("assistant-account-"):
+            self._route_assistant_accounts(method, parts, team_id, lease)
+        elif operation == "assistant-help":
+            if target.query:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted")
+            self._route_assistants(method, parts, team_id, lease)
+        elif operation.startswith("inference-"):
+            self._route_inference(method, parts, team_id, lease)
+        elif operation == "chat" or operation.startswith("chat-"):
+            self._route_chat(method, parts, team_id, principal, lease)
+        elif operation.startswith("file-"):
+            self._route_files(method, parts, team_id, lease, principal)
+        else:
+            self._route_team_runtime(method, operation.removeprefix("team-"), team_id, lease, query)
 
     def _route_assistant_accounts(
         self,

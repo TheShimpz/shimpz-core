@@ -40,6 +40,7 @@ import brain_runtime_client
 import brain_runtime_token_store
 import chat_orchestrator
 import chat_turn_engine
+import controller_routing
 import docker
 import egress_policy
 import inference_config
@@ -3961,82 +3962,65 @@ class Handler(BaseHTTPRequestHandler):
         controller = self.server.controller
         if self.command not in {"POST", "PUT"}:
             self._reject_body()
+        route = controller_routing.resolve(controller_routing.LOCAL, self.command, tuple(parts))
+        if route is None:
+            raise ApiProblem(HTTPStatus.NOT_FOUND, "route not found", code="route-not-found")
 
-        for resolve_route in (
-            self._fixed_route,
-            self._file_route,
-            self._inference_route,
-            self._chat_route,
-            self._assistant_secret_route,
-            self._assistant_approval_route,
-            self._assistant_account_route,
-        ):
-            route = resolve_route(parts)
-            if route is not None:
-                return route
-        team_route = self._team_route(parts)
-        if team_route is not None:
-            return team_route
-        if len(parts) == 4 and parts[:2] == ["v1", "teams"] and parts[3] == "assistants":
-            team_id = validate_team_id(parts[2])
-            if self.command == "GET":
-                return HTTPStatus.OK, controller.list_assistants(team_id), "assistant-list", team_id, None
-            if self.command == "POST":
-                assistant_id = self._install_body()
-                return (
-                    HTTPStatus.OK,
-                    controller.install_assistant(team_id, assistant_id),
-                    "assistant-install",
-                    team_id,
-                    assistant_id,
-                )
-        if len(parts) == 5 and parts[:2] == ["v1", "teams"] and parts[3] == "assistants":
-            team_id = validate_team_id(parts[2])
-            assistant_id = parts[4]
-            if self.command == "DELETE":
-                return (
-                    HTTPStatus.OK,
-                    controller.uninstall_assistant(team_id, assistant_id),
-                    "assistant-uninstall",
-                    team_id,
-                    assistant_id,
-                )
-        if (
-            len(parts) in {6, 7}
-            and parts[:2] == ["v1", "teams"]
-            and parts[3] == "assistants"
-            and parts[5] == "help"
-            and self.command == "GET"
-        ):
-            team_id = validate_team_id(parts[2])
-            assistant_id = parts[4]
-            locale = parts[6] if len(parts) == 7 else "en"
+        operation = route.operation
+        grouped_resolver = {
+            "fixed": self._fixed_route,
+            "file": self._file_route,
+            "inference": self._inference_route,
+            "chat": self._chat_route,
+            "assistant-secret": self._assistant_secret_route,
+            "assistant-approval": self._assistant_approval_route,
+            "assistant-account": self._assistant_account_route,
+            "team": self._team_route,
+        }.get(route.group)
+        if grouped_resolver is not None:
+            result = grouped_resolver(parts)
+            if result is None:
+                raise AssertionError("canonical local route group was not dispatched")
+            return result
+
+        team_id = validate_team_id(route.params["team_id"])
+        if operation == "assistant-list":
+            return HTTPStatus.OK, controller.list_assistants(team_id), operation, team_id, None
+        if operation == "assistant-install":
+            assistant_id = self._install_body()
             return (
                 HTTPStatus.OK,
-                controller.assistant_help(team_id, assistant_id, locale),
-                "assistant-help",
+                controller.install_assistant(team_id, assistant_id),
+                operation,
                 team_id,
                 assistant_id,
             )
-        if (
-            len(parts) == 7
-            and parts[:2] == ["v1", "teams"]
-            and parts[3] == "assistants"
-            and parts[5] == "powers"
-            and self.command == "POST"
-        ):
-            team_id = validate_team_id(parts[2])
-            assistant_id = parts[4]
-            power = parts[6]
-            payload = self._body()
+        assistant_id = route.params["assistant_id"]
+        if operation == "assistant-uninstall":
             return (
                 HTTPStatus.OK,
-                controller.invoke(team_id, assistant_id, power, payload),
-                "assistant-invoke",
+                controller.uninstall_assistant(team_id, assistant_id),
+                operation,
                 team_id,
                 assistant_id,
             )
-        raise ApiProblem(HTTPStatus.NOT_FOUND, "route not found", code="route-not-found")
+        if operation == "assistant-help":
+            return (
+                HTTPStatus.OK,
+                controller.assistant_help(team_id, assistant_id, route.params.get("locale", "en")),
+                operation,
+                team_id,
+                assistant_id,
+            )
+        if operation == "assistant-invoke":
+            return (
+                HTTPStatus.OK,
+                controller.invoke(team_id, assistant_id, route.params["power_id"], self._body()),
+                operation,
+                team_id,
+                assistant_id,
+            )
+        raise AssertionError("canonical local route was not dispatched")
 
     def _handle(self) -> None:
         self.close_connection = True
