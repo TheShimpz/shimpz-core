@@ -45,6 +45,7 @@ import inference_config
 import local_audit
 import local_chat_continuation_store
 import local_chat_continuations
+import local_http
 import local_token_store
 import oauth_account_service
 import oauth_account_store
@@ -4487,43 +4488,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self) -> None:
         self.close_connection = True
-        operation = "request"
-        team_id = None
-        assistant_id = None
         if not self._authorized():
             trace_id = local_audit.record("authentication", result="denied", detail="invalid-bearer")
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "authentication required", "trace_id": trace_id})
             return
-        try:
-            status, payload, operation, team_id, assistant_id = self._route()
-            trace_id = local_audit.record(
-                operation,
-                result="ok",
-                team_id=team_id,
-                assistant=assistant_id,
-            )
-            payload["trace_id"] = trace_id
-            self._send(status, payload)
-        except ApiProblem as exc:
-            trace_id = local_audit.record(
-                operation,
-                result="denied" if exc.status < 500 else "error",
-                team_id=team_id,
-                assistant=assistant_id,
-                detail=exc.code,
-            )
-            # The authenticated Admin receives the stable machine code for diagnosis. Browser-facing
-            # gateways map only an allowlisted code to fixed public text and never relay this prose.
-            self._send(
-                exc.status,
-                {"error": exc.message, "code": exc.code, "trace_id": trace_id},
-            )
-        except DockerException:
-            trace_id = local_audit.record(operation, result="error", detail="docker-error")
-            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Docker is unavailable", "trace_id": trace_id})
-        except Exception:
-            trace_id = local_audit.record(operation, result="error", detail="internal-error")
-            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error", "trace_id": trace_id})
+
+        local_http.dispatch_route(
+            self._route,
+            local_audit.record,
+            self._send,
+            ApiProblem,
+            DockerException,
+        )
 
     do_GET = _handle
     do_POST = _handle

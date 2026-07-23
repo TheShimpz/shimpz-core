@@ -51,6 +51,7 @@ import cleanup_state
 import docker
 import docker.errors
 import egress_policy
+import hosted_http
 import inference_config
 import manifests
 import marketplace
@@ -63,6 +64,7 @@ import oauth_pkce_challenges
 import pgdriver_client
 import power_execution
 import power_journal
+import stdlib_http
 import strict_http
 import team_storage
 import token_store
@@ -3968,27 +3970,6 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
-def _hosted_route_target(
-    headers: object,
-    path: str,
-    method: str,
-) -> tuple[strict_http.RequestTarget, strict_http.ControllerRouteMatch]:
-    try:
-        target = strict_http.parse_routed_request(
-            headers,
-            path,
-            method,
-            body_methods=frozenset({"POST", "PUT"}),
-            allow_query=True,
-        )
-    except strict_http.HttpContractError as exc:
-        raise ApiError(exc.status, exc.message) from exc
-    route = strict_http.resolve_controller_route(strict_http.HOSTED_CONTROLLER, method, target.parts)
-    if route is None:
-        raise ApiError(HTTPStatus.NOT_FOUND, f"no such operation: {method} {target.path}")
-    return target, route
-
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "team-driver/1.0"
 
@@ -4139,23 +4120,24 @@ class Handler(BaseHTTPRequestHandler):
                 audit.log("auth", self.path, result="denied")
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid or missing credentials"})
             return
-        try:
-            self._route(method, principal)
-        except ApiError as exc:
-            audit.log(method.lower(), self.path, result="denied", reason=exc.message)
-            self._send_json(exc.status, {"error": exc.message})
-        except validate.ValidationError as exc:
-            audit.log(method.lower(), self.path, result="denied", reason=str(exc))
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except marketplace.MarketplaceError as exc:
-            audit.log(method.lower(), self.path, result="denied", reason=str(exc))
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-        except Exception as exc:
-            audit.log(method.lower(), self.path, result="error", reason=type(exc).__name__)
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal driver error"})
+        stdlib_http.dispatch(
+            lambda: self._route(method, principal),
+            classify=lambda exc: hosted_http.classify_failure(
+                exc,
+                ApiError,
+                validate.ValidationError,
+                marketplace.MarketplaceError,
+            ),
+            emit=lambda failure: self._emit_failure(method, failure),
+            unexpected_message="internal driver error",
+        )
+
+    def _emit_failure(self, method: str, failure: stdlib_http.HttpFailure) -> None:
+        audit.log(method.lower(), self.path, result=failure.result, reason=failure.audit_reason)
+        self._send_json(failure.status, {"error": failure.public_message})
 
     def _route(self, method: str, principal: tuple[str, str | None]) -> None:
-        target, route = _hosted_route_target(self.headers, self.path, method)
+        target, route = hosted_http.route_target(self.headers, self.path, method, ApiError)
         query = target.query
         parts = list(target.parts)
         kind, account_id = principal

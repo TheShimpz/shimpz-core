@@ -39,6 +39,7 @@ class HttpFailure:
     public_message: str
     audit_reason: str
     result: str
+    public_code: str | None = None
 
 
 def bearer_token(headers: object) -> str:

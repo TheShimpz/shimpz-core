@@ -72,12 +72,12 @@ COPY pyproject.toml uv.lock ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py network_policy.py marketplace.py marketplace_image.py assistant_help.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
+COPY app.py hosted_http.py validate.py manifests.py network_policy.py marketplace.py marketplace_image.py assistant_help.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
      assistant_chat.py assistant_secret_challenges.py assistant_secret_flow.py assistant_secret_store.py local_registry.py \
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
-     model_catalog.json egress_policy.py strict_http.py power_execution.py power_journal.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
+     model_catalog.json egress_policy.py strict_http.py stdlib_http.py power_execution.py power_journal.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 COPY assistant_human ./assistant_human
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
