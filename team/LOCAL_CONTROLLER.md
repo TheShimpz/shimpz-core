@@ -95,6 +95,10 @@ one active/paused turn. Selection and workload identity are revalidated before p
 Power, resume, and completion. Brain runtime returns either a terminal reply or a bounded secret,
 account, or approval suspension; the controller alone executes Powers and resumes the checkpoint.
 
+The former 1.2–1.6k twin-Controller LOC reduction target is intentionally dropped: security-sensitive
+decisions are now shared, while extracting the remaining runtime-preparation wiring would add more
+abstraction and total code without improving either Controller's safety contract.
+
 ### Assistant secret, approval, and account administration
 
 | Method | Path | Purpose |
