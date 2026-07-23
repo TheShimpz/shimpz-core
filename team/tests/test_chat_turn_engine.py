@@ -172,6 +172,32 @@ class SharedChatTurnEngineTest(unittest.TestCase):
         )
         self.assertEqual(dispatched, "inputs")
 
+    def test_segment_with_two_populated_gates_fails_closed(self) -> None:
+        base = self._strategy(decisions=[])
+
+        def conflicting_requirements(_requests, requirements) -> bool:
+            requirements.accounts = ("account-required",)
+            requirements.inputs = ("input-required",)
+            return True
+
+        strategy = chat_turn_engine.SegmentStrategy(
+            runtime=base.runtime,
+            prepare=base.prepare,
+            validate_power=base.validate_power,
+            pause_for_private_inputs=conflicting_requirements,
+            cancelled=base.cancelled,
+            validate_context=base.validate_context,
+            raise_problem=base.raise_problem,
+        )
+
+        with self.assertRaisesRegex(AssertionError, "invalid-suspension"):
+            chat_turn_engine.run_segment(
+                strategy,
+                message="look this up",
+                continuation=None,
+                expected_identity=("identity",),
+            )
+
     def test_rpc_request_suspension_populates_the_input_category(self) -> None:
         strategy = self._strategy(decisions=[])
         strategy = chat_turn_engine.SegmentStrategy(
