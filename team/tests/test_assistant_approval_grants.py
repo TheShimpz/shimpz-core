@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import assistant_approval_grants
+from assistant_human import approval_grants as assistant_approval_grants
 
 IMAGE_V1 = "ghcr.io/theshimpz/shimpz-cloudflare@sha256:" + "a" * 64
 IMAGE_V2 = "ghcr.io/theshimpz/shimpz-cloudflare@sha256:" + "b" * 64

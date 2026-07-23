@@ -20,8 +20,6 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
 import assistant_account_challenges
-import assistant_approval_challenges
-import assistant_approval_grants
 import assistant_secret_challenges
 import assistant_secret_store
 import brain_runtime_client
@@ -33,6 +31,8 @@ import local_registry
 import local_token_store
 import oauth_account_store
 import oauth_pkce_challenges
+from assistant_human import approval_challenges as assistant_approval_challenges
+from assistant_human import approval_grants as assistant_approval_grants
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}
 LOOKUP_RESULT = {

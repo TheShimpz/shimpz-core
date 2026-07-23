@@ -27,9 +27,6 @@ from pathlib import Path
 
 import assistant_account_challenges
 import assistant_account_flow
-import assistant_approval_challenges
-import assistant_approval_flow
-import assistant_approval_grants
 import assistant_genesis
 import assistant_help
 import assistant_manifest
@@ -53,6 +50,9 @@ import power_execution
 import power_journal
 import strict_http
 import team_storage
+from assistant_human import approval_challenges as assistant_approval_challenges
+from assistant_human import approval_flow as assistant_approval_flow
+from assistant_human import approval_grants as assistant_approval_grants
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Ulimit
 from local_registry import (

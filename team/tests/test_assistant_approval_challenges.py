@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-import assistant_approval_challenges
-import assistant_approval_flow
+from assistant_human import approval_challenges as assistant_approval_challenges
+from assistant_human import approval_flow as assistant_approval_flow
 
 
 def requirement(interrupt_id: str = "interrupt-1") -> assistant_approval_challenges.ApprovalRequirement:

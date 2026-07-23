@@ -6,9 +6,10 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-import assistant_approval_challenges
 import brain_runtime_client
 from local_registry import AssistantSpec
+
+from . import approval_challenges
 
 MAX_APPROVAL_REQUESTS = 64
 MAX_APPROVAL_INPUT_BYTES = 16 * 1024
@@ -26,11 +27,11 @@ class _ActiveBinding(Protocol):
 def requirements_for_batch(
     bindings: Mapping[str, _ActiveBinding],
     requests: Sequence[brain_runtime_client.PowerRequest],
-) -> tuple[assistant_approval_challenges.ApprovalRequirement, ...]:
+) -> tuple[approval_challenges.ApprovalRequirement, ...]:
     """Project only public metadata while retaining exact interrupt bindings internally."""
     if not requests or len(requests) > MAX_APPROVAL_REQUESTS:
         raise ApprovalFlowError("approval batch size is invalid")
-    requirements: list[assistant_approval_challenges.ApprovalRequirement] = []
+    requirements: list[approval_challenges.ApprovalRequirement] = []
     seen: set[str] = set()
     total_input_bytes = 0
     for request in requests:
@@ -58,7 +59,7 @@ def requirements_for_batch(
         if total_input_bytes > MAX_APPROVAL_BATCH_INPUT_BYTES:
             raise ApprovalFlowError("Power approval batch input exceeds its fixed limit")
         requirements.append(
-            assistant_approval_challenges.ApprovalRequirement(
+            approval_challenges.ApprovalRequirement(
                 interrupt_id=request.interrupt_id,
                 assistant_id=request.assistant_id,
                 assistant_name=active.spec.name,
@@ -72,7 +73,7 @@ def requirements_for_batch(
     return tuple(requirements)
 
 
-def challenge_payload(challenge: assistant_approval_challenges.PendingApprovalChallenge) -> dict[str, object]:
+def challenge_payload(challenge: approval_challenges.PendingApprovalChallenge) -> dict[str, object]:
     """Expose bounded schema-validated input, but no interrupt id or provider credential."""
     return {
         "team_id": challenge.team_id,
@@ -94,7 +95,7 @@ def challenge_payload(challenge: assistant_approval_challenges.PendingApprovalCh
 
 
 def approved_interrupts(
-    challenge: assistant_approval_challenges.PendingApprovalChallenge,
+    challenge: approval_challenges.PendingApprovalChallenge,
     body: object,
 ) -> frozenset[str]:
     """Accept exactly one explicit affirmative decision for the complete paused batch."""
