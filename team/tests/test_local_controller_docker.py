@@ -465,6 +465,7 @@ class DockerFlowTests(unittest.TestCase):
                 "import os,stat,time; from local_chat_continuation_store import EncryptedContinuationStore; "
                 "s=EncryptedContinuationStore(); "
                 "s.put('demo_team','input','0'*32,int(time.time())+60,['thread:test'],b'opaque'); "
+                "assert s.delete('demo_team'); "
                 "paths=(s.state_path,s.key_path); "
                 "print(' '.join(f'{oct(stat.S_IMODE(p.stat().st_mode))}:{p.stat().st_uid}:{p.stat().st_gid}' "
                 "for p in paths))",
