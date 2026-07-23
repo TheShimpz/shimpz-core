@@ -18,6 +18,20 @@ import power_journal
 # request precondition. Both Controllers use these statuses so their public contracts cannot drift.
 UNDECLARED_POWER_STATUS = HTTPStatus.NOT_FOUND
 ACCOUNT_PRECONDITION_STATUS = HTTPStatus.PRECONDITION_REQUIRED
+RPC_FAILURE_STATUSES = {
+    "timeout": HTTPStatus.GATEWAY_TIMEOUT,
+    "ambiguous": HTTPStatus.BAD_GATEWAY,
+    "invalid-result": HTTPStatus.BAD_GATEWAY,
+    "failed": HTTPStatus.BAD_GATEWAY,
+}
+
+
+def rpc_failure_status(kind: str) -> HTTPStatus:
+    """Map every non-routing RPC failure kind to its shared HTTP status."""
+    try:
+        return RPC_FAILURE_STATUSES[kind]
+    except KeyError:
+        raise AssertionError(f"unknown RPC failure: {kind}") from None
 
 
 def power_operation(

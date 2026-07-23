@@ -82,6 +82,22 @@ class PowerRpcFrameTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(app.power_execution.RpcExchangeError):
                 app.power_execution.decode_rpc_response(invalid)
 
+    def test_rpc_failure_kinds_share_one_http_status_table(self) -> None:
+        self.assertEqual(
+            {
+                kind: app.power_execution.rpc_failure_status(kind)
+                for kind in ("timeout", "ambiguous", "invalid-result", "failed")
+            },
+            {
+                "timeout": HTTPStatus.GATEWAY_TIMEOUT,
+                "ambiguous": HTTPStatus.BAD_GATEWAY,
+                "invalid-result": HTTPStatus.BAD_GATEWAY,
+                "failed": HTTPStatus.BAD_GATEWAY,
+            },
+        )
+        with self.assertRaisesRegex(AssertionError, "unknown RPC failure"):
+            app.power_execution.rpc_failure_status("unknown")
+
     def test_malformed_frames_fail_closed_in_both_readers(self) -> None:
         oversized = struct.pack(">BxxxL", 1, max(app.MAX_ASSISTANT_RPC_OUTPUT_BYTES, local_app.MAX_RESPONSE_BYTES) + 2)
         cases = (

@@ -3037,25 +3037,14 @@ class LocalController:
         except power_execution.RpcExchangeError as exc:
             if exc.kind == "unsupported-path":
                 raise _UnsupportedAssistantRpcPathError(path) from None
-            if exc.kind == "timeout":
-                raise ApiProblem(
-                    HTTPStatus.GATEWAY_TIMEOUT,
-                    "Assistant Power timed out",
-                    code="assistant-timeout",
-                ) from exc
-            if exc.kind == "ambiguous":
-                raise ApiProblem(
-                    HTTPStatus.BAD_GATEWAY,
-                    "Assistant Power status is ambiguous",
-                    code="assistant-rpc-failed",
-                ) from exc
-            if exc.kind in {"failed", "invalid-result"}:
-                raise ApiProblem(
-                    HTTPStatus.BAD_GATEWAY,
-                    "Assistant Power failed",
-                    code="assistant-rpc-failed",
-                ) from exc
-            raise AssertionError(f"unknown RPC failure: {exc.kind}") from exc
+            message, code = {
+                "timeout": ("Assistant Power timed out", "assistant-timeout"),
+                "ambiguous": ("Assistant Power status is ambiguous", "assistant-rpc-failed"),
+                "failed": ("Assistant Power failed", "assistant-rpc-failed"),
+                "invalid-result": ("Assistant Power failed", "assistant-rpc-failed"),
+            }.get(exc.kind, (None, None))
+            status = power_execution.rpc_failure_status(exc.kind)
+            raise ApiProblem(status, message, code=code) from exc
 
     def _wait_ready(self, container, spec: AssistantSpec) -> None:
         deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS

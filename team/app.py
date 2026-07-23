@@ -1915,15 +1915,14 @@ def _assistant_rpc_exchange(
         except power_execution.RpcExchangeError as exc:
             if exc.kind == "unsupported-path":
                 raise _UnsupportedAssistantRpcPathError(path) from None
-            if exc.kind == "timeout":
-                raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, f"{operation} timed out") from exc
-            if exc.kind == "ambiguous":
-                raise ApiError(HTTPStatus.BAD_GATEWAY, f"{operation} status is ambiguous") from exc
-            if exc.kind == "invalid-result":
-                raise ApiError(HTTPStatus.BAD_GATEWAY, f"{operation} returned an invalid result") from exc
-            if exc.kind == "failed":
-                raise ApiError(HTTPStatus.BAD_GATEWAY, f"{operation} failed") from exc
-            raise AssertionError(f"unknown RPC failure: {exc.kind}") from exc
+            suffix = {
+                "timeout": "timed out",
+                "ambiguous": "status is ambiguous",
+                "invalid-result": "returned an invalid result",
+                "failed": "failed",
+            }.get(exc.kind)
+            status = power_execution.rpc_failure_status(exc.kind)
+            raise ApiError(status, f"{operation} {suffix}") from exc
     finally:
         _release_optional_power(team_id, token, container.id)
 
