@@ -85,10 +85,14 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
     def test_static_local_image_copies_only_builder_resolved_dependencies(self) -> None:
         dockerfile = (ROOT / "Dockerfile.local").read_text(encoding="utf-8")
         runtime = dockerfile.split(" AS runtime\n", 1)[1]
+        logical_lines = re.sub(r"\\\n\s*", " ", runtime).splitlines()
+        runtime_copy = next((line for line in logical_lines if line.startswith("COPY local_app.py ")), "")
 
         self.assertIn(f"FROM {UV_IMAGE} AS uv", dockerfile)
         self.assertIn("COPY --from=uv /uv /usr/local/bin/uv", dockerfile)
         self.assertIn("COPY --from=dependencies /opt/venv /opt/venv", runtime)
+        self.assertIn("inference_config.py", runtime_copy)
+        self.assertIn("model_catalog.json", runtime_copy)
         self.assertNotIn("uv-install.sh", dockerfile)
         self.assertNotIn("apt-get", runtime)
         self.assertNotIn("curl", runtime)
