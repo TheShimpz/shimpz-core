@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import os
 import sys
 import tempfile
 import types
@@ -360,6 +361,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             raise app.ApiError(HTTPStatus.CONFLICT, "allowed_hosts mismatch")
 
         with tempfile.TemporaryDirectory() as directory:
+            Path(directory).chmod(0o770)
             with (
                 _patched(
                     _lock_for=lambda _team_id: contextlib.nullcontext(),
@@ -379,6 +381,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
                     _start_team_with_isolation=lambda _container: events.append("start"),
                     _remove_team_container=lambda target: events.append(("remove-container", target.id)) or True,
                     APP_EGRESS_POLICY_DIR=Path(directory),
+                    APP_EGRESS_POLICY_GID=os.getgid(),
                 ),
                 mock.patch.object(app.manifests, "build_team_app_kwargs", return_value={}),
                 mock.patch.object(app.network_policy, "app_identity_valid", return_value=True),
@@ -407,18 +410,23 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
 
     def test_existing_policy_bytes_must_match_the_admitted_hosts(self) -> None:
         hosts = ("api.open-meteo.com", "geocoding-api.open-meteo.com")
-        with tempfile.TemporaryDirectory() as directory, _patched(APP_EGRESS_POLICY_DIR=Path(directory)):
-            token = app._app_egress_token("team_1", "shimpz-cloudflare")
-            assert token is not None
-            app._write_egress_policy(token, hosts)
-            self.assertEqual(
-                app._validate_egress_policy("team_1", "shimpz-cloudflare", hosts),
-                token,
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory).chmod(0o770)
+            with _patched(
+                APP_EGRESS_POLICY_DIR=Path(directory),
+                APP_EGRESS_POLICY_GID=os.getgid(),
+            ):
+                token = app._app_egress_token("team_1", "shimpz-cloudflare")
+                assert token is not None
+                app._write_egress_policy(token, hosts)
+                self.assertEqual(
+                    app._validate_egress_policy("team_1", "shimpz-cloudflare", hosts),
+                    token,
+                )
 
-            (Path(directory) / f"{token}.json").write_text('["evil.example"]', encoding="ascii")
-            with self.assertRaises(app.ApiError) as caught:
-                app._validate_egress_policy("team_1", "shimpz-cloudflare", hosts)
+                (Path(directory) / f"{token}.json").write_text('["evil.example"]', encoding="ascii")
+                with self.assertRaises(app.ApiError) as caught:
+                    app._validate_egress_policy("team_1", "shimpz-cloudflare", hosts)
         self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
 
     def test_nonempty_hosts_require_the_exact_admitted_proxy_token(self) -> None:

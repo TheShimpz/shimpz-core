@@ -41,6 +41,7 @@ ARG SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID=10012
 ARG SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID=10013
 # Controller-owned token shared read-only with the isolated Brain runtime.
 ARG SHIMPZ_BRAIN_RUNTIME_TOKEN_GID=10016
+ARG SHIMPZ_APP_EGRESS_POLICY_GID=10017
 
 # Downloaded + hash-checked BEFORE execution — never `curl | sh`.
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
@@ -60,8 +61,9 @@ RUN groupadd -g "${DOCKER_GID}" dockersock \
     && groupadd -g "${SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID}" shimpzbraincred-unseal-token \
     && groupadd -g "${SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID}" shimpzbrain-resolve \
     && groupadd -g "${SHIMPZ_BRAIN_RUNTIME_TOKEN_GID}" shimpzbrain-runtime-token \
+    && groupadd -g "${SHIMPZ_APP_EGRESS_POLICY_GID}" shimpzapp-egress-policy \
     && useradd -u 10001 -g dockersock \
-        -G shimpzteamdriver-token,shimpzpgdriver-token,shimpzbraincred-unseal-token,shimpzbrain-resolve,shimpzbrain-runtime-token \
+        -G shimpzteamdriver-token,shimpzpgdriver-token,shimpzbraincred-unseal-token,shimpzbrain-resolve,shimpzbrain-runtime-token,shimpzapp-egress-policy \
         -M -s /usr/sbin/nologin teamdriver
 
 WORKDIR /app
@@ -75,7 +77,7 @@ COPY app.py validate.py manifests.py network_policy.py marketplace.py marketplac
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
-     power_execution.py power_journal.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
+     egress_policy.py power_execution.py power_journal.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
 # non-root user. /run/shimpz-teamdriver gets GROUP `shimpzteamdriver-token` so the fresh volume's
@@ -107,9 +109,8 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/assistant-secrets/key \
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
-    # egress-policy mountpoint owned by the driver uid, so a fresh policy volume copies up writable.
-    # A legacy root-owned volume must be chowned to uid 10001 once before upgrading.
-    && chown teamdriver:dockersock /app-egress-policy
+    && chown teamdriver:shimpzapp-egress-policy /app-egress-policy \
+    && chmod 0770 /app-egress-policy
 
 USER teamdriver
 EXPOSE 7077

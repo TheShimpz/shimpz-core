@@ -40,6 +40,7 @@ ARG DOCKER_GID=989
 # (shimpz-brain's `abc` user joins it there) so both sides can agree on a numeric GID without a runtime
 # lookup. Picked well outside the base image's/DOCKER_GID's normal range to avoid collision.
 ARG SHIMPZ_DRIVER_TOKEN_GID=10002
+ARG SHIMPZ_APP_EGRESS_POLICY_GID=10017
 
 # Downloaded to a file and hash-checked BEFORE execution — never `curl | sh` (an unverified
 # pipe-to-shell is a full supply-chain compromise if astral.sh, or anything on
@@ -60,7 +61,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
 # group so a plain `chown driver:X` still says what X means.
 RUN groupadd -g "${DOCKER_GID}" dockersock \
     && groupadd -g "${SHIMPZ_DRIVER_TOKEN_GID}" shimpzdriver-token \
-    && useradd -u 10001 -g dockersock -G shimpzdriver-token -M -s /usr/sbin/nologin driver
+    && groupadd -g "${SHIMPZ_APP_EGRESS_POLICY_GID}" shimpzapp-egress-policy \
+    && useradd -u 10001 -g dockersock -G shimpzdriver-token,shimpzapp-egress-policy -M -s /usr/sbin/nologin driver
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -75,9 +77,11 @@ COPY app.py validate.py manifests.py audit.py token_store.py caddy_routes.py egr
 # root:root/0755 and unwritable by the non-root `driver` user. /run/shimpz-driver specifically gets
 # GROUP `shimpzdriver-token` (not `dockersock`) so the fresh volume's directory perms already match
 # what the token file inside it will need — readable by shimpz-brain's `abc` user via that shared group.
-RUN mkdir -p /run/shimpz-driver /var/log/shimpz-driver /caddy-sites \
+RUN mkdir -p /run/shimpz-driver /var/log/shimpz-driver /caddy-sites /app-egress-policy \
     && chown driver:shimpzdriver-token /run/shimpz-driver && chmod 750 /run/shimpz-driver \
-    && chown -R driver:dockersock /var/log/shimpz-driver /caddy-sites
+    && chown -R driver:dockersock /var/log/shimpz-driver /caddy-sites \
+    && chown driver:shimpzapp-egress-policy /app-egress-policy \
+    && chmod 0770 /app-egress-policy
 
 USER driver
 EXPOSE 7070

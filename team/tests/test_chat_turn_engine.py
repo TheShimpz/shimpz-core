@@ -30,7 +30,10 @@ class SharedChatTurnEngineTest(unittest.TestCase):
         def callback(*_args) -> bool:
             return False
 
-        with mock.patch.object(app.chat_turn_engine, "drive", return_value=outcome) as shared:
+        with (
+            mock.patch.object(app.chat_turn_engine, "drive", return_value=outcome) as hosted_shared,
+            mock.patch.object(local_app.chat_turn_engine, "drive", return_value=outcome) as local_shared,
+        ):
             hosted = app._drive_hosted_chat(
                 context,
                 "hello",
@@ -58,8 +61,9 @@ class SharedChatTurnEngineTest(unittest.TestCase):
 
         self.assertIs(hosted, outcome)
         self.assertIs(local, outcome)
-        self.assertEqual(shared.call_count, 2)
-        for call in shared.call_args_list:
+        calls = hosted_shared.call_args_list + local_shared.call_args_list
+        self.assertEqual(len(calls), 2)
+        for call in calls:
             self.assertEqual(call.args[2:5], ("hello", [], None))
 
 

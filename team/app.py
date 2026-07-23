@@ -52,6 +52,7 @@ import chat_turn_engine
 import cleanup_state
 import docker
 import docker.errors
+import egress_policy
 import inference_config
 import manifests
 import marketplace
@@ -128,6 +129,7 @@ HTTP_CONNECTION_TIMEOUT_SECONDS = _positive_int_env("SHIMPZ_TEAM_HTTP_CONNECTION
 # Same volume app-egress-proxy reads (<token>.json allowlists) — shared with shimpz-driver by design:
 # ONE proxy serves every token-gated app, team-scoped or not, each confined to its own hosts.
 APP_EGRESS_POLICY_DIR = Path(os.environ.get("SHIMPZ_APP_EGRESS_POLICY_DIR", "/app-egress-policy"))
+APP_EGRESS_POLICY_GID = 10017
 TEAM_STORAGE_ROOT = Path("/var/lib/team-driver/storage")
 POWER_JOURNAL_PATH = Path(
     os.environ.get(
@@ -1133,6 +1135,23 @@ def _require_current_authorization(
 
 
 # ── installed apps (the P4 deploy arm) ───────────────────────────────────────
+def _egress_store() -> egress_policy.EgressPolicyStore:
+    return egress_policy.EgressPolicyStore(
+        APP_EGRESS_POLICY_DIR,
+        APP_EGRESS_POLICY_GID,
+        "localhost,127.0.0.1,::1,postgres,.team",
+    )
+
+
+def _raise_egress_error(exc: egress_policy.EgressPolicyError) -> None:
+    status = (
+        HTTPStatus.CONFLICT
+        if isinstance(exc, egress_policy.EgressPolicyDriftError)
+        else HTTPStatus.SERVICE_UNAVAILABLE
+    )
+    raise ApiError(status, "installed Assistant egress policy failed its contract") from exc
+
+
 def _team_app_containers(team_id: str) -> list:
     """Every installed-app container of team `team_id` (its OWN label set — never `team.driver`)."""
     return _docker.containers.list(all=True, filters={"label": ["team.app.driver", f"team.id={team_id}"]})
@@ -1144,38 +1163,30 @@ def _app_egress_token(team_id: str, app_id: str, *, create: bool = True) -> str 
     Kept in the policy volume (drivers + proxy only) and reused across reinstalls, exactly like
     shimpz-driver's per-app tokens — the proxy maps token → this instance's own allowlist.
     """
-    tdir = APP_EGRESS_POLICY_DIR / ".tokens"
-    tdir.mkdir(parents=True, exist_ok=True)
-    tf = tdir / f"{manifests.team_app_container_name(team_id, app_id)}.token"
-    with contextlib.suppress(OSError):
-        tok = tf.read_text(encoding="utf-8").strip()
-        if tok:
-            return tok
-    if not create:
-        return None
-    tok = secrets.token_hex(16)
-    tf.write_text(tok, encoding="utf-8")
-    return tok
+    try:
+        return _egress_store().token(
+            manifests.team_app_container_name(team_id, app_id),
+            create=create,
+        )
+    except egress_policy.EgressPolicyError as exc:
+        _raise_egress_error(exc)
 
 
 def _write_egress_policy(token: str, allowed_hosts: tuple[str, ...]) -> None:
-    APP_EGRESS_POLICY_DIR.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(list(allowed_hosts), separators=(",", ":")).encode("ascii")
-    (APP_EGRESS_POLICY_DIR / f"{token}.json").write_bytes(encoded)
+    try:
+        _egress_store().write(token, allowed_hosts)
+    except egress_policy.EgressPolicyError as exc:
+        _raise_egress_error(exc)
 
 
 def _validate_egress_policy(team_id: str, app_id: str, allowed_hosts: tuple[str, ...]) -> str:
-    token = _app_egress_token(team_id, app_id, create=False)
-    if token is None:
-        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant egress policy is missing")
     try:
-        actual = (APP_EGRESS_POLICY_DIR / f"{token}.json").read_bytes()
-    except OSError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant egress policy is unavailable") from exc
-    expected = json.dumps(list(allowed_hosts), separators=(",", ":")).encode("ascii")
-    if actual != expected:
-        raise ApiError(HTTPStatus.CONFLICT, "installed Assistant egress policy failed its contract")
-    return token
+        return _egress_store().validate(
+            manifests.team_app_container_name(team_id, app_id),
+            allowed_hosts,
+        )
+    except egress_policy.EgressPolicyError as exc:
+        _raise_egress_error(exc)
 
 
 def _validate_admitted_egress(team_id: str, app_id: str, allowed_hosts: tuple[str, ...]) -> str | None:
@@ -1185,14 +1196,10 @@ def _validate_admitted_egress(team_id: str, app_id: str, allowed_hosts: tuple[st
 
 
 def _egress_proxy_environment(token: str) -> dict[str, str]:
-    proxy = f"http://{token}@app-egress-proxy:8889"
-    no_proxy = "localhost,127.0.0.1,::1,postgres,.team"
-    return {
-        "HTTPS_PROXY": proxy,
-        "https_proxy": proxy,
-        "NO_PROXY": no_proxy,
-        "no_proxy": no_proxy,
-    }
+    try:
+        return _egress_store().proxy_environment(token)
+    except egress_policy.EgressPolicyError as exc:
+        _raise_egress_error(exc)
 
 
 def _validate_assistant_proxy_environment(
@@ -1202,16 +1209,9 @@ def _validate_assistant_proxy_environment(
 ) -> None:
     config = container.attrs.get("Config")
     raw_environment = config.get("Env") if isinstance(config, dict) else None
-    if not isinstance(raw_environment, list):
+    environment = egress_policy.environment_map(raw_environment)
+    if environment is None:
         raise ApiError(HTTPStatus.CONFLICT, "installed Assistant proxy environment is invalid")
-    environment: dict[str, str] = {}
-    for entry in raw_environment:
-        if not isinstance(entry, str) or "=" not in entry:
-            raise ApiError(HTTPStatus.CONFLICT, "installed Assistant proxy environment is invalid")
-        key, value = entry.split("=", 1)
-        if not key or key in environment:
-            raise ApiError(HTTPStatus.CONFLICT, "installed Assistant proxy environment is invalid")
-        environment[key] = value
     proxy_environment = {key: value for key, value in environment.items() if key.upper().endswith("_PROXY")}
     if allowed_hosts and token is None:
         raise ApiError(HTTPStatus.CONFLICT, "installed Assistant proxy environment failed its contract")
@@ -1255,22 +1255,9 @@ def _activate_admitted_egress(
 
 def _remove_egress_policy(team_id: str, app_id: str) -> bool:
     """Remove an App's policy and token without losing the token needed for a retry."""
-    tf = APP_EGRESS_POLICY_DIR / ".tokens" / f"{manifests.team_app_container_name(team_id, app_id)}.token"
     try:
-        token = tf.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    if token:
-        try:
-            (APP_EGRESS_POLICY_DIR / f"{token}.json").unlink(missing_ok=True)
-        except OSError:
-            # Keep the token file: it is the durable pointer needed to retry policy cleanup.
-            return False
-    try:
-        tf.unlink(missing_ok=True)
-    except OSError:
+        _egress_store().remove(manifests.team_app_container_name(team_id, app_id))
+    except egress_policy.EgressPolicyError:
         return False
     return True
 

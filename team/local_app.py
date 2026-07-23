@@ -16,7 +16,6 @@ import os
 import re
 import secrets
 import socket
-import stat
 import sys
 import threading
 import time
@@ -44,6 +43,7 @@ import brain_runtime_token_store
 import chat_orchestrator
 import chat_turn_engine
 import docker
+import egress_policy
 import inference_config
 import local_audit
 import local_token_store
@@ -88,8 +88,7 @@ MAX_CHAT_BODY_BYTES = 24 * 1024
 MAX_SECRET_BODY_BYTES = 512 * 1024
 MAX_RESPONSE_BYTES = assistant_help.MAX_HELP_BYTES * 6 + 1024
 MAX_API_RESPONSE_BYTES = 128 * 1024
-MAX_EGRESS_POLICY_BYTES = 16 * 1024
-EGRESS_TOKEN_FILE_BYTES = 33
+MAX_EGRESS_POLICY_BYTES = egress_policy.MAX_POLICY_BYTES
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_FILE_BODY_BYTES = 4 * ((MAX_UPLOAD_BYTES + 2) // 3) + 8192
 MAX_PATH_BYTES = 512
@@ -134,7 +133,6 @@ LOCAL_APPROVAL_GRANTS_PATH = Path(
     )
 )
 _FILE_UPLOAD_SLOTS = threading.BoundedSemaphore(1)
-_EGRESS_TOKEN = re.compile(r"[0-9a-f]{32}")
 _CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 
@@ -332,117 +330,31 @@ def half_cpu_set(processors: int) -> str:
     return "0" if available == 1 else f"0-{available - 1}"
 
 
-def _require_policy_root(path: Path | None = None) -> Path:
-    """Accept only the private shared-group directory baked into the controller image."""
-    path = APP_EGRESS_POLICY_DIR if path is None else path
-    try:
-        metadata = path.stat(follow_symlinks=False)
-    except OSError as exc:
-        raise ApiProblem(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            "Assistant egress policy storage is unavailable",
-            code="egress-policy-unavailable",
-        ) from exc
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_gid != APP_EGRESS_POLICY_GID
-        or stat.S_IMODE(metadata.st_mode) != 0o770
-    ):
+def _egress_store() -> egress_policy.EgressPolicyStore:
+    return egress_policy.EgressPolicyStore(
+        APP_EGRESS_POLICY_DIR,
+        APP_EGRESS_POLICY_GID,
+        "127.0.0.1,localhost",
+        APP_EGRESS_PROXY_ALIAS,
+        APP_EGRESS_PROXY_PORT,
+    )
+
+
+def _raise_egress_problem(exc: egress_policy.EgressPolicyError) -> None:
+    if isinstance(exc, egress_policy.EgressPolicyDriftError):
         raise ApiProblem(
             HTTPStatus.CONFLICT,
-            "Assistant egress policy storage failed its ownership contract",
-            code="egress-policy-drift",
-        )
-    return path
-
-
-def _atomic_policy_write(path: Path, content: bytes, *, mode: int, group: int | None = None) -> None:
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    descriptor = -1
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-        if group is not None:
-            os.fchown(descriptor, -1, group)
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if written < 1:
-                raise OSError("short policy write")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        temporary.replace(path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        with suppress(FileNotFoundError):
-            temporary.unlink()
-
-
-def _read_private_token(path: Path) -> str:
-    descriptor = -1
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_nlink != 1
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or metadata.st_size != EGRESS_TOKEN_FILE_BYTES
-        ):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress token failed its ownership contract",
-                code="egress-policy-drift",
-            )
-        raw = os.read(descriptor, EGRESS_TOKEN_FILE_BYTES + 1)
-        if len(raw) != EGRESS_TOKEN_FILE_BYTES or os.read(descriptor, 1):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress token failed its ownership contract",
-                code="egress-policy-drift",
-            )
-        token = raw[:-1].decode("ascii")
-        if raw[-1:] != b"\n":
-            raise ValueError("non-canonical token file")
-    except ApiProblem:
-        raise
-    except (OSError, UnicodeError) as exc:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant egress token failed its ownership contract",
+            "Assistant egress policy failed its ownership contract",
             code="egress-policy-drift",
         ) from exc
-    except ValueError as exc:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant egress token failed its ownership contract",
-            code="egress-policy-drift",
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if _EGRESS_TOKEN.fullmatch(token) is None:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant egress token failed its ownership contract",
-            code="egress-policy-drift",
-        )
-    return token
+    raise ApiProblem(
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        "Assistant egress policy storage is unavailable",
+        code="egress-policy-unavailable",
+    ) from exc
 
 
-def _environment_map(raw: object) -> dict[str, str] | None:
-    if not isinstance(raw, list) or not all(isinstance(item, str) and "=" in item for item in raw):
-        return None
-    environment: dict[str, str] = {}
-    for item in raw:
-        key, value = item.split("=", 1)
-        if not key or key in environment:
-            return None
-        environment[key] = value
-    return environment
+_environment_map = egress_policy.environment_map
 
 
 def _serialize_against_local_team_chat(
@@ -609,60 +521,24 @@ class LocalController:
     def _container_name(self, team_id: str, assistant_id: str) -> str:
         return f"shimpz-local-{_space_prefix(self.space_id)}-{team_id}-assistant-{assistant_id}"
 
-    def _egress_policy_key(self, team_id: str, assistant_id: str) -> str:
-        identity = f"{self.space_id}\0{team_id}\0{assistant_id}".encode("ascii")
-        return hashlib.sha256(identity).hexdigest()
-
-    def _egress_token_path(self, team_id: str, assistant_id: str) -> Path:
-        root = _require_policy_root()
-        token_dir = root / ".tokens"
-        try:
-            token_dir.mkdir(mode=0o700, exist_ok=True)
-            metadata = token_dir.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Assistant egress policy storage is unavailable",
-                code="egress-policy-unavailable",
-            ) from exc
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-        ):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy storage failed its ownership contract",
-                code="egress-policy-drift",
-            )
-        return token_dir / f"{self._egress_policy_key(team_id, assistant_id)}.token"
+    def _egress_policy_identity(self, team_id: str, assistant_id: str) -> str:
+        return f"{self.space_id}\0{team_id}\0{assistant_id}"
 
     def _egress_token(self, team_id: str, assistant_id: str, *, create: bool) -> str | None:
-        path = self._egress_token_path(team_id, assistant_id)
-        if path.exists():
-            return _read_private_token(path)
-        if not create:
-            return None
-        token = secrets.token_hex(16)
         try:
-            _atomic_policy_write(path, f"{token}\n".encode("ascii"), mode=0o600)
-        except OSError as exc:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Assistant egress token could not be saved",
-                code="egress-policy-unavailable",
-            ) from exc
-        return _read_private_token(path)
+            return _egress_store().token(
+                self._egress_policy_identity(team_id, assistant_id),
+                create=create,
+            )
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     @staticmethod
     def _proxy_environment(token: str) -> dict[str, str]:
-        proxy = f"http://{token}@{APP_EGRESS_PROXY_ALIAS}:{APP_EGRESS_PROXY_PORT}"
-        return {
-            "HTTPS_PROXY": proxy,
-            "https_proxy": proxy,
-            "NO_PROXY": "127.0.0.1,localhost",
-            "no_proxy": "127.0.0.1,localhost",
-        }
+        try:
+            return _egress_store().proxy_environment(token)
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     def _write_egress_policy(
         self,
@@ -670,42 +546,18 @@ class LocalController:
         spec: AssistantSpec,
         allowed_hosts: tuple[str, ...],
     ) -> dict[str, str]:
-        token = self._egress_token(team_id, spec.assistant_id, create=True)
-        if token is None:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Assistant egress token could not be saved",
-                code="egress-policy-unavailable",
-            )
-        policy_path = _require_policy_root() / f"{token}.json"
-        encoded = json.dumps(list(allowed_hosts), separators=(",", ":")).encode("ascii")
         try:
-            _atomic_policy_write(
-                policy_path,
-                encoded,
-                mode=0o640,
-                group=APP_EGRESS_POLICY_GID,
+            store = _egress_store()
+            token = store.token(
+                self._egress_policy_identity(team_id, spec.assistant_id),
+                create=True,
             )
-            metadata = policy_path.stat(follow_symlinks=False)
-        except OSError as exc:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Assistant egress policy could not be saved",
-                code="egress-policy-unavailable",
-            ) from exc
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_gid != APP_EGRESS_POLICY_GID
-            or metadata.st_nlink != 1
-            or stat.S_IMODE(metadata.st_mode) != 0o640
-        ):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy failed its ownership contract",
-                code="egress-policy-drift",
-            )
-        return self._proxy_environment(token)
+            if token is None:
+                raise egress_policy.EgressPolicyUnavailableError("egress token was not created")
+            store.write(token, allowed_hosts)
+            return store.proxy_environment(token)
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     def _validate_egress_policy(
         self,
@@ -713,24 +565,15 @@ class LocalController:
         spec: AssistantSpec,
         allowed_hosts: tuple[str, ...],
     ) -> dict[str, str]:
-        admitted = self._read_admitted_egress_policy(team_id, spec.assistant_id)
-        if admitted is None:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy is missing",
-                code="egress-policy-drift",
+        try:
+            store = _egress_store()
+            token = store.validate_admitted(
+                self._read_admitted_egress_policy(team_id, spec.assistant_id),
+                allowed_hosts,
             )
-        token, actual_hosts = admitted
-        if not hmac.compare_digest(
-            json.dumps(list(actual_hosts), separators=(",", ":")),
-            json.dumps(list(allowed_hosts), separators=(",", ":")),
-        ):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy failed its ownership contract",
-                code="egress-policy-drift",
-            )
-        return self._proxy_environment(token)
+            return store.proxy_environment(token)
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     def _read_admitted_egress_policy(
         self,
@@ -738,98 +581,20 @@ class LocalController:
         assistant_id: str,
     ) -> tuple[str, tuple[str, ...]] | None:
         """Read only a canonical policy previously admitted and owned by this controller."""
-        token = self._egress_token(team_id, assistant_id, create=False)
-        if token is None:
-            return None
-        policy_path = _require_policy_root() / f"{token}.json"
-        descriptor = -1
         try:
-            descriptor = os.open(policy_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != os.geteuid()
-                or metadata.st_gid != APP_EGRESS_POLICY_GID
-                or metadata.st_nlink != 1
-                or stat.S_IMODE(metadata.st_mode) != 0o640
-                or not 1 <= metadata.st_size <= MAX_EGRESS_POLICY_BYTES
-            ):
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "Assistant egress policy failed its ownership contract",
-                    code="egress-policy-drift",
-                )
-            raw = bytearray()
-            while len(raw) < metadata.st_size:
-                chunk = os.read(descriptor, min(4096, metadata.st_size - len(raw)))
-                if not chunk:
-                    break
-                raw.extend(chunk)
-            if len(raw) != metadata.st_size or os.read(descriptor, 1):
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "Assistant egress policy failed its ownership contract",
-                    code="egress-policy-drift",
-                )
-        except ApiProblem:
-            raise
-        except OSError as exc:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy failed its ownership contract",
-                code="egress-policy-drift",
-            ) from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        try:
-            hosts = assistant_manifest.canonical_allowed_hosts(json.loads(raw))
-            canonical = json.dumps(list(hosts), separators=(",", ":")).encode("ascii")
-        except (UnicodeError, json.JSONDecodeError, RecursionError, assistant_manifest.ManifestError) as exc:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy failed its ownership contract",
-                code="egress-policy-drift",
-            ) from exc
-        if not hosts or not hmac.compare_digest(raw, canonical):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Assistant egress policy failed its ownership contract",
-                code="egress-policy-drift",
+            return _egress_store().admitted(
+                self._egress_policy_identity(team_id, assistant_id),
             )
-        return token, hosts
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     def _remove_egress_policy(self, team_id: str, assistant_id: str) -> None:
-        token_path = self._egress_token_path(team_id, assistant_id)
-        if not token_path.exists():
-            return
-        token = _read_private_token(token_path)
-        policy_path = _require_policy_root() / f"{token}.json"
         try:
-            if policy_path.exists():
-                metadata = policy_path.stat(follow_symlinks=False)
-                if (
-                    not stat.S_ISREG(metadata.st_mode)
-                    or metadata.st_uid != os.geteuid()
-                    or metadata.st_gid != APP_EGRESS_POLICY_GID
-                    or metadata.st_nlink != 1
-                    or stat.S_IMODE(metadata.st_mode) != 0o640
-                ):
-                    raise ApiProblem(
-                        HTTPStatus.CONFLICT,
-                        "Assistant egress policy failed its ownership contract",
-                        code="egress-policy-drift",
-                    )
-                policy_path.unlink()
-            token_path.unlink()
-        except ApiProblem:
-            raise
-        except OSError as exc:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Assistant egress policy could not be removed",
-                code="egress-policy-unavailable",
-            ) from exc
+            _egress_store().remove(
+                self._egress_policy_identity(team_id, assistant_id),
+            )
+        except egress_policy.EgressPolicyError as exc:
+            _raise_egress_problem(exc)
 
     def _egress_proxy(self):
         if not APP_EGRESS_PROXY_CONTAINER or _CONTAINER_NAME.fullmatch(APP_EGRESS_PROXY_CONTAINER) is None:
