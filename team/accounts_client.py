@@ -15,9 +15,11 @@ from __future__ import annotations
 import http.client
 import json
 import os
+from contextlib import suppress
 from urllib.parse import urlparse
 
 ACCOUNTS_URL = os.environ.get("SHIMPZ_ACCOUNTS_URL", "http://accounts:7079")
+VERIFY_TIMEOUT_SECONDS = 10
 
 
 def verify(token: str) -> str | None:
@@ -28,12 +30,19 @@ def verify(token: str) -> str | None:
     https = parsed.scheme == "https"
     conn_cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
     path = f"{parsed.path.rstrip('/')}/v1/verify"
+    conn = None
     try:
-        conn = conn_cls(parsed.hostname, parsed.port or (443 if https else 7079), timeout=10)
+        conn = conn_cls(parsed.hostname, parsed.port or (443 if https else 7079), timeout=VERIFY_TIMEOUT_SECONDS)
         conn.request("POST", path, json.dumps({"token": token}), {"Content-Type": "application/json"})
         resp = conn.getresponse()
         data = json.loads(resp.read() or b"{}")
-        conn.close()
-    except OSError, json.JSONDecodeError:
+    except (OSError, ValueError, http.client.HTTPException):
         return None
-    return data.get("account_id") if resp.status == 200 else None
+    finally:
+        if conn is not None:
+            with suppress(OSError):
+                conn.close()
+    if resp.status != 200 or not isinstance(data, dict):
+        return None
+    account_id = data.get("account_id")
+    return account_id if isinstance(account_id, str) and account_id else None
