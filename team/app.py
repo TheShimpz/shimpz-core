@@ -2020,18 +2020,18 @@ def _power_secret_generations(
     active: _ActiveAssistant,
     power_id: str,
 ) -> tuple[tuple[str, int], ...]:
-    power = active.contract.powers.get(power_id)
-    if power is None:
-        raise power_journal.PowerJournalConflictError("Power secret contract is unavailable")
     try:
-        metadata = _assistant_secrets.metadata(
-            team_id,
-            active.assistant_id,
-            getattr(power, "secrets", ()),
+        return power_execution.secret_generations(
+            active.contract.powers,
+            power_id,
+            lambda secret_ids: _assistant_secrets.metadata(
+                team_id,
+                active.assistant_id,
+                secret_ids,
+            ),
         )
     except assistant_secret_store.AssistantSecretError as exc:
         raise power_journal.PowerJournalConflictError("Power secret state is unavailable") from exc
-    return power_execution.private_generations(tuple(metadata), connected=False)
 
 
 def _resolve_power_secrets(
@@ -2057,25 +2057,19 @@ def _power_account_generations(
     active: _ActiveAssistant,
     power_id: str,
 ) -> tuple[tuple[str, int], ...]:
-    power = active.contract.powers.get(power_id)
-    if power is None:
-        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
-    declarations = {
-        account_id: active.contract.accounts[account_id]
-        for account_id in getattr(power, "accounts", ())
-        if account_id in active.contract.accounts
-    }
-    if len(declarations) != len(getattr(power, "accounts", ())):
-        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
     try:
-        metadata = _assistant_accounts.metadata(
-            team_id,
-            active.assistant_id,
-            declarations,
+        return power_execution.account_generations(
+            active.contract.powers,
+            active.contract.accounts,
+            power_id,
+            lambda declarations: _assistant_accounts.metadata(
+                team_id,
+                active.assistant_id,
+                declarations,
+            ),
         )
     except oauth_account_store.OAuthAccountStoreError as exc:
         raise power_journal.PowerJournalConflictError("Power account state is unavailable") from exc
-    return power_execution.private_generations(tuple(metadata), connected=True)
 
 
 def _refresh_oauth_account(

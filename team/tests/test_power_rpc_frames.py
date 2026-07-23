@@ -98,6 +98,35 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "unknown RPC failure"):
             app.power_execution.rpc_failure_status("unknown")
 
+    def test_private_generation_helpers_apply_one_power_contract(self) -> None:
+        powers = {
+            "lookup": SimpleNamespace(secrets=("api-key",), accounts=("cloud",)),
+        }
+        secret_metadata = mock.Mock(
+            return_value=(SimpleNamespace(id="api-key", configured=True, generation=3),),
+        )
+        account_metadata = mock.Mock(
+            return_value=(SimpleNamespace(id="cloud", status="connected", generation=5),),
+        )
+
+        self.assertEqual(
+            app.power_execution.secret_generations(powers, "lookup", secret_metadata),
+            (("api-key", 3),),
+        )
+        self.assertEqual(
+            app.power_execution.account_generations(
+                powers,
+                {"cloud": "declaration"},
+                "lookup",
+                account_metadata,
+            ),
+            (("cloud", 5),),
+        )
+        secret_metadata.assert_called_once_with(("api-key",))
+        account_metadata.assert_called_once_with({"cloud": "declaration"})
+        with self.assertRaisesRegex(app.power_journal.PowerJournalConflictError, "account contract"):
+            app.power_execution.account_generations(powers, {}, "lookup", account_metadata)
+
     def test_malformed_frames_fail_closed_in_both_readers(self) -> None:
         oversized = struct.pack(">BxxxL", 1, max(app.MAX_ASSISTANT_RPC_OUTPUT_BYTES, local_app.MAX_RESPONSE_BYTES) + 2)
         cases = (

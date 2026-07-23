@@ -262,6 +262,35 @@ def private_generations(metadata: tuple[object, ...], *, connected: bool) -> tup
     return tuple((item.id, generation) for item, generation in zip(metadata, generations, strict=True))
 
 
+def secret_generations(
+    powers: Mapping[str, object],
+    power_id: str,
+    metadata: Callable[[tuple[str, ...]], tuple[object, ...]],
+) -> tuple[tuple[str, int], ...]:
+    """Read one declared Power's configured secret generations."""
+    power = powers.get(power_id)
+    if power is None:
+        raise power_journal.PowerJournalConflictError("Power secret contract is unavailable")
+    return private_generations(tuple(metadata(tuple(getattr(power, "secrets", ())))), connected=False)
+
+
+def account_generations(
+    powers: Mapping[str, object],
+    accounts: Mapping[str, object],
+    power_id: str,
+    metadata: Callable[[dict[str, object]], tuple[object, ...]],
+) -> tuple[tuple[str, int], ...]:
+    """Read one declared Power's connected account generations."""
+    power = powers.get(power_id)
+    if power is None:
+        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
+    account_ids = tuple(getattr(power, "accounts", ()))
+    declarations = {account_id: accounts[account_id] for account_id in account_ids if account_id in accounts}
+    if len(declarations) != len(account_ids):
+        raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
+    return private_generations(tuple(metadata(declarations)), connected=True)
+
+
 def contains_secret(value: object, secrets_by_id: Mapping[str, str]) -> bool:
     """Fail closed on literal secret echoes or inputs nested beyond the inspection bound."""
     secret_values = tuple(secret for secret in secrets_by_id.values() if secret)
