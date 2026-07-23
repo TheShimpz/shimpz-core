@@ -23,7 +23,7 @@ APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 DIGEST_IMAGE_RE = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?/[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$")
 RESERVED_APP_IDS = network_policy.RESERVED_SERVICE_ALIASES
 SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE = (
-    "ghcr.io/theshimpz/shimpz-space@sha256:31af82a29962ae1ae298fa87417a433286a0aa1bf3da0862dc7127d4646efac5"
+    "ghcr.io/theshimpz/shimpz-space@sha256:39d19e65fc0e3f36b0fccd8dc5eb1c60ee84ead7c3e9e84558fe428af038ef18"
 )
 _REVIEWED_ASSISTANTS = assistant_manifest.load_reviewed_catalog()
 _CLOUDFLARE = _REVIEWED_ASSISTANTS["shimpz-cloudflare"]
