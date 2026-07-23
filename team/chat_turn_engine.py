@@ -174,6 +174,7 @@ def drive(
     requirements: SegmentRequirements,
 ) -> chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension:
     """Run or resume one turn with the same durable Power hooks on both Controllers."""
+
     def pause_before_batch(requests: tuple[object, ...]) -> bool:
         return strategy.pause_for_private_inputs(requests, requirements)
 
