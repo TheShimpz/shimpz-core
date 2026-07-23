@@ -165,18 +165,6 @@ class _PendingLocalChat:
     identity: tuple[object, ...]
 
 
-@dataclass(slots=True)
-class _LocalChatRequirements:
-    """Mutable gate results collected while one Brain segment is evaluated."""
-
-    accounts: tuple[assistant_account_challenges.AccountRequirement, ...] = ()
-    secrets: tuple[assistant_secret_challenges.SecretRequirement, ...] = ()
-    approvals: tuple[assistant_approval_challenges.ApprovalRequirement, ...] = ()
-
-    def suspension_gate_count(self) -> int:
-        return chat_turn_engine.suspension_gate_count(self.accounts, self.secrets, self.approvals)
-
-
 def _required_active_assistant(
     bindings: dict[str, _ActiveAssistant],
     assistant_id: str,
@@ -1602,61 +1590,47 @@ class LocalController:
             config,
         )
 
-    def _drive_local_chat(
-        self,
-        context: brain_runtime_client.RuntimeContext,
-        message: str | None,
-        files: list[dict[str, object]],
-        continuation: chat_orchestrator.ChatContinuation | None,
-        validate_power: Callable,
-        durable_batch: power_execution.PowerBatch,
-        pause_for_secrets: Callable,
-        pause_for_approval: Callable,
-        approval_granted: Callable,
-        cancelled: Callable[[], bool],
-        validate_context: Callable[[], None],
-    ) -> chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension:
-        try:
-            return chat_turn_engine.drive(
-                self.brain_runtime,
-                context,
-                message,
-                files,
-                continuation,
-                validate_power,
-                durable_batch,
-                pause_for_secrets,
-                cancelled,
-                validate_context,
-                pause_for_approval=pause_for_approval,
-                approval_granted=approval_granted,
+    @staticmethod
+    def _raise_chat_problem(reason: str, exc: BaseException | None) -> None:
+        if reason == "invalid-continuation" or reason == "invalid-suspension":
+            raise ApiProblem(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"invalid chat {reason.removeprefix('invalid-')}",
+                code="internal-error",
             )
-        except power_journal.PowerJournalError as exc:
+        if reason == "context-changed":
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Team capabilities changed; retry",
+                code="team-context-changed",
+            )
+        if isinstance(exc, power_journal.PowerJournalError):
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Team Power execution state is unavailable",
                 code="power-state-unavailable",
             ) from exc
-        except chat_orchestrator.ChatStoppedError as exc:
+        if isinstance(exc, chat_orchestrator.ChatStoppedError):
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped") from exc
-        except chat_orchestrator.ApprovalRequiredError as exc:
+        if isinstance(exc, chat_orchestrator.ApprovalRequiredError):
             raise ApiProblem(
                 HTTPStatus.CONFLICT,
                 "Assistant Power requires approval",
                 code="power-approval-required",
             ) from exc
-        except chat_orchestrator.ChatOrchestrationError as exc:
+        if isinstance(exc, chat_orchestrator.ChatOrchestrationError):
             raise ApiProblem(
                 HTTPStatus.BAD_GATEWAY,
                 "Brain could not complete the Team turn",
                 code="brain-runtime-failed",
             ) from exc
-        except brain_runtime_client.BrainRuntimeError as exc:
+        if isinstance(exc, brain_runtime_client.BrainRuntimeError):
             raise ApiProblem(
                 HTTPStatus.BAD_GATEWAY,
                 "Brain runtime is unavailable",
                 code="brain-runtime-failed",
             ) from exc
+        raise AssertionError(f"unknown local chat failure: {reason}")
 
     @staticmethod
     def _validate_chat_power(
@@ -1680,7 +1654,7 @@ class LocalController:
         team_id: str,
         bindings: dict[str, _ActiveAssistant],
         requests: tuple[brain_runtime_client.PowerRequest, ...],
-        requirements: _LocalChatRequirements,
+        requirements: chat_turn_engine.SegmentRequirements,
     ) -> bool:
         try:
             requirements.accounts = assistant_account_flow.requirements_for_batch(
@@ -1721,7 +1695,7 @@ class LocalController:
     def _require_chat_approval(
         bindings: dict[str, _ActiveAssistant],
         requests: tuple[brain_runtime_client.PowerRequest, ...],
-        requirements: _LocalChatRequirements,
+        requirements: chat_turn_engine.SegmentRequirements,
     ) -> bool:
         try:
             requirements.approvals = assistant_approval_flow.requirements_for_batch(bindings, requests)
@@ -1793,46 +1767,9 @@ class LocalController:
         tuple[assistant_secret_challenges.SecretRequirement, ...],
         tuple[assistant_approval_challenges.ApprovalRequirement, ...],
     ]:
-        if (message is None) == (continuation is None):
-            raise ApiProblem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat continuation", code="internal-error")
-        team_name, network_id, assistants, files, config = self._chat_setup(
-            team_id,
-            file_ids,
-            provider,
-            assistant_ids,
-        )
-        identity = self._chat_identity(team_name, network_id, assistants, files, config)
-        if expected_identity is not None and identity != expected_identity:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Team capabilities changed; retry",
-                code="team-context-changed",
-            )
-        genesis_by_id = {active.spec.assistant_id: self._active_assistant_genesis(active) for active in assistants}
-        context = brain_runtime_client.RuntimeContext(
-            thread_id=_brain_thread_id(self.space_id, team_id, network_id),
-            team_name=team_name,
-            assistants=tuple(
-                brain_runtime_client.RuntimeAssistant(
-                    id=active.spec.assistant_id,
-                    genesis=genesis_by_id[active.spec.assistant_id],
-                    powers=tuple(
-                        brain_runtime_client.RuntimePower(
-                            id=power_id,
-                            summary=power.summary,
-                            input_schema=power.input_schema,
-                            approval=power.approval,
-                        )
-                        for power_id, power in sorted(active.spec.powers.items())
-                    ),
-                )
-                for active in assistants
-            ),
-            provider=config.provider,
-            model=config.model,
-            api_key=api_key,
-        )
-        bindings = {active.spec.assistant_id: active for active in assistants}
+        bindings: dict[str, _ActiveAssistant] = {}
+        identity: tuple[object, ...] = ()
+        network_id = ""
 
         def execute_power(request: brain_runtime_client.PowerRequest) -> object:
             active = _required_active_assistant(bindings, request.assistant_id)
@@ -1845,42 +1782,105 @@ class LocalController:
                 request.input,
             )
 
-        durable_batch = power_execution.PowerBatch(
-            self.power_state,
-            network_id,
-            context.thread_id,
-            bindings,
-            lambda active: (active.container_id, active.spec.image),
-            execute_power,
-            lambda request: self._require_power_rpc_envelope(team_id, bindings, request),
-            lambda request: self._power_secret_generations(
+        def prepare() -> chat_turn_engine.PreparedSegment:
+            nonlocal bindings, identity, network_id
+            team_name, network_id, assistants, files, config = self._chat_setup(
                 team_id,
-                _required_active_assistant(bindings, request.assistant_id),
-                request.power,
-            ),
-            lambda request: self._power_account_generations(
-                team_id,
-                _required_active_assistant(bindings, request.assistant_id),
-                request.power,
-            ),
-        )
-        requirements = _LocalChatRequirements()
+                file_ids,
+                provider,
+                assistant_ids,
+            )
+            identity = self._chat_identity(team_name, network_id, assistants, files, config)
+            genesis_by_id = {active.spec.assistant_id: self._active_assistant_genesis(active) for active in assistants}
+            context = brain_runtime_client.RuntimeContext(
+                thread_id=_brain_thread_id(self.space_id, team_id, network_id),
+                team_name=team_name,
+                assistants=tuple(
+                    brain_runtime_client.RuntimeAssistant(
+                        id=active.spec.assistant_id,
+                        genesis=genesis_by_id[active.spec.assistant_id],
+                        powers=tuple(
+                            brain_runtime_client.RuntimePower(
+                                id=power_id,
+                                summary=power.summary,
+                                input_schema=power.input_schema,
+                                approval=power.approval,
+                            )
+                            for power_id, power in sorted(active.spec.powers.items())
+                        ),
+                    )
+                    for active in assistants
+                ),
+                provider=config.provider,
+                model=config.model,
+                api_key=api_key,
+            )
+            bindings = {active.spec.assistant_id: active for active in assistants}
+            batch = power_execution.PowerBatch(
+                self.power_state,
+                network_id,
+                context.thread_id,
+                bindings,
+                lambda active: (active.container_id, active.spec.image),
+                execute_power,
+                lambda request: self._require_power_rpc_envelope(team_id, bindings, request),
+                lambda request: self._power_secret_generations(
+                    team_id,
+                    _required_active_assistant(bindings, request.assistant_id),
+                    request.power,
+                ),
+                lambda request: self._power_account_generations(
+                    team_id,
+                    _required_active_assistant(bindings, request.assistant_id),
+                    request.power,
+                ),
+            )
+            return chat_turn_engine.PreparedSegment(team_name, identity, context, files, batch)
 
-        outcome = self._drive_local_chat(
-            context,
-            message,
-            files,
-            continuation,
-            lambda assistant_id, power, payload: self._validate_chat_power(bindings, assistant_id, power, payload),
-            durable_batch,
-            lambda requests: self._require_chat_private_inputs(team_id, bindings, requests, requirements),
-            lambda requests: self._require_chat_approval(bindings, requests, requirements),
-            lambda request: self._chat_approval_granted(team_id, bindings, approved_interrupts, request),
-            lambda: self._chat_cancelled(token),
-            lambda: self._validate_chat_context(team_id, file_ids, provider, assistant_ids, identity),
+        def private_inputs(
+            requests: tuple[object, ...],
+            requirements: chat_turn_engine.SegmentRequirements,
+        ) -> bool:
+            return self._require_chat_private_inputs(team_id, bindings, requests, requirements)
+
+        def approvals(
+            requests: tuple[object, ...],
+            requirements: chat_turn_engine.SegmentRequirements,
+        ) -> bool:
+            return self._require_chat_approval(bindings, requests, requirements)
+
+        team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
+            chat_turn_engine.SegmentStrategy(
+                runtime=self.brain_runtime,
+                prepare=prepare,
+                validate_power=lambda assistant_id, power, payload: self._validate_chat_power(
+                    bindings,
+                    assistant_id,
+                    power,
+                    payload,
+                ),
+                pause_for_private_inputs=private_inputs,
+                cancelled=lambda: self._chat_cancelled(token),
+                validate_context=lambda: self._validate_chat_context(
+                    team_id,
+                    file_ids,
+                    provider,
+                    assistant_ids,
+                    identity,
+                ),
+                raise_problem=self._raise_chat_problem,
+                pause_for_approval=approvals,
+                approval_granted=lambda request: self._chat_approval_granted(
+                    team_id,
+                    bindings,
+                    approved_interrupts,
+                    request,
+                ),
+            ),
+            message=message,
+            continuation=continuation,
+            expected_identity=expected_identity,
         )
-        if isinstance(outcome, chat_orchestrator.ChatSuspension) and requirements.suspension_gate_count() != 1:
-            raise ApiProblem(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat suspension", code="internal-error")
         return team_name, identity, outcome, requirements.accounts, requirements.secrets, requirements.approvals
 
     def _pause_chat(

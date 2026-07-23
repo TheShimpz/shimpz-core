@@ -2422,46 +2422,22 @@ def _hosted_chat_setup(
     return team_name, assistants, files, config, api_key, generation, identity
 
 
-def _drive_hosted_chat(
-    runtime_context: brain_runtime_client.RuntimeContext,
-    message: str | None,
-    files: list[dict[str, object]],
-    continuation: chat_orchestrator.ChatContinuation | None,
-    validate_power: Callable,
-    durable_batch: power_execution.PowerBatch,
-    pause_for_secrets: Callable,
-    token: str,
-    validate_context: Callable[[], None],
-) -> chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension:
-    try:
-        return chat_turn_engine.drive(
-            _brain_runtime,
-            runtime_context,
-            message,
-            files,
-            continuation,
-            validate_power,
-            durable_batch,
-            pause_for_secrets,
-            lambda: _token_cancelled(token),
-            validate_context,
-        )
-    except power_journal.PowerJournalError as exc:
-        raise ApiError(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            "Team Power execution state is unavailable",
-        ) from exc
-    except chat_orchestrator.ChatStoppedError as exc:
+def _raise_hosted_chat_problem(reason: str, exc: BaseException | None) -> None:
+    if reason == "invalid-continuation" or reason == "invalid-suspension":
+        raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"invalid chat {reason.removeprefix('invalid-')}")
+    if reason == "context-changed":
+        raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
+    if isinstance(exc, power_journal.PowerJournalError):
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team Power execution state is unavailable") from exc
+    if isinstance(exc, chat_orchestrator.ChatStoppedError):
         raise ApiError(HTTPStatus.CONFLICT, "brain turn stopped") from exc
-    except chat_orchestrator.ApprovalRequiredError as exc:
-        raise ApiError(
-            HTTPStatus.CONFLICT,
-            "Assistant Power requires Captain approval",
-        ) from exc
-    except chat_orchestrator.ChatOrchestrationError as exc:
+    if isinstance(exc, chat_orchestrator.ApprovalRequiredError):
+        raise ApiError(HTTPStatus.CONFLICT, "Assistant Power requires Captain approval") from exc
+    if isinstance(exc, chat_orchestrator.ChatOrchestrationError):
         raise ApiError(HTTPStatus.BAD_GATEWAY, "Brain could not complete the Assistant turn") from exc
-    except brain_runtime_client.BrainRuntimeError as exc:
+    if isinstance(exc, brain_runtime_client.BrainRuntimeError):
         raise ApiError(HTTPStatus.BAD_GATEWAY, "Brain runtime is unavailable") from exc
+    raise AssertionError(f"unknown hosted chat failure: {reason}")
 
 
 def _hosted_private_requirements(
@@ -2518,46 +2494,15 @@ def _run_hosted_chat_segment(
     tuple[assistant_account_challenges.AccountRequirement, ...],
     tuple[assistant_secret_challenges.SecretRequirement, ...],
 ]:
-    if (message is None) == (continuation is None):
-        raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat continuation")
-    team_name, assistants, files, config, api_key, generation, initial_identity = _hosted_chat_setup(
-        team_id,
-        file_ids,
-        assistant_ids,
-        container,
-        owner,
-    )
-    if expected_identity is not None and initial_identity != expected_identity:
-        raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
-    genesis_by_id = {active.assistant_id: _require_assistant_genesis(active.container) for active in assistants}
+    bindings: dict[str, _ActiveAssistant] = {}
+    initial_identity: tuple[object, ...] = ()
+    config: inference_config.InferenceConfig | None = None
+    generation = 0
 
     def require_current_credential() -> None:
+        if config is None:
+            raise AssertionError("hosted chat segment was not prepared")
         _require_model_credential_current(owner, config.provider, generation)
-
-    runtime_context = brain_runtime_client.RuntimeContext(
-        thread_id=_brain_thread_id(team_id, container.id),
-        team_name=team_name,
-        assistants=tuple(
-            brain_runtime_client.RuntimeAssistant(
-                id=active.assistant_id,
-                genesis=genesis_by_id[active.assistant_id],
-                powers=tuple(
-                    brain_runtime_client.RuntimePower(
-                        id=power_id,
-                        summary=power.summary,
-                        input_schema=power.input_schema,
-                        approval=power.approval,
-                    )
-                    for power_id, power in sorted(active.contract.powers.items())
-                ),
-            )
-            for active in assistants
-        ),
-        provider=config.provider,
-        model=config.model,
-        api_key=api_key,
-    )
-    bindings = {active.assistant_id: active for active in assistants}
 
     def validate_power(assistant_id: str, power: str, power_input) -> object:
         return _validate_assistant_power_input(bindings, assistant_id, power, power_input)
@@ -2578,36 +2523,63 @@ def _run_hosted_chat_segment(
         )
         return invocation["result"]
 
-    durable_batch = power_execution.PowerBatch(
-        _power_execution_journal,
-        container.id,
-        runtime_context.thread_id,
-        bindings,
-        _hosted_power_identity,
-        execute_power,
-        lambda request: _require_hosted_power_rpc_envelope(team_id, bindings, request),
-        lambda request: _power_secret_generations(
+    def prepare() -> chat_turn_engine.PreparedSegment:
+        nonlocal bindings, config, generation, initial_identity
+        team_name, assistants, files, config, api_key, generation, initial_identity = _hosted_chat_setup(
             team_id,
-            bindings[request.assistant_id],
-            request.power,
-        ),
-        lambda request: _power_account_generations(
-            team_id,
-            bindings[request.assistant_id],
-            request.power,
-        ),
-    )
-    account_requirements: tuple[assistant_account_challenges.AccountRequirement, ...] = ()
-    secret_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...] = ()
+            file_ids,
+            assistant_ids,
+            container,
+            owner,
+        )
+        genesis_by_id = {active.assistant_id: _require_assistant_genesis(active.container) for active in assistants}
+        context = brain_runtime_client.RuntimeContext(
+            thread_id=_brain_thread_id(team_id, container.id),
+            team_name=team_name,
+            assistants=tuple(
+                brain_runtime_client.RuntimeAssistant(
+                    id=active.assistant_id,
+                    genesis=genesis_by_id[active.assistant_id],
+                    powers=tuple(
+                        brain_runtime_client.RuntimePower(
+                            id=power_id,
+                            summary=power.summary,
+                            input_schema=power.input_schema,
+                            approval=power.approval,
+                        )
+                        for power_id, power in sorted(active.contract.powers.items())
+                    ),
+                )
+                for active in assistants
+            ),
+            provider=config.provider,
+            model=config.model,
+            api_key=api_key,
+        )
+        bindings = {active.assistant_id: active for active in assistants}
+        batch = power_execution.PowerBatch(
+            _power_execution_journal,
+            container.id,
+            context.thread_id,
+            bindings,
+            _hosted_power_identity,
+            execute_power,
+            lambda request: _require_hosted_power_rpc_envelope(team_id, bindings, request),
+            lambda request: _power_secret_generations(team_id, bindings[request.assistant_id], request.power),
+            lambda request: _power_account_generations(team_id, bindings[request.assistant_id], request.power),
+        )
+        return chat_turn_engine.PreparedSegment(team_name, initial_identity, context, files, batch)
 
-    def pause_for_private_inputs(requests: tuple[brain_runtime_client.PowerRequest, ...]) -> bool:
-        nonlocal account_requirements, secret_requirements
-        account_requirements, secret_requirements = _hosted_private_requirements(
+    def pause_for_private_inputs(
+        requests: tuple[object, ...],
+        requirements: chat_turn_engine.SegmentRequirements,
+    ) -> bool:
+        requirements.accounts, requirements.secrets = _hosted_private_requirements(
             team_id,
             bindings,
             requests,
         )
-        return bool(account_requirements or secret_requirements)
+        return bool(requirements.accounts or requirements.secrets)
 
     def validate_context() -> None:
         current_anchor = _current_team_anchor(team_id, container.id, owner)
@@ -2621,24 +2593,28 @@ def _run_hosted_chat_segment(
         if current_identity != initial_identity:
             raise ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
 
-    outcome = _drive_hosted_chat(
-        runtime_context,
-        message,
-        files,
-        continuation,
-        validate_power,
-        durable_batch,
-        pause_for_private_inputs,
-        token,
-        validate_context,
+    team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
+        chat_turn_engine.SegmentStrategy(
+            runtime=_brain_runtime,
+            prepare=prepare,
+            validate_power=validate_power,
+            pause_for_private_inputs=pause_for_private_inputs,
+            cancelled=lambda: _token_cancelled(token),
+            validate_context=validate_context,
+            raise_problem=_raise_hosted_chat_problem,
+            finalize=require_current_credential,
+        ),
+        message=message,
+        continuation=continuation,
+        expected_identity=expected_identity,
     )
-    require_current_credential()
-    if (
-        isinstance(outcome, chat_orchestrator.ChatSuspension)
-        and chat_turn_engine.suspension_gate_count(account_requirements, secret_requirements) != 1
-    ):
-        raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat suspension")
-    return team_name, initial_identity, outcome, account_requirements, secret_requirements
+    return (
+        team_name,
+        identity,
+        outcome,
+        requirements.accounts,
+        requirements.secrets,
+    )
 
 
 def _pause_hosted_chat(
