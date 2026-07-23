@@ -24,16 +24,19 @@
               "additionalProperties": false,
               "properties": {
                 "page": {
+                  "description": "Cloudflare result page, starting at 1.",
                   "maximum": 100000,
                   "minimum": 1,
                   "type": "integer"
                 },
                 "per_page": {
+                  "description": "Number of DNS records to return, from 1 to 100.",
                   "maximum": 100,
                   "minimum": 1,
                   "type": "integer"
                 },
                 "zone_id": {
+                  "description": "The 32-character hexadecimal Cloudflare zone id.",
                   "pattern": "^[0-9a-f]{32}$",
                   "type": "string"
                 }
@@ -136,7 +139,8 @@
                           "TLSA",
                           "TXT",
                           "URI"
-                        ]
+                        ],
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -171,11 +175,13 @@
               "additionalProperties": false,
               "properties": {
                 "page": {
+                  "description": "Cloudflare result page, starting at 1.",
                   "maximum": 100000,
                   "minimum": 1,
                   "type": "integer"
                 },
                 "per_page": {
+                  "description": "Number of zones to return, from 1 to 100.",
                   "maximum": 100,
                   "minimum": 1,
                   "type": "integer"
@@ -271,7 +277,8 @@
                           "internal",
                           "partial",
                           "secondary"
-                        ]
+                        ],
+                        "type": "string"
                       }
                     },
                     "required": [
