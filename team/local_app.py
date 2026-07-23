@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -25,7 +24,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import assistant_account_challenges
 import assistant_account_flow
@@ -53,6 +51,7 @@ import oauth_broker_client
 import oauth_pkce_challenges
 import power_execution
 import power_journal
+import strict_http
 import team_storage
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Ulimit
@@ -134,19 +133,6 @@ LOCAL_APPROVAL_GRANTS_PATH = Path(
 )
 _FILE_UPLOAD_SLOTS = threading.BoundedSemaphore(1)
 _CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON field")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(_value: str) -> None:
-    raise ValueError("non-finite JSON number")
 
 
 class ApiProblem(RuntimeError):
@@ -3587,9 +3573,7 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
 
     def _authorized(self) -> bool:
-        values = self.headers.get_all("Authorization", failobj=[])
-        expected = f"Bearer {self.server.token}"
-        return len(values) == 1 and hmac.compare_digest(values[0], expected)
+        return strict_http.bearer_matches(self.headers, self.server.token)
 
     def _send(self, status: HTTPStatus, payload: dict[str, object]) -> None:
         encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -3609,37 +3593,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
 
     def _body(self, *, max_bytes: int = MAX_BODY_BYTES) -> dict[str, object]:
-        if self.headers.get_all("Transfer-Encoding", failobj=[]):
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "chunked requests are not accepted", code="chunked-request")
-        lengths = self.headers.get_all("Content-Length", failobj=[])
-        if len(lengths) != 1:
-            raise ApiProblem(HTTPStatus.LENGTH_REQUIRED, "one Content-Length is required", code="content-length")
         try:
-            length = int(lengths[0])
-        except ValueError as exc:
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length") from exc
-        if length < 2 or length > max_bytes:
-            raise ApiProblem(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request is too large", code="body-too-large")
-        content_types = self.headers.get_all("Content-Type", failobj=[])
-        if len(content_types) != 1:
-            raise ApiProblem(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "application/json is required", code="content-type")
-        content_type = content_types[0].split(";", 1)[0].strip().lower()
-        if content_type != "application/json":
-            raise ApiProblem(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "application/json is required", code="content-type")
-        try:
-            raw_body = self.rfile.read(length)
-            if len(raw_body) != length:
-                raise ValueError("short request body")
-            body = json.loads(
-                raw_body,
-                object_pairs_hook=_unique_object,
-                parse_constant=_reject_json_constant,
+            return strict_http.read_json_object(
+                self.headers,
+                self.rfile,
+                max_bytes=max_bytes,
             )
-        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid JSON body", code="invalid-json") from exc
-        if not isinstance(body, dict):
-            raise ApiProblem(HTTPStatus.UNPROCESSABLE_ENTITY, "a JSON object is required", code="invalid-body")
-        return body
+        except strict_http.HttpContractError as exc:
+            raise ApiProblem(exc.status, exc.message, code=exc.code) from exc
 
     def _file_body(self) -> tuple[object, bytes, object]:
         body = self._body(max_bytes=MAX_FILE_BODY_BYTES)
@@ -3691,26 +3652,22 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _reject_body(self) -> None:
-        if self.headers.get_all("Transfer-Encoding", failobj=[]):
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "this request cannot have a body", code="unexpected-body")
-        lengths = self.headers.get_all("Content-Length", failobj=[])
-        if len(lengths) > 1:
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length")
-        if lengths:
-            try:
-                length = int(lengths[0])
-            except ValueError as exc:
-                raise ApiProblem(HTTPStatus.BAD_REQUEST, "invalid Content-Length", code="content-length") from exc
-            if length != 0:
-                raise ApiProblem(HTTPStatus.BAD_REQUEST, "this request cannot have a body", code="unexpected-body")
+        try:
+            strict_http.reject_body(self.headers)
+        except strict_http.HttpContractError as exc:
+            raise ApiProblem(exc.status, exc.message, code=exc.code) from exc
 
     def _path_parts(self) -> list[str]:
-        if len(self.path.encode("utf-8", "replace")) > MAX_PATH_BYTES:
-            raise ApiProblem(HTTPStatus.URI_TOO_LONG, "request path is too long", code="path-too-long")
-        parsed = urlsplit(self.path)
-        if parsed.query or parsed.fragment or "%" in parsed.path:
-            raise ApiProblem(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted", code="invalid-path")
-        return [part for part in parsed.path.split("/") if part]
+        try:
+            return list(
+                strict_http.parse_request_target(
+                    self.path,
+                    allow_query=False,
+                    max_bytes=MAX_PATH_BYTES,
+                ).parts
+            )
+        except strict_http.HttpContractError as exc:
+            raise ApiProblem(exc.status, exc.message, code=exc.code) from exc
 
     def _fixed_route(
         self, parts: list[str]

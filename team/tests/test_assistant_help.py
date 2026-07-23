@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from email.message import Message
 from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
@@ -45,6 +46,7 @@ class AssistantHelpContractTests(unittest.TestCase):
 class _RouteHarness:
     def __init__(self) -> None:
         self.sent: list[tuple[HTTPStatus, dict, bool]] = []
+        self.headers = Message()
 
     def _send_json(self, status: HTTPStatus, payload: dict, *, no_store: bool = False) -> None:
         self.sent.append((status, payload, no_store))

@@ -14,7 +14,6 @@ import base64
 import binascii
 import contextlib
 import functools
-import hmac
 import http.client
 import ipaddress
 import json
@@ -31,7 +30,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import accounts_client
 import assistant_account_challenges
@@ -65,24 +63,12 @@ import oauth_pkce_challenges
 import pgdriver_client
 import power_execution
 import power_journal
+import strict_http
 import team_storage
 import token_store
 import validate
 
 ALL_INTERFACES = str(ipaddress.IPv4Address(0))
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON field")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(_value: str) -> None:
-    raise ValueError("non-finite JSON number")
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -3621,8 +3607,7 @@ class Handler(BaseHTTPRequestHandler):
         against the accounts service and scopes every op to that account's OWN teams — the store holds
         no privileged secret, this driver is the enforcer.
         """
-        authorization = self.headers.get_all("Authorization", failobj=[])
-        if len(authorization) == 1 and hmac.compare_digest(authorization[0], f"Bearer {_token}"):
+        if strict_http.bearer_matches(self.headers, _token):
             return ("operator", None)
         account_token = self.headers.get("X-Shimpz-Account", "")
         if account_token:
@@ -3722,45 +3707,17 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _read_body(self, *, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict:
-        if self.headers.get_all("Transfer-Encoding", failobj=[]):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "chunked requests are not accepted")
-        lengths = self.headers.get_all("Content-Length", failobj=[])
-        if len(lengths) != 1:
-            raise ApiError(HTTPStatus.LENGTH_REQUIRED, "one Content-Length is required")
         try:
-            length = int(lengths[0])
-        except ValueError as exc:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
-        if length < 2 or length > max_bytes:
-            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"request body too large (max {max_bytes} bytes)")
-        content_types = self.headers.get_all("Content-Type", failobj=[])
-        if len(content_types) != 1:
-            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
-        content_type = content_types[0].partition(";")[0].strip().lower()
-        if content_type != "application/json":
-            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json")
-        try:
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise ValueError("short request body")
-            body = json.loads(
-                raw,
-                object_pairs_hook=_unique_object,
-                parse_constant=_reject_json_constant,
+            return strict_http.read_json_object(
+                self.headers,
+                self.rfile,
+                max_bytes=max_bytes,
             )
-        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid JSON body") from exc
-        if not isinstance(body, dict):
-            raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "a JSON object is required")
-        return body
+        except strict_http.HttpContractError as exc:
+            raise ApiError(exc.status, exc.message) from exc
 
     def _read_driver_body(self, keys: set[str]) -> dict[str, object]:
         """Read one closed Driver mutation document; arbitrary scripts/shapes never cross the bridge."""
-        if self.headers.get("Transfer-Encoding") is not None:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "chunked Driver requests are not supported")
-        content_type = self.headers.get("Content-Type", "").partition(";")[0].strip().lower()
-        if content_type != "application/json":
-            raise ApiError(HTTPStatus.BAD_REQUEST, "Content-Type must be application/json")
         body = self._read_body(max_bytes=MAX_DRIVER_JSON_BODY_BYTES)
         if not isinstance(body, dict) or set(body) != keys:
             raise ApiError(HTTPStatus.BAD_REQUEST, "request body does not match the Driver operation")
@@ -3803,10 +3760,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal driver error"})
 
     def _route(self, method: str, principal: tuple[str, str | None]) -> None:
-        parsed = urlparse(self.path)
-        path = parsed.path
-        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-        parts = [p for p in path.split("/") if p]
+        try:
+            target = strict_http.parse_routed_request(
+                self.headers,
+                self.path,
+                method,
+                body_methods=frozenset({"POST", "PUT"}),
+                allow_query=True,
+            )
+        except strict_http.HttpContractError as exc:
+            raise ApiError(exc.status, exc.message) from exc
+        path = target.path
+        query = target.query
+        parts = list(target.parts)
         kind, account_id = principal
 
         if method == "GET" and path == "/v1/teams":
@@ -3858,7 +3824,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._route_assistant_accounts(method, parts, team_id, lease)
                 return
             if sub == "assistants":
-                if len(parts) >= 6 and parts[5] == "help" and (parsed.query or parsed.fragment or "%" in parsed.path):
+                if len(parts) >= 6 and parts[5] == "help" and target.query:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted")
                 self._route_assistants(method, parts, team_id, lease)
                 return

@@ -211,7 +211,11 @@ class HostedHttpBoundaryTests(unittest.TestCase):
             ("Authorization", "Bearer operator-token"),
         )
 
-        with mock.patch.object(app.hmac, "compare_digest", wraps=app.hmac.compare_digest) as compare:
+        with mock.patch.object(
+            app.strict_http.hmac,
+            "compare_digest",
+            wraps=app.strict_http.hmac.compare_digest,
+        ) as compare:
             self.assertEqual(accepted._principal(), ("operator", None))
             self.assertIsNone(wrong._principal())
             self.assertIsNone(duplicate._principal())
