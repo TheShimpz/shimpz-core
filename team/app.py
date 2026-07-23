@@ -51,7 +51,6 @@ import cleanup_state
 import docker
 import docker.errors
 import egress_policy
-import hosted_http
 import inference_config
 import manifests
 import marketplace
@@ -64,8 +63,6 @@ import oauth_pkce_challenges
 import pgdriver_client
 import power_execution
 import power_journal
-import stdlib_http
-import strict_http
 import team_storage
 import token_store
 import validate
@@ -74,6 +71,8 @@ from assistant_human import approval_flow as assistant_approval_flow
 from assistant_human import approval_grants as assistant_approval_grants
 from assistant_human import input_challenges as assistant_input_challenges
 from assistant_human import input_flow as assistant_input_flow
+from http_boundary import hosted, stdlib
+from http_boundary import strict as strict_http
 
 ALL_INTERFACES = str(ipaddress.IPv4Address(0))
 
@@ -4120,9 +4119,9 @@ class Handler(BaseHTTPRequestHandler):
                 audit.log("auth", self.path, result="denied")
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid or missing credentials"})
             return
-        stdlib_http.dispatch(
+        stdlib.dispatch(
             lambda: self._route(method, principal),
-            classify=lambda exc: hosted_http.classify_failure(
+            classify=lambda exc: hosted.classify_failure(
                 exc,
                 ApiError,
                 validate.ValidationError,
@@ -4132,12 +4131,12 @@ class Handler(BaseHTTPRequestHandler):
             unexpected_message="internal driver error",
         )
 
-    def _emit_failure(self, method: str, failure: stdlib_http.HttpFailure) -> None:
+    def _emit_failure(self, method: str, failure: stdlib.HttpFailure) -> None:
         audit.log(method.lower(), self.path, result=failure.result, reason=failure.audit_reason)
         self._send_json(failure.status, {"error": failure.public_message})
 
     def _route(self, method: str, principal: tuple[str, str | None]) -> None:
-        target, route = hosted_http.route_target(self.headers, self.path, method, ApiError)
+        target, route = hosted.route_target(self.headers, self.path, method, ApiError)
         query = target.query
         parts = list(target.parts)
         kind, account_id = principal

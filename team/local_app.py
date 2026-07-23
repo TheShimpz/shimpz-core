@@ -45,7 +45,6 @@ import inference_config
 import local_audit
 import local_chat_continuation_store
 import local_chat_continuations
-import local_http
 import local_token_store
 import oauth_account_service
 import oauth_account_store
@@ -53,7 +52,6 @@ import oauth_broker_client
 import oauth_pkce_challenges
 import power_execution
 import power_journal
-import strict_http
 import team_storage
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_flow as assistant_approval_flow
@@ -62,6 +60,8 @@ from assistant_human import input_challenges as assistant_input_challenges
 from assistant_human import input_flow as assistant_input_flow
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Ulimit
+from http_boundary import local
+from http_boundary import strict as strict_http
 from local_registry import (
     AssistantSpec,
     RegistryError,
@@ -4493,7 +4493,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "authentication required", "trace_id": trace_id})
             return
 
-        local_http.dispatch_route(
+        local.dispatch_route(
             self._route,
             local_audit.record,
             self._send,

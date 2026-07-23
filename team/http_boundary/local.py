@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-import stdlib_http
+from . import stdlib
 
 
 def dispatch_route(route, record, send, problem_type: type[Exception], docker_error_type: type[Exception]) -> None:
@@ -19,9 +19,9 @@ def dispatch_route(route, record, send, problem_type: type[Exception], docker_er
         payload["trace_id"] = trace_id
         send(status, payload)
 
-    def classify(exc: Exception) -> stdlib_http.HttpFailure:
+    def classify(exc: Exception) -> stdlib.HttpFailure:
         if isinstance(exc, problem_type):
-            return stdlib_http.HttpFailure(
+            return stdlib.HttpFailure(
                 exc.status,
                 exc.message,
                 exc.code,
@@ -29,20 +29,20 @@ def dispatch_route(route, record, send, problem_type: type[Exception], docker_er
                 exc.code,
             )
         if isinstance(exc, docker_error_type):
-            return stdlib_http.HttpFailure(
+            return stdlib.HttpFailure(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Docker is unavailable",
                 "docker-error",
                 "error",
             )
-        return stdlib_http.HttpFailure(
+        return stdlib.HttpFailure(
             HTTPStatus.INTERNAL_SERVER_ERROR,
             "internal error",
             "internal-error",
             "error",
         )
 
-    def emit(failure: stdlib_http.HttpFailure) -> None:
+    def emit(failure: stdlib.HttpFailure) -> None:
         trace_id = record(
             operation,
             result=failure.result,
@@ -55,7 +55,7 @@ def dispatch_route(route, record, send, problem_type: type[Exception], docker_er
             payload["code"] = failure.public_code
         send(failure.status, payload)
 
-    stdlib_http.dispatch(
+    stdlib.dispatch(
         action,
         classify=classify,
         emit=emit,

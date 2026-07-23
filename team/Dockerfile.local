@@ -19,15 +19,16 @@ ARG SOURCE_DATE_EPOCH=0
 WORKDIR /app
 COPY --from=dependencies /opt/venv /opt/venv
 
-COPY local_app.py local_http.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py assistant_genesis.py assistant_manifest.py \
+COPY local_app.py local_audit.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py assistant_genesis.py assistant_manifest.py \
     assistant_help.py assistant_catalog.json assistant_secret_store.py assistant_secret_challenges.py assistant_secret_flow.py \
     assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
     oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
     assistant_chat.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
     local_chat_continuations.py local_chat_continuation_store.py \
     model_catalog.json \
-    egress_policy.py strict_http.py stdlib_http.py power_execution.py power_journal.py ./
+    egress_policy.py power_execution.py power_journal.py ./
 COPY assistant_human ./assistant_human
+COPY http_boundary ./http_boundary
 
 # A normal source build remains possible, but cannot start until release automation supplies the
 # published Cloudflare Assistant digest with `--build-arg SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE=repo@sha256:...`.
