@@ -134,6 +134,16 @@ class ApprovalChallengeTests(unittest.TestCase):
                 {"challenge_id": malformed.id, "approved": True},
             )
 
+    def test_authenticated_restore_preserves_id_payload_and_remaining_ttl(self) -> None:
+        store = assistant_approval_challenges.ApprovalChallengeStore(ttl_seconds=30)
+        private = object()
+        with mock.patch.object(assistant_approval_challenges.time, "monotonic", return_value=10.0):
+            restored = store.restore("marketing", "a" * 32, 7, (requirement(),), private)
+        self.assertEqual(restored.id, "a" * 32)
+        self.assertIs(restored.payload, private)
+        with mock.patch.object(assistant_approval_challenges.time, "monotonic", return_value=17.0):
+            self.assertIsNone(store.current("marketing"))
+
 
 if __name__ == "__main__":
     unittest.main()

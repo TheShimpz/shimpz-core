@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from unittest import mock
 
 import brain_runtime_client
 import chat_orchestrator
@@ -108,6 +109,17 @@ class InputFlowTests(unittest.TestCase):
             input_flow.requirement(malformed, IMAGE, 0)
         with self.assertRaises(input_flow.InputFlowError):
             input_flow.requirement(interaction("str"), IMAGE, 1)
+
+    def test_authenticated_restore_preserves_id_payload_and_remaining_ttl(self) -> None:
+        store = input_challenges.InputChallengeStore(ttl_seconds=30)
+        requirement = input_flow.requirement(interaction("str"), IMAGE, 0)
+        private = object()
+        with mock.patch.object(input_challenges.time, "monotonic", return_value=10.0):
+            restored = store.restore("team_1", "a" * 32, 7, requirement, private)
+        self.assertEqual(restored.id, "a" * 32)
+        self.assertIs(restored.payload, private)
+        with mock.patch.object(input_challenges.time, "monotonic", return_value=17.0):
+            self.assertIsNone(store.current("team_1"))
 
 
 if __name__ == "__main__":

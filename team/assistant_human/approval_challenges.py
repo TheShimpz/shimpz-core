@@ -120,6 +120,41 @@ class ApprovalChallengeStore:
                 raise ApprovalChallengeNotFoundError("approval challenge is unavailable")
             return challenge
 
+    def restore(
+        self,
+        team_id: object,
+        challenge_id: object,
+        remaining_seconds: object,
+        requirements: tuple[ApprovalRequirement, ...],
+        payload: Any,
+    ) -> PendingApprovalChallenge:
+        """Rehydrate one authenticated durable challenge without extending its TTL."""
+        team = _team_id(team_id)
+        identifier = _challenge_id(challenge_id)
+        if (
+            type(remaining_seconds) is not int
+            or not 1 <= remaining_seconds <= self._ttl
+            or not requirements
+        ):
+            raise ApprovalChallengeError("approval challenge restore is invalid")
+        now = time.monotonic()
+        with self._lock:
+            self._expire(now)
+            if team in self._by_team or identifier in self._pending:
+                raise ApprovalChallengeError("Team already has a pending approval challenge")
+            if len(self._pending) >= self._capacity:
+                raise ApprovalChallengeError("approval challenge capacity reached")
+            challenge = PendingApprovalChallenge(
+                identifier,
+                team,
+                now + remaining_seconds,
+                requirements,
+                payload,
+            )
+            self._pending[identifier] = challenge
+            self._by_team[team] = identifier
+            return challenge
+
     def current(self, team_id: object) -> PendingApprovalChallenge | None:
         team = _team_id(team_id)
         now = time.monotonic()

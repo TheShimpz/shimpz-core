@@ -85,6 +85,16 @@ class SecretChallengeStoreTests(unittest.TestCase):
         self.assertEqual(committed, [challenge.id])
         self.assertIsNone(store.current("team_1"))
 
+    def test_authenticated_restore_preserves_id_payload_and_remaining_ttl(self) -> None:
+        store = assistant_secret_challenges.SecretChallengeStore(ttl_seconds=30)
+        private = object()
+        with patch.object(assistant_secret_challenges.time, "monotonic", return_value=10.0):
+            restored = store.restore("team_1", "a" * 32, 7, (requirement(),), private)
+        self.assertEqual(restored.id, "a" * 32)
+        self.assertIs(restored.payload, private)
+        with patch.object(assistant_secret_challenges.time, "monotonic", return_value=17.0):
+            self.assertIsNone(store.current("team_1"))
+
 
 if __name__ == "__main__":
     unittest.main()

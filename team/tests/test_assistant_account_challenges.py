@@ -80,6 +80,16 @@ class AssistantAccountChallengeTests(unittest.TestCase):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 assistant_account_challenges.AccountChallengeStore(**options)
 
+    def test_authenticated_restore_preserves_id_payload_and_remaining_ttl(self) -> None:
+        store = assistant_account_challenges.AccountChallengeStore(ttl_seconds=30)
+        private = object()
+        with mock.patch.object(assistant_account_challenges.time, "monotonic", return_value=10.0):
+            restored = store.restore("team_1", "a" * 32, 7, (requirement(),), private)
+        self.assertEqual(restored.id, "a" * 32)
+        self.assertIs(restored.payload, private)
+        with mock.patch.object(assistant_account_challenges.time, "monotonic", return_value=17.0):
+            self.assertIsNone(store.current("team_1"))
+
 
 if __name__ == "__main__":
     unittest.main()
