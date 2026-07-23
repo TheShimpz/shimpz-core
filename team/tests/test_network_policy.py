@@ -11,7 +11,7 @@ import copy
 import unittest
 
 import healthcheck as team_healthcheck
-import network_policy as policy
+from container_policy import network as policy
 
 
 def check(condition: object, message: str) -> None:

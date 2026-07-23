@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import assistant_manifest
-import network_policy
+from container_policy import network as network_policy
 
 # Also bounds derived names: the per-app DB project "team_<sha10>_<app>" stays within pg-driver's
 # 58-char cap at this id length (see manifests.team_app_db_project).

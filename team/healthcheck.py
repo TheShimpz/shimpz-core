@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 
 import marketplace
-import network_policy
+from container_policy import network as network_policy
 
 DOCKER_SOCKET = os.environ.get("DOCKER_HOST_SOCKET", "/var/run/docker.sock")
 # Must stay identical to manifests.RUNTIME without importing the SDK-backed module. This is not an

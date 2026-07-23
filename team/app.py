@@ -56,7 +56,6 @@ import inference_config
 import manifests
 import marketplace
 import marketplace_image
-import network_policy
 import oauth_account_service
 import oauth_account_store
 import oauth_http_client
@@ -72,6 +71,7 @@ from assistant_human import approval_flow as assistant_approval_flow
 from assistant_human import approval_grants as assistant_approval_grants
 from assistant_human import input_challenges as assistant_input_challenges
 from assistant_human import input_flow as assistant_input_flow
+from container_policy import network as network_policy
 from http_boundary import hosted, stdlib
 from http_boundary import strict as strict_http
 
