@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -41,6 +42,8 @@ import docker
 import egress_policy
 import inference_config
 import local_audit
+import local_chat_continuation_store
+import local_chat_continuations
 import local_token_store
 import oauth_account_service
 import oauth_account_store
@@ -133,6 +136,18 @@ LOCAL_APPROVAL_GRANTS_PATH = Path(
         "/var/lib/shimpz-local/assistant-approvals/grants.sqlite3",
     )
 )
+LOCAL_CHAT_CONTINUATIONS_STATE_PATH = Path(
+    os.environ.get(
+        "SHIMPZ_LOCAL_CHAT_CONTINUATIONS_STATE_PATH",
+        str(local_chat_continuation_store.STATE_PATH),
+    )
+)
+LOCAL_CHAT_CONTINUATIONS_KEY_PATH = Path(
+    os.environ.get(
+        "SHIMPZ_LOCAL_CHAT_CONTINUATIONS_KEY_PATH",
+        str(local_chat_continuation_store.KEY_PATH),
+    )
+)
 _FILE_UPLOAD_SLOTS = threading.BoundedSemaphore(1)
 _CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
@@ -156,16 +171,7 @@ class _ActiveAssistant:
     container: object | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _PendingLocalChat:
-    """Secret-free, process-local state for one paused Team turn."""
-
-    continuation: chat_orchestrator.ChatContinuation
-    assistant_ids: tuple[str, ...]
-    file_ids: tuple[str, ...]
-    provider: str
-    identity: tuple[object, ...]
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
+_PendingLocalChat = local_chat_continuations.PendingLocalChat
 
 
 def _required_active_assistant(
@@ -376,6 +382,7 @@ class LocalController:
         approval_challenges: assistant_approval_challenges.ApprovalChallengeStore | None = None,
         approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None,
         input_challenges: assistant_input_challenges.InputChallengeStore | None = None,
+        chat_continuations: local_chat_continuation_store.EncryptedContinuationStore | None = None,
     ) -> None:
         self.client = client
         self.space_id = validate_space_id(space_id)
@@ -408,6 +415,10 @@ class LocalController:
             LOCAL_APPROVAL_GRANTS_PATH
         )
         self.input_challenges = input_challenges or assistant_input_challenges.InputChallengeStore()
+        self.chat_continuations = chat_continuations or local_chat_continuation_store.EncryptedContinuationStore(
+            LOCAL_CHAT_CONTINUATIONS_STATE_PATH,
+            LOCAL_CHAT_CONTINUATIONS_KEY_PATH,
+        )
         self._assistant_genesis_cache = assistant_genesis.GenesisCache()
         self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
         self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
@@ -420,6 +431,7 @@ class LocalController:
         self._cancelled_chat_tokens: set[str] = set()
         daemon_info = self._require_default_seccomp()
         self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
+        self._restore_all_chat_continuations()
 
     def _require_default_seccomp(self) -> dict:
         try:
@@ -1160,6 +1172,7 @@ class LocalController:
             self._raise_account_problem(exc)
         if pruned:
             self.account_challenges.cancel_team(team_id)
+            self._delete_chat_continuation(team_id)
 
     @staticmethod
     def _raise_approval_grant_problem(exc: assistant_approval_grants.ApprovalGrantError) -> None:
@@ -1187,6 +1200,136 @@ class LocalController:
             return self.approval_grants.revoke_all()
         except assistant_approval_grants.ApprovalGrantError as exc:
             self._raise_approval_grant_problem(exc)
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _raise_chat_continuation_problem(exc: Exception) -> None:
+        raise ApiProblem(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Team chat continuation state is unavailable",
+            code="chat-state-unavailable",
+        ) from exc
+
+    def _persist_chat_continuation(
+        self,
+        kind: str,
+        challenge: object,
+        requirements: tuple[object, ...],
+        pending: _PendingLocalChat,
+    ) -> None:
+        challenge_id = getattr(challenge, "id", None)
+        expires_at = getattr(challenge, "expires_at", None)
+        remaining_seconds = math.ceil(expires_at - time.monotonic()) if isinstance(expires_at, float) else 0
+        if (
+            not isinstance(challenge_id, str)
+            or not 1 <= remaining_seconds <= local_chat_continuation_store.MAX_TTL_SECONDS
+        ):
+            self._raise_chat_continuation_problem(
+                local_chat_continuation_store.ContinuationStoreError("challenge lifetime is invalid")
+            )
+        try:
+            bindings, payload = local_chat_continuations.encode(kind, requirements, pending)
+            self.chat_continuations.put(
+                getattr(challenge, "team_id", None),
+                kind,
+                challenge_id,
+                int(time.time()) + remaining_seconds,
+                bindings,
+                payload,
+            )
+        except (
+            local_chat_continuation_store.ContinuationStoreError,
+            local_chat_continuations.ContinuationCodecError,
+        ) as exc:
+            self._raise_chat_continuation_problem(exc)
+
+    def _restore_chat_continuation(
+        self,
+        stored: local_chat_continuation_store.StoredContinuation,
+    ) -> None:
+        remaining_seconds = stored.expires_at - int(time.time())
+        if remaining_seconds <= 0:
+            return
+        try:
+            decoded = local_chat_continuations.decode(stored)
+            if decoded.kind == "accounts":
+                self.account_challenges.restore(
+                    stored.team_id,
+                    stored.challenge_id,
+                    remaining_seconds,
+                    decoded.requirements,
+                    decoded.pending,
+                )
+            elif decoded.kind == "secrets":
+                self.secret_challenges.restore(
+                    stored.team_id,
+                    stored.challenge_id,
+                    remaining_seconds,
+                    decoded.requirements,
+                    decoded.pending,
+                )
+            elif decoded.kind == "input":
+                if len(decoded.requirements) != 1:
+                    raise local_chat_continuations.ContinuationCodecError(
+                        "input continuation requirements are malformed"
+                    )
+                self.input_challenges.restore(
+                    stored.team_id,
+                    stored.challenge_id,
+                    remaining_seconds,
+                    decoded.requirements[0],
+                    decoded.pending,
+                )
+            elif decoded.kind == "approval":
+                self.approval_challenges.restore(
+                    stored.team_id,
+                    stored.challenge_id,
+                    remaining_seconds,
+                    decoded.requirements,
+                    decoded.pending,
+                )
+            else:
+                raise local_chat_continuations.ContinuationCodecError("continuation kind is malformed")
+        except (
+            local_chat_continuation_store.ContinuationStoreError,
+            local_chat_continuations.ContinuationCodecError,
+            assistant_account_challenges.AccountChallengeError,
+            assistant_secret_challenges.SecretChallengeError,
+            assistant_input_challenges.InputChallengeError,
+            assistant_approval_challenges.ApprovalChallengeError,
+        ) as exc:
+            self._raise_chat_continuation_problem(exc)
+
+    def _restore_all_chat_continuations(self) -> None:
+        try:
+            stored = self.chat_continuations.active()
+        except local_chat_continuation_store.ContinuationStoreError as exc:
+            self._raise_chat_continuation_problem(exc)
+        for continuation in stored:
+            self._restore_chat_continuation(continuation)
+
+    def _delete_chat_continuation(
+        self,
+        team_id: str,
+        challenge_id: str | None = None,
+    ) -> bool:
+        store = getattr(self, "chat_continuations", None)
+        if store is None:
+            return False
+        try:
+            return store.delete(team_id, challenge_id)
+        except local_chat_continuation_store.ContinuationStoreError as exc:
+            self._raise_chat_continuation_problem(exc)
+        raise AssertionError("unreachable")
+
+    def _clear_chat_continuations(self) -> int:
+        store = getattr(self, "chat_continuations", None)
+        if store is None:
+            return 0
+        try:
+            return store.clear()
+        except local_chat_continuation_store.ContinuationStoreError as exc:
+            self._raise_chat_continuation_problem(exc)
         raise AssertionError("unreachable")
 
     def _power_secret_generations(
@@ -1471,6 +1614,7 @@ class LocalController:
                 self.secret_challenges.cancel_team(team_id)
                 self.approval_challenges.cancel_team(team_id)
                 self.input_challenges.cancel_team(team_id)
+                self._delete_chat_continuation(team_id)
                 try:
                     self.assistant_secrets.put_many(team_id, spec.assistant_id, replacements)
                     installed = self.list_assistants(team_id)["assistants"]
@@ -1937,8 +2081,14 @@ class LocalController:
                 "Assistant secret request is already pending",
                 code="assistant-secret-challenge-conflict",
             ) from exc
+        try:
+            self._persist_chat_continuation("secrets", challenge, requirements, payload)
+        except ApiProblem:
+            self.secret_challenges.cancel_team(team_id)
+            raise
         if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
             self.secret_challenges.cancel_team(team_id)
+            self._delete_chat_continuation(team_id, challenge.id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._challenge_response(challenge)
 
@@ -1975,8 +2125,14 @@ class LocalController:
                 "Assistant account request is already pending",
                 code="assistant-account-challenge-conflict",
             ) from exc
+        try:
+            self._persist_chat_continuation("accounts", challenge, requirements, payload)
+        except ApiProblem:
+            self.account_challenges.cancel_team(team_id)
+            raise
         if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
             self.account_challenges.cancel_team(team_id)
+            self._delete_chat_continuation(team_id, challenge.id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._account_response(challenge)
 
@@ -1996,8 +2152,14 @@ class LocalController:
                 "Assistant approval is already pending",
                 code="assistant-approval-challenge-conflict",
             ) from exc
+        try:
+            self._persist_chat_continuation("approval", challenge, requirements, payload)
+        except ApiProblem:
+            self.approval_challenges.cancel_team(team_id)
+            raise
         if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
             self.approval_challenges.cancel_team(team_id)
+            self._delete_chat_continuation(team_id, challenge.id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._approval_response(challenge)
 
@@ -2036,8 +2198,14 @@ class LocalController:
                 "Assistant human input request is invalid",
                 code="invalid-assistant-input-request",
             ) from exc
+        try:
+            self._persist_chat_continuation("input", challenge, (challenge.requirement,), payload)
+        except ApiProblem:
+            self.input_challenges.cancel_team(team_id)
+            raise
         if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
             self.input_challenges.cancel_team(team_id)
+            self._delete_chat_continuation(team_id, challenge.id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._input_response(challenge)
 
@@ -2295,6 +2463,7 @@ class LocalController:
             )
 
         def complete(terminal: chat_orchestrator.ChatOutcome) -> dict[str, object]:
+            self._delete_chat_continuation(team_id)
             if not self._commit_chat_terminal(team_id, token):
                 raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
             return {"team_id": team_id, "team_name": team_name, "reply": terminal.reply}
@@ -2649,6 +2818,7 @@ class LocalController:
         challenge_cancelled = self.secret_challenges.cancel_team(team_id)
         approval_cancelled = self.approval_challenges.cancel_team(team_id)
         input_cancelled = self.input_challenges.cancel_team(team_id)
+        continuation_cancelled = self._delete_chat_continuation(team_id)
         power_stopped = False
         with self._active_chat_guard:
             token = self._active_chat_tokens.get(team_id)
@@ -2659,7 +2829,12 @@ class LocalController:
                 self._fail_stop_power(active[1])
                 power_stopped = True
         accepted = (
-            token is not None or account_cancelled or challenge_cancelled or input_cancelled or approval_cancelled
+            token is not None
+            or account_cancelled
+            or challenge_cancelled
+            or input_cancelled
+            or approval_cancelled
+            or continuation_cancelled
         )
         return {
             "team_id": team_id,
@@ -3327,6 +3502,7 @@ class LocalController:
         self.secret_challenges.cancel_team(team_id)
         self.approval_challenges.cancel_team(team_id)
         self.input_challenges.cancel_team(team_id)
+        self._delete_chat_continuation(team_id)
         with self._lock(team_id):
             network = self._network(team_id)
             self._revoke_assistant_approval_grants(team_id, assistant_id)
@@ -3549,6 +3725,7 @@ class LocalController:
         self.secret_challenges.cancel_team(team_id)
         self.approval_challenges.cancel_team(team_id)
         self.input_challenges.cancel_team(team_id)
+        self._delete_chat_continuation(team_id)
         self._cancel_chat_for_destroy(team_id)
 
         chat_lock = self._chat_lock(team_id)
@@ -3687,6 +3864,7 @@ class LocalController:
         self.secret_challenges.cancel_all()
         self.approval_challenges.cancel_all()
         self.input_challenges.cancel_all()
+        self._clear_chat_continuations()
         with ExitStack() as locks:
             for lock in self._locks:
                 locks.enter_context(lock)

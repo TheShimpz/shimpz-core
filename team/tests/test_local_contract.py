@@ -26,6 +26,7 @@ import brain_runtime_client
 import inference_config
 import local_app
 import local_audit
+import local_chat_continuation_store
 import local_healthcheck
 import local_registry
 import local_token_store
@@ -68,6 +69,14 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(
             local_app.LOCAL_POWER_JOURNAL_PATH,
             Path("/var/lib/shimpz-local/power-journal/journal.sqlite3"),
+        )
+        self.assertEqual(
+            local_app.LOCAL_CHAT_CONTINUATIONS_STATE_PATH,
+            local_chat_continuation_store.STATE_PATH,
+        )
+        self.assertEqual(
+            local_app.LOCAL_CHAT_CONTINUATIONS_KEY_PATH,
+            local_chat_continuation_store.KEY_PATH,
         )
 
     def _registry(
@@ -153,6 +162,10 @@ class LocalContractTests(unittest.TestCase):
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
+        controller.chat_continuations = local_chat_continuation_store.EncryptedContinuationStore(
+            Path(directory) / "chat-continuations" / "state" / "continuations.json",
+            Path(directory) / "chat-continuations" / "key" / "aes256.key",
+        )
         controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
             Path(directory) / "assistant-approvals" / "grants.sqlite3"
         )
@@ -165,19 +178,25 @@ class LocalContractTests(unittest.TestCase):
             )
         if configure_secrets is None:
             account = controller.registry["shimpz-cloudflare"].accounts["cloudflare"]
-            controller.assistant_accounts.put(
+            existing = controller.assistant_accounts.metadata(
                 "team_1",
                 "shimpz-cloudflare",
-                "cloudflare",
-                account.provider,
-                account.scopes,
-                SimpleNamespace(
-                    access_token=TEST_ACCOUNT_ACCESS_TOKEN,
-                    refresh_token=TEST_ACCOUNT_REFRESH_TOKEN,
-                    scopes=account.scopes,
-                    expires_in=3600,
-                ),
+                {"cloudflare": account},
             )
+            if existing[0].status == "missing":
+                controller.assistant_accounts.put(
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    account.provider,
+                    account.scopes,
+                    SimpleNamespace(
+                        access_token=TEST_ACCOUNT_ACCESS_TOKEN,
+                        refresh_token=TEST_ACCOUNT_REFRESH_TOKEN,
+                        scopes=account.scopes,
+                        expires_in=3600,
+                    ),
+                )
         controller._blocked_power_workloads = set()
         controller._locks = tuple(threading.RLock() for _ in range(64))
         controller._active_chat_guard = threading.Lock()
@@ -199,6 +218,7 @@ class LocalContractTests(unittest.TestCase):
             local_app._ActiveAssistant(controller.registry["shimpz-cloudflare"], container.id, container),
         )
         controller._active_assistant_genesis = lambda _active: "Use only the declared Cloudflare Powers."
+        controller._restore_all_chat_continuations()
         return controller
 
     @staticmethod
@@ -2164,6 +2184,98 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual([envelope["answers"] for envelope in envelopes], [[], ["Ada"], ["Ada", 3]])
         self.assertEqual(runtime.resumes, [{"power-1": LOOKUP_RESULT}])
         self.assertEqual(replay.exception.code, "assistant-input-challenge-expired")
+
+    def test_chat_human_input_resumes_from_encrypted_disk_after_controller_restart(self) -> None:
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="power-1",
+            assistant_id="shimpz-cloudflare",
+            power="list-zones",
+            input=LOOKUP_INPUT,
+        )
+
+        class Runtime:
+            def __init__(self) -> None:
+                self.starts = 0
+                self.resumes: list[dict[str, object]] = []
+
+            def start(self, _context, _message):
+                self.starts += 1
+                return brain_runtime_client.RuntimeTurn(status="power-required", reply="", powers=(request,))
+
+            def resume(self, _context, results):
+                self.resumes.append(dict(results))
+                return brain_runtime_client.RuntimeTurn(status="completed", reply="Restarted.", powers=())
+
+        runtime = Runtime()
+        envelopes: list[dict[str, object]] = []
+
+        def rpc(_container, _spec, _method, _path, envelope):
+            envelopes.append(envelope)
+            if not envelope["answers"]:
+                return local_app.power_execution.RpcSuspension(
+                    {
+                        "ordinal": 0,
+                        "kind": "request",
+                        "request_type": "str",
+                        "title": "Restart name",
+                        "summary": "Provide a restart name.",
+                        "docs": None,
+                        "options": [],
+                    }
+                )
+            if len(envelope["answers"]) == 1:
+                return local_app.power_execution.RpcSuspension(
+                    {
+                        "ordinal": 1,
+                        "kind": "request",
+                        "request_type": "int",
+                        "title": "Restart count",
+                        "summary": "Provide a restart count.",
+                        "docs": None,
+                        "options": [],
+                    }
+                )
+            return LOOKUP_RESULT
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
+                before_restart = self._chat_controller(directory, runtime)
+                before_restart._rpc = rpc
+                first = before_restart.chat(
+                    "team_1",
+                    {"message": "Ask across restart", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+                second = before_restart.submit_chat_input(
+                    "team_1",
+                    {"challenge_id": first["challenge_id"], "answer": "Ada"},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+
+                encrypted_state = (Path(directory) / "chat-continuations" / "state" / "continuations.json").read_bytes()
+                self.assertNotIn(b"Ada", encrypted_state)
+                self.assertNotIn(b"Restart count", encrypted_state)
+
+                after_restart = self._chat_controller(directory, runtime)
+                after_restart._rpc = rpc
+                restored = after_restart._pending_chat_continuation("team_1")
+                self.assertIsNotNone(restored)
+                self.assertEqual(restored["challenge_id"], second["challenge_id"])
+                response = after_restart.submit_chat_input(
+                    "team_1",
+                    {"challenge_id": second["challenge_id"], "answer": 3},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+
+            self.assertIsNone(after_restart.chat_continuations.current("team_1"))
+
+        self.assertEqual(response["reply"], "Restarted.")
+        self.assertEqual(runtime.starts, 1)
+        self.assertEqual(runtime.resumes, [{"power-1": LOOKUP_RESULT}])
+        self.assertEqual([envelope["answers"] for envelope in envelopes], [[], ["Ada"], ["Ada", 3]])
 
     def test_once_approval_is_remembered_for_one_team_assistant_power_release_and_can_be_revoked(self) -> None:
         class Runtime:
