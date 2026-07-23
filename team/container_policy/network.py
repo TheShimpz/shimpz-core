@@ -454,25 +454,30 @@ def network_members_valid(
     if not isinstance(network_id, str) or not network_id:
         return False
     seen: dict[str, int] = {}
+    valid = True
     for member_id in members:
         metadata = containers.get(member_id)
         if not isinstance(metadata, Mapping) or _container_id(metadata) != member_id:
-            return False
+            valid = False
+            break
         role = _member_role(metadata, team_id, kind)
         if role is None:
-            return False
+            valid = False
+            break
         role_name = role[0]
         seen[role_name] = seen.get(role_name, 0) + 1
         if role_name != "app" and seen[role_name] != 1:
-            return False
+            valid = False
+            break
         endpoint = _network_endpoint(metadata, network_name(team_id, kind))
-        if endpoint.get("NetworkID") != network_id:
-            return False
-        if not _aliases_valid(metadata, role, endpoint):
-            return False
-    if require_brain and seen.get("brain") != 1:
-        return False
-    return not require_dependencies or seen.get("postgres") == 1
+        if endpoint.get("NetworkID") != network_id or not _aliases_valid(metadata, role, endpoint):
+            valid = False
+            break
+    return (
+        valid
+        and (not require_brain or seen.get("brain") == 1)
+        and (not require_dependencies or seen.get("postgres") == 1)
+    )
 
 
 def _security_options_valid(host_config: Mapping) -> bool:
@@ -641,10 +646,8 @@ def workload_security_valid(
     mounts = metadata.get("Mounts")
     if not isinstance(mounts, list):
         return False
-    if role[0] == "brain":
-        return host_config.get("ReadonlyRootfs") is True and cap_drop == {"ALL"} and not cap_add and not mounts
     return (
-        config.get("User") == "10001:10001"
+        (role[0] == "brain" or config.get("User") == "10001:10001")
         and host_config.get("ReadonlyRootfs") is True
         and cap_drop == {"ALL"}
         and not cap_add
