@@ -3052,10 +3052,6 @@ class LocalController:
         state = container.attrs.get("State")
         return isinstance(state, dict) and state.get("Running") is False
 
-    @staticmethod
-    def _read_exact(raw_socket: socket.socket, amount: int, deadline: float) -> bytes:
-        return power_execution._read_exact(raw_socket, amount, deadline)
-
     def _read_rpc_frames(self, raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
         return power_execution.read_rpc_frames(raw_socket, deadline, MAX_RESPONSE_BYTES)
 

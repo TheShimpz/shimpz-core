@@ -1825,10 +1825,6 @@ def _select_team_assistants(
         raise ApiError(HTTPStatus.CONFLICT, "a selected Assistant is unavailable") from None
 
 
-def _read_rpc_exact(raw_socket: socket.socket, amount: int, deadline: float) -> bytes:
-    return power_execution._read_exact(raw_socket, amount, deadline)
-
-
 def _read_rpc_frames(raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
     return power_execution.read_rpc_frames(raw_socket, deadline, MAX_ASSISTANT_RPC_OUTPUT_BYTES)
 
