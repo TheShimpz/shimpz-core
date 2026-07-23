@@ -20,6 +20,7 @@ Endpoints (all require `Authorization: Bearer <token>` — see token_store.py):
 from __future__ import annotations
 
 import contextlib
+import hmac
 import ipaddress
 import json
 import os
@@ -601,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authed(self) -> bool:
         auth = self.headers.get("Authorization", "")
-        return auth == f"Bearer {_token}"
+        return hmac.compare_digest(auth, f"Bearer {_token}")
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
         body = json.dumps(payload).encode()
