@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import local_app
+from local_support import egress as local_egress
 
 
 class _Proxy:
@@ -22,7 +23,7 @@ class _Proxy:
                     local_app.MANAGED_LABEL: "1",
                     local_app.PROFILE_LABEL: local_app.PROFILE,
                     local_app.SPACE_LABEL: space_id,
-                    local_app.KIND_LABEL: local_app.APP_EGRESS_PROXY_KIND,
+                    local_app.KIND_LABEL: local_egress.APP_EGRESS_PROXY_KIND,
                 },
             },
             "HostConfig": {
@@ -92,9 +93,9 @@ class LocalAssistantEgressTests(unittest.TestCase):
         )
         self.controller.registry = {self.spec.assistant_id: self.spec}
         self.patches = (
-            mock.patch.object(local_app, "APP_EGRESS_POLICY_DIR", self.policy_root),
-            mock.patch.object(local_app, "APP_EGRESS_POLICY_GID", os.getgid()),
-            mock.patch.object(local_app, "APP_EGRESS_PROXY_CONTAINER", self.proxy.name),
+            mock.patch.object(local_egress, "APP_EGRESS_POLICY_DIR", self.policy_root),
+            mock.patch.object(local_egress, "APP_EGRESS_POLICY_GID", os.getgid()),
+            mock.patch.object(local_egress, "APP_EGRESS_PROXY_CONTAINER", self.proxy.name),
         )
         for patcher in self.patches:
             patcher.start()
@@ -114,7 +115,7 @@ class LocalAssistantEgressTests(unittest.TestCase):
         self.assertEqual(environment["NO_PROXY"], "127.0.0.1,localhost")
         self.assertIn(self.network.name, self.proxy.attrs["NetworkSettings"]["Networks"])
         self.assertIn(
-            local_app.APP_EGRESS_PROXY_ALIAS,
+            local_egress.APP_EGRESS_PROXY_ALIAS,
             self.proxy.attrs["NetworkSettings"]["Networks"][self.network.name]["Aliases"],
         )
         policy = self.policy_root / f"{token}.json"
@@ -173,7 +174,7 @@ class LocalAssistantEgressTests(unittest.TestCase):
                 elif drift == "hardlink":
                     policy.with_name("policy-hardlink.json").hardlink_to(policy)
                 else:
-                    policy.write_bytes(b"x" * (local_app.MAX_EGRESS_POLICY_BYTES + 1))
+                    policy.write_bytes(b"x" * (local_egress.MAX_EGRESS_POLICY_BYTES + 1))
 
                 with self.assertRaises(local_app.ApiProblem) as caught:
                     self.controller._validate_egress_policy(
