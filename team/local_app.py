@@ -64,6 +64,7 @@ from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Ulimit
 from http_boundary import local
 from http_boundary import strict as strict_http
+from local_errors import ApiProblemError as ApiProblem
 from local_registry import (
     AssistantSpec,
     RegistryError,
@@ -156,14 +157,6 @@ LOCAL_CHAT_CONTINUATIONS_KEY_PATH = Path(
 )
 _FILE_UPLOAD_SLOTS = threading.BoundedSemaphore(1)
 _CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-
-
-class ApiProblem(RuntimeError):
-    def __init__(self, status: HTTPStatus, message: str, *, code: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
-        self.code = code
 
 
 class _UnsupportedAssistantRpcPathError(RuntimeError):
