@@ -17,11 +17,11 @@ sys.path.insert(0, str(TESTS))
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
+import hosted_app_fixture as hosted_harness
 import inference_config
 import local_app
 import local_registry
 import power_execution
-import test_hosted_app as hosted_harness
 
 hosted_app = hosted_harness.app
 

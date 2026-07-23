@@ -15,7 +15,7 @@ from unittest import mock
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
 
-import test_hosted_app as harness
+import hosted_app_fixture as harness
 
 app = harness.app
 _patched = harness._patched

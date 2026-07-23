@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_hosted_app import _patched, app
+from hosted_app_fixture import _patched, app
 
 
 class HostedLimitAndTeardownTests(unittest.TestCase):

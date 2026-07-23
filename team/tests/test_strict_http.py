@@ -14,7 +14,7 @@ sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import local_app
-from test_hosted_app import app
+from hosted_app_fixture import app
 
 
 class SharedStrictHttpTest(unittest.TestCase):

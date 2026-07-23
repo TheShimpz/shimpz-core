@@ -20,7 +20,7 @@ sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import local_app
-from test_hosted_app import _patched, app
+from hosted_app_fixture import _patched, app
 
 
 def _frame(stream_id: int, payload: bytes) -> bytes:
