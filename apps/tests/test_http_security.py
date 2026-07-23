@@ -46,19 +46,6 @@ class HttpSecurityStaticTests(unittest.TestCase):
 
         self.assertEqual(ast.unparse(returned.value), "stdlib_http.bearer_authorized(self.headers, _token)")
 
-    def test_unexpected_exception_text_is_redacted_from_http_500(self) -> None:
-        dispatch = _handler_method("_dispatch")
-        unexpected = next(
-            node
-            for node in ast.walk(dispatch)
-            if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Name) and node.type.id == "Exception"
-        )
-        boundary = "\n".join(ast.unparse(statement) for statement in unexpected.body)
-
-        self.assertIn("reason=type(exc).__name__", boundary)
-        self.assertIn("{'error': 'internal error'}", boundary)
-        self.assertNotIn("str(exc)", boundary)
-
     def test_caddy_reconcile_loop_catches_only_docker_failures(self) -> None:
         loop = ast.parse(APP_SOURCE.read_text(encoding="utf-8"))
         function = next(

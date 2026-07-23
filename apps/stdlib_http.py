@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import BinaryIO
+from urllib.parse import parse_qs, urlsplit
 
 
 class HttpError(ValueError):
@@ -13,6 +17,28 @@ class HttpError(ValueError):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+@dataclass(frozen=True)
+class Route:
+    method: str
+    pattern: re.Pattern[str]
+    operation: str
+
+
+@dataclass(frozen=True)
+class RouteMatch:
+    operation: str
+    params: dict[str, str]
+    query: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class HttpFailure:
+    status: HTTPStatus
+    public_message: str
+    audit_reason: str
+    result: str
 
 
 def bearer_authorized(headers: object, token: str) -> bool:
@@ -48,3 +74,34 @@ def read_json_body(headers: object, stream: BinaryIO, *, max_bytes: int) -> dict
     if not isinstance(body, dict):
         raise HttpError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
     return body
+
+
+def resolve_route(routes: Iterable[Route], method: str, raw_target: str) -> RouteMatch:
+    target = urlsplit(raw_target)
+    for route in routes:
+        if route.method != method or (matched := route.pattern.fullmatch(target.path)) is None:
+            continue
+        return RouteMatch(route.operation, matched.groupdict(), parse_qs(target.query))
+    raise HttpError(HTTPStatus.NOT_FOUND, f"no route for {method} {target.path}")
+
+
+def dispatch(
+    action: Callable[[], None],
+    *,
+    classify: Callable[[Exception], HttpFailure | None],
+    emit: Callable[[HttpFailure], None],
+    unexpected_message: str,
+) -> None:
+    """Run one HTTP action and redact every unclassified ordinary exception."""
+    try:
+        action()
+    except Exception as exc:
+        failure = classify(exc)
+        if failure is None:
+            failure = HttpFailure(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                unexpected_message,
+                type(exc).__name__,
+                "error",
+            )
+        emit(failure)

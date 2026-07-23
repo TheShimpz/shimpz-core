@@ -32,7 +32,6 @@ from collections import defaultdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
 
 import audit
 import caddy_routes
@@ -82,9 +81,23 @@ RETIRING_SUFFIX = "__retiring"
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
-_APP_ROUTE = re.compile(r"^/v1/apps/([^/]+)/(deploy|stop|start|restart|status|logs|health)$")
-_APP_DELETE_ROUTE = re.compile(r"^/v1/apps/([^/]+)$")
-_ROUTE_DELETE_ROUTE = re.compile(r"^/v1/routes/([^/]+)$")
+_APP_ROUTES = (
+    stdlib_http.Route("POST", re.compile(r"^/v1/apps/(?P<name>[^/]+)/deploy$"), "deploy"),
+    stdlib_http.Route("POST", re.compile(r"^/v1/stack/recreate$"), "recreate"),
+    stdlib_http.Route(
+        "POST",
+        re.compile(r"^/v1/apps/(?P<name>[^/]+)/(?P<action>stop|start|restart)$"),
+        "lifecycle",
+    ),
+    stdlib_http.Route("GET", re.compile(r"^/v1/apps/(?P<name>[^/]+)/status$"), "status"),
+    stdlib_http.Route("GET", re.compile(r"^/v1/apps/(?P<name>[^/]+)/logs$"), "logs"),
+    stdlib_http.Route("GET", re.compile(r"^/v1/apps/(?P<name>[^/]+)/health$"), "health"),
+    stdlib_http.Route("DELETE", re.compile(r"^/v1/apps/(?P<name>[^/]+)$"), "remove"),
+    stdlib_http.Route("GET", re.compile(r"^/v1/apps$"), "list-apps"),
+    stdlib_http.Route("GET", re.compile(r"^/v1/routes$"), "list-routes"),
+    stdlib_http.Route("POST", re.compile(r"^/v1/routes/apply$"), "apply-route"),
+    stdlib_http.Route("DELETE", re.compile(r"^/v1/routes/(?P<fqdn>[^/]+)$"), "delete-route"),
+)
 
 _docker = docker.from_env()
 _token = token_store.ensure_token()
@@ -595,6 +608,76 @@ def _route_list() -> dict:
     return {"routes": caddy_routes.list_routes()}
 
 
+def _http_failure(exc: Exception) -> stdlib_http.HttpFailure | None:
+    if isinstance(exc, ApiError):
+        return stdlib_http.HttpFailure(exc.status, exc.message, exc.message, "denied")
+    if isinstance(exc, validate.ValidationError):
+        message = str(exc)
+        return stdlib_http.HttpFailure(HTTPStatus.BAD_REQUEST, message, message, "denied")
+    return None
+
+
+def _operation_deploy(handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    return _deploy(route.params["name"], handler._body())
+
+
+def _operation_recreate(handler: Handler, _route: stdlib_http.RouteMatch) -> dict:
+    return _recreate(handler._body())
+
+
+def _operation_lifecycle(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    return _lifecycle(route.params["name"], route.params["action"])
+
+
+def _operation_status(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    return _status(route.params["name"])
+
+
+def _operation_logs(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    lines = int(route.query.get("lines", ["80"])[-1])
+    return _logs(route.params["name"], lines)
+
+
+def _operation_health(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    return _health(route.params["name"])
+
+
+def _operation_remove(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    purge = route.query.get("purge_volume", [])[-1:] == ["1"]
+    return _remove(route.params["name"], purge)
+
+
+def _operation_list_apps(_handler: Handler, _route: stdlib_http.RouteMatch) -> dict:
+    return _list_apps()
+
+
+def _operation_list_routes(_handler: Handler, _route: stdlib_http.RouteMatch) -> dict:
+    return _route_list()
+
+
+def _operation_apply_route(handler: Handler, _route: stdlib_http.RouteMatch) -> dict:
+    return _route_apply(handler._body())
+
+
+def _operation_delete_route(_handler: Handler, route: stdlib_http.RouteMatch) -> dict:
+    return _route_delete(route.params["fqdn"])
+
+
+_APP_OPERATIONS = {
+    "deploy": _operation_deploy,
+    "recreate": _operation_recreate,
+    "lifecycle": _operation_lifecycle,
+    "status": _operation_status,
+    "logs": _operation_logs,
+    "health": _operation_health,
+    "remove": _operation_remove,
+    "list-apps": _operation_list_apps,
+    "list-routes": _operation_list_routes,
+    "apply-route": _operation_apply_route,
+    "delete-route": _operation_delete_route,
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "shimpz-driver/1.0"
 
@@ -618,59 +701,20 @@ class Handler(BaseHTTPRequestHandler):
                 audit.log("auth", self.path, result="denied")
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid or missing bearer token"})
             return
-        try:
-            self._route(method)
-        except ApiError as exc:
-            audit.log(method.lower(), self.path, result="denied", reason=exc.message)
-            self._send_json(exc.status, {"error": exc.message})
-        except validate.ValidationError as exc:
-            audit.log(method.lower(), self.path, result="denied", reason=str(exc))
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            audit.log(method.lower(), self.path, result="error", reason=type(exc).__name__)
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+        stdlib_http.dispatch(
+            lambda: self._route(method),
+            classify=_http_failure,
+            emit=lambda failure: self._emit_failure(method, failure),
+            unexpected_message="internal error",
+        )
+
+    def _emit_failure(self, method: str, failure: stdlib_http.HttpFailure) -> None:
+        audit.log(method.lower(), self.path, result=failure.result, reason=failure.audit_reason)
+        self._send_json(failure.status, {"error": failure.public_message})
 
     def _route(self, method: str) -> None:
-        path = self.path.split("?", 1)[0]
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        parsed_query = parse_qs(query)
-
-        if method == "POST" and (m := _APP_ROUTE.match(path)) and m.group(2) == "deploy":
-            self._send_json(HTTPStatus.OK, _deploy(m.group(1), self._body()))
-            return
-        if method == "POST" and path == "/v1/stack/recreate":
-            self._send_json(HTTPStatus.OK, _recreate(self._body()))
-            return
-        if method == "POST" and (m := _APP_ROUTE.match(path)) and m.group(2) in ("stop", "start", "restart"):
-            self._send_json(HTTPStatus.OK, _lifecycle(m.group(1), m.group(2)))
-            return
-        if method == "GET" and (m := _APP_ROUTE.match(path)) and m.group(2) == "status":
-            self._send_json(HTTPStatus.OK, _status(m.group(1)))
-            return
-        if method == "GET" and (m := _APP_ROUTE.match(path)) and m.group(2) == "logs":
-            lines = int(parsed_query.get("lines", ["80"])[-1])
-            self._send_json(HTTPStatus.OK, _logs(m.group(1), lines))
-            return
-        if method == "GET" and (m := _APP_ROUTE.match(path)) and m.group(2) == "health":
-            self._send_json(HTTPStatus.OK, _health(m.group(1)))
-            return
-        if method == "DELETE" and (m := _APP_DELETE_ROUTE.match(path)):
-            purge = parsed_query.get("purge_volume", [])[-1:] == ["1"]
-            self._send_json(HTTPStatus.OK, _remove(m.group(1), purge))
-            return
-        if method == "GET" and path == "/v1/apps":
-            self._send_json(HTTPStatus.OK, _list_apps())
-            return
-        if method == "GET" and path == "/v1/routes":
-            self._send_json(HTTPStatus.OK, _route_list())
-            return
-        if method == "POST" and path == "/v1/routes/apply":
-            self._send_json(HTTPStatus.OK, _route_apply(self._body()))
-            return
-        if method == "DELETE" and (m := _ROUTE_DELETE_ROUTE.match(path)) and path.startswith("/v1/routes/"):
-            self._send_json(HTTPStatus.OK, _route_delete(m.group(1)))
-            return
-        raise ApiError(HTTPStatus.NOT_FOUND, f"no route for {method} {path}")
+        route = stdlib_http.resolve_route(_APP_ROUTES, method, self.path)
+        self._send_json(HTTPStatus.OK, _APP_OPERATIONS[route.operation](self, route))
 
     def do_GET(self) -> None:
         self._dispatch("GET")
