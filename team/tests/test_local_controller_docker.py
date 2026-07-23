@@ -566,7 +566,11 @@ class DockerFlowTests(unittest.TestCase):
                 "/v1/teams/demo_team/assistants",
                 {"assistant": "shimpz-cloudflare"},
             )
-            self.assertEqual(installed_status, 200, installed)
+            controller_logs = ""
+            if installed_status != 200:
+                log_result = self._run("logs", controller, check=False)
+                controller_logs = (log_result.stdout + log_result.stderr)[-2000:]
+            self.assertEqual(installed_status, 200, f"{installed}\n{controller_logs}")
             self.assertTrue(installed["installed"], installed)
             self.assertEqual(self._run("image", "inspect", trusted_ref, check=False).returncode, 0)
 

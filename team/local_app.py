@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -68,6 +69,8 @@ from local_registry import (
     validate_power_input,
     validate_power_output,
 )
+
+log = logging.getLogger("shimpz-team-driver-local")
 
 LISTEN_PORT = 7077
 PROFILE = "single-owner-local-v1"
@@ -1057,6 +1060,7 @@ class LocalController:
             declared = self._assistant_allowed_hosts_cache.get(container, reviewed)
             self._assistant_machine_contract_cache.get(container, declared.accounts, spec.machine_contract)
         except assistant_manifest.ManifestError as exc:
+            log.warning("Assistant manifest admission failed: %s", exc)
             raise ApiProblem(
                 HTTPStatus.CONFLICT,
                 "installed Assistant manifest failed its reviewed contract",
