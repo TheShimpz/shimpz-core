@@ -166,83 +166,48 @@ def run_segment(
 
 
 def drive(
-    runtime: object | None = None,
-    context: object | None = None,
-    message: str | None = None,
-    files: list[dict[str, object]] | None = None,
-    continuation: chat_orchestrator.ChatContinuation | None = None,
-    validate_power: Callable | None = None,
-    durable_batch: object | None = None,
-    pause_before_batch: Callable | None = None,
-    cancelled: Callable[[], bool] | None = None,
-    validate_context: Callable[[], None] | None = None,
     *,
-    pause_for_approval: Callable | None = None,
-    approval_granted: Callable | None = None,
-    strategy: SegmentStrategy | None = None,
-    segment: PreparedSegment | None = None,
-    requirements: SegmentRequirements | None = None,
+    strategy: SegmentStrategy,
+    segment: PreparedSegment,
+    message: str | None = None,
+    continuation: chat_orchestrator.ChatContinuation | None = None,
+    requirements: SegmentRequirements,
 ) -> chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension:
     """Run or resume one turn with the same durable Power hooks on both Controllers."""
-    if strategy is not None:
-        if segment is None or requirements is None:
-            raise TypeError("shared segment drive requires prepared state")
-        runtime = strategy.runtime
-        context = segment.context
-        files = segment.files
-        validate_power = strategy.validate_power
-        durable_batch = segment.durable_batch
+    def pause_before_batch(requests: tuple[object, ...]) -> bool:
+        return strategy.pause_for_private_inputs(requests, requirements)
 
-        def pause_before_batch(requests: tuple[object, ...]) -> bool:
-            return strategy.pause_for_private_inputs(requests, requirements)
-
-        cancelled = strategy.cancelled
-        validate_context = strategy.validate_context
-        if strategy.pause_for_approval is not None:
-
-            def pause_for_approval(requests: tuple[object, ...]) -> bool:
-                if strategy.pause_for_approval is None:
-                    raise AssertionError("approval strategy changed")
-                return strategy.pause_for_approval(requests, requirements)
-
-        approval_granted = strategy.approval_granted
-    if (
-        runtime is None
-        or context is None
-        or files is None
-        or validate_power is None
-        or durable_batch is None
-        or pause_before_batch is None
-        or cancelled is None
-        or validate_context is None
-    ):
-        raise TypeError("chat drive is missing required state")
     hooks = {
-        "prepare_batch": durable_batch.prepare,
-        "batch_delivered": durable_batch.delivered,
+        "prepare_batch": segment.durable_batch.prepare,
+        "batch_delivered": segment.durable_batch.delivered,
         "pause_before_batch": pause_before_batch,
-        "cancelled": cancelled,
-        "validate_context": validate_context,
+        "cancelled": strategy.cancelled,
+        "validate_context": strategy.validate_context,
     }
-    if pause_for_approval is not None:
+    approval_pause = strategy.pause_for_approval
+    if approval_pause is not None:
+
+        def pause_for_approval(requests: tuple[object, ...]) -> bool:
+            return approval_pause(requests, requirements)
+
         hooks["pause_for_approval"] = pause_for_approval
-    if approval_granted is not None:
-        hooks["approval_granted"] = approval_granted
+    if strategy.approval_granted is not None:
+        hooks["approval_granted"] = strategy.approval_granted
     if continuation is None:
         return chat_orchestrator.run_until_pause(
-            runtime,
-            context,
-            assistant_chat.build_prompt(message, files),
-            validate_power,
-            durable_batch.invoke,
+            strategy.runtime,
+            segment.context,
+            assistant_chat.build_prompt(message, segment.files),
+            strategy.validate_power,
+            segment.durable_batch.invoke,
             **hooks,
         )
     return chat_orchestrator.continue_after_pause(
-        runtime,
-        context,
+        strategy.runtime,
+        segment.context,
         continuation,
-        validate_power,
-        durable_batch.invoke,
+        strategy.validate_power,
+        segment.durable_batch.invoke,
         **hooks,
     )
 
