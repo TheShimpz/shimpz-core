@@ -2630,16 +2630,18 @@ def _run_hosted_chat_segment(
             container.id,
             context.thread_id,
             bindings,
-            _hosted_power_identity,
-            execute_power,
-            lambda request: _require_hosted_power_rpc_envelope(
-                team_id,
-                bindings,
-                request,
-                answers_by_interrupt.get(request.interrupt_id, ()),
+            power_execution.PowerBatchStrategy(
+                _hosted_power_identity,
+                execute_power,
+                lambda request: _require_hosted_power_rpc_envelope(
+                    team_id,
+                    bindings,
+                    request,
+                    answers_by_interrupt.get(request.interrupt_id, ()),
+                ),
+                lambda request: _power_secret_generations(team_id, bindings[request.assistant_id], request.power),
+                lambda request: _power_account_generations(team_id, bindings[request.assistant_id], request.power),
             ),
-            lambda request: _power_secret_generations(team_id, bindings[request.assistant_id], request.power),
-            lambda request: _power_account_generations(team_id, bindings[request.assistant_id], request.power),
         )
         return chat_turn_engine.PreparedSegment(team_name, initial_identity, context, files, batch)
 

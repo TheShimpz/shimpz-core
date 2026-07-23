@@ -68,6 +68,15 @@ def power_operation(
     return power_journal.Operation(request.interrupt_id, hashlib.sha256(encoded).hexdigest())
 
 
+@dataclass(frozen=True, slots=True)
+class PowerBatchStrategy:
+    binding_identity: Callable[[object], tuple[object, object]]
+    execute: Callable[[object], object]
+    preflight: Callable[[object], None]
+    secret_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: ()
+    account_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: ()
+
+
 class PowerBatch:
     """Bind a Brain suspension to one durable journal batch and immutable workload identities."""
 
@@ -77,22 +86,14 @@ class PowerBatch:
         generation: str,
         thread_id: str,
         bindings: Mapping[str, object],
-        binding_identity: Callable[[object], tuple[object, object]],
-        execute: Callable[[object], object],
-        preflight: Callable[[object], None],
-        secret_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: (),
-        account_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: (),
+        strategy: PowerBatchStrategy,
     ) -> None:
         self._journal_source = journal
         self._journal = journal if isinstance(journal, power_journal.PowerJournal) else None
         self._generation = generation
         self._thread_id = thread_id
         self._bindings = bindings
-        self._binding_identity = binding_identity
-        self._execute = execute
-        self._preflight = preflight
-        self._secret_generations = secret_generations
-        self._account_generations = account_generations
+        self._strategy = strategy
         self._batch: power_journal.Batch | None = None
         self._operations: dict[str, power_journal.Operation] = {}
 
@@ -100,14 +101,14 @@ class PowerBatch:
         active = self._bindings.get(request.assistant_id)
         if active is None:
             raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
-        self._preflight(request)
-        container_id, image = self._binding_identity(active)
+        self._strategy.preflight(request)
+        container_id, image = self._strategy.binding_identity(active)
         return power_operation(
             request,
             container_id,
             image,
-            self._secret_generations(request),
-            self._account_generations(request),
+            self._strategy.secret_generations(request),
+            self._strategy.account_generations(request),
         )
 
     def prepare(self, requests: tuple[object, ...]) -> None:
@@ -130,7 +131,7 @@ class PowerBatch:
         decision = self._journal.begin(self._batch, operation)
         if not decision.execute:
             return decision.result
-        result = self._execute(request)
+        result = self._strategy.execute(request)
         if isinstance(result, RpcSuspension):
             self._journal.suspend(self._batch, operation)
             return result

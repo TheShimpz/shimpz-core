@@ -1926,23 +1926,25 @@ class LocalController:
                 network_id,
                 context.thread_id,
                 bindings,
-                lambda active: (active.container_id, active.spec.image),
-                execute_power,
-                lambda request: self._require_power_rpc_envelope(
-                    team_id,
-                    bindings,
-                    request,
-                    answers_by_interrupt.get(request.interrupt_id, ()),
-                ),
-                lambda request: self._power_secret_generations(
-                    team_id,
-                    _required_active_assistant(bindings, request.assistant_id),
-                    request.power,
-                ),
-                lambda request: self._power_account_generations(
-                    team_id,
-                    _required_active_assistant(bindings, request.assistant_id),
-                    request.power,
+                power_execution.PowerBatchStrategy(
+                    lambda active: (active.container_id, active.spec.image),
+                    execute_power,
+                    lambda request: self._require_power_rpc_envelope(
+                        team_id,
+                        bindings,
+                        request,
+                        answers_by_interrupt.get(request.interrupt_id, ()),
+                    ),
+                    lambda request: self._power_secret_generations(
+                        team_id,
+                        _required_active_assistant(bindings, request.assistant_id),
+                        request.power,
+                    ),
+                    lambda request: self._power_account_generations(
+                        team_id,
+                        _required_active_assistant(bindings, request.assistant_id),
+                        request.power,
+                    ),
                 ),
             )
             return chat_turn_engine.PreparedSegment(team_name, identity, context, files, batch)

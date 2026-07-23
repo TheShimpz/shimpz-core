@@ -211,10 +211,12 @@ class PowerRpcFrameTests(unittest.TestCase):
                         "generation-1",
                         "thread-1",
                         {"assistant": binding},
-                        identity,
-                        execute,
-                        lambda _request: None,
-                        lambda _request: (("secret", generation[0]),),
+                        app.power_execution.PowerBatchStrategy(
+                            identity,
+                            execute,
+                            lambda _request: None,
+                            lambda _request: (("secret", generation[0]),),
+                        ),
                     )
                     generation[0] = 1
                     batch.prepare((request,))
@@ -245,9 +247,11 @@ class PowerRpcFrameTests(unittest.TestCase):
                 "generation-1",
                 "thread-1",
                 {"assistant": binding},
-                lambda item: (item.container.id, item.image),
-                execute,
-                lambda _request: None,
+                app.power_execution.PowerBatchStrategy(
+                    lambda item: (item.container.id, item.image),
+                    execute,
+                    lambda _request: None,
+                ),
             )
             batch.prepare((request,))
 
