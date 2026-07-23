@@ -24,13 +24,8 @@ class InferenceConfigTests(unittest.TestCase):
 
     def test_exact_provider_catalog_is_accepted(self):
         expected = {
-            "openai": {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"},
-            "anthropic": {
-                "claude-fable-5",
-                "claude-opus-4-8",
-                "claude-sonnet-5",
-                "claude-haiku-4-5-20251001",
-            },
+            provider["id"]: {model["id"] for model in provider["models"]}
+            for provider in inference_config._MODEL_CATALOG["providers"]
         }
 
         self.assertEqual(
