@@ -33,6 +33,7 @@ import oauth_account_store
 import oauth_pkce_challenges
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_grants as assistant_approval_grants
+from assistant_human import input_challenges as assistant_input_challenges
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}
 LOOKUP_RESULT = {
@@ -151,6 +152,7 @@ class LocalContractTests(unittest.TestCase):
         controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
+        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
             Path(directory) / "assistant-approvals" / "grants.sqlite3"
         )
@@ -240,6 +242,7 @@ class LocalContractTests(unittest.TestCase):
         controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
+        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
             Path(secret_directory.name) / "assistant-approvals" / "grants.sqlite3"
         )
@@ -1573,6 +1576,7 @@ class LocalContractTests(unittest.TestCase):
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
+        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller.assistant_accounts = SimpleNamespace(
@@ -1670,6 +1674,7 @@ class LocalContractTests(unittest.TestCase):
         controller.space_id = "local-space"
         controller.secret_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-secrets"))
         controller.approval_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-approvals"))
+        controller.input_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-inputs"))
         controller._locks = (threading.RLock(),)
         controller._blocked_power_workloads = set()
         controller.registry = {"shimpz-cloudflare": SimpleNamespace()}
@@ -1707,6 +1712,7 @@ class LocalContractTests(unittest.TestCase):
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
+        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
@@ -1758,6 +1764,7 @@ class LocalContractTests(unittest.TestCase):
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
+        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
@@ -2042,6 +2049,110 @@ class LocalContractTests(unittest.TestCase):
         self.assertEqual(invocations, [("list-zones", LOOKUP_INPUT)])
         self.assertEqual(runtime.resumes, [{"power-1": LOOKUP_RESULT}])
         self.assertEqual(replay.exception.code, "assistant-approval-challenge-expired")
+
+    def test_chat_human_input_replays_typed_answer_into_the_exact_power(self) -> None:
+        request = brain_runtime_client.PowerRequest(
+            interrupt_id="power-1",
+            assistant_id="shimpz-cloudflare",
+            power="list-zones",
+            input=LOOKUP_INPUT,
+            approval="none",
+        )
+
+        class Runtime:
+            def __init__(self) -> None:
+                self.resumes: list[dict[str, object]] = []
+
+            def start(self, _context, _message):
+                return brain_runtime_client.RuntimeTurn(status="power-required", reply="", powers=(request,))
+
+            def resume(self, _context, results):
+                self.resumes.append(dict(results))
+                return brain_runtime_client.RuntimeTurn(status="completed", reply="Answered.", powers=())
+
+        runtime = Runtime()
+        envelopes: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self._chat_controller(directory, runtime)
+
+            def rpc(_container, _spec, _method, _path, envelope):
+                envelopes.append(envelope)
+                if not envelope["answers"]:
+                    return local_app.power_execution.RpcSuspension(
+                        {
+                            "ordinal": 0,
+                            "kind": "request",
+                            "request_type": "str",
+                            "title": "Name",
+                            "summary": "Provide a name.",
+                            "docs": None,
+                            "options": [],
+                        }
+                    )
+                if len(envelope["answers"]) == 1:
+                    return local_app.power_execution.RpcSuspension(
+                        {
+                            "ordinal": 1,
+                            "kind": "request",
+                            "request_type": "int",
+                            "title": "Count",
+                            "summary": "Provide a count.",
+                            "docs": None,
+                            "options": [],
+                        }
+                    )
+                return LOOKUP_RESULT
+
+            controller._rpc = rpc
+            with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
+                challenge = controller.chat(
+                    "team_1",
+                    {"message": "Ask", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+                self.assertEqual(
+                    challenge,
+                    {
+                        "team_id": "team_1",
+                        "status": "input-required",
+                        "turn_id": challenge["challenge_id"],
+                        "challenge_id": challenge["challenge_id"],
+                        "request": {
+                            "type": "str",
+                            "title": "Name",
+                            "summary": "Provide a name.",
+                            "docs": None,
+                            "options": [],
+                        },
+                    },
+                )
+                second = controller.submit_chat_input(
+                    "team_1",
+                    {"challenge_id": challenge["challenge_id"], "answer": "Ada"},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+                self.assertEqual(second["status"], "input-required")
+                self.assertEqual(second["request"]["type"], "int")
+                response = controller.submit_chat_input(
+                    "team_1",
+                    {"challenge_id": second["challenge_id"], "answer": 3},
+                    "openai",
+                    "sk-test-0123456789",
+                )
+                with self.assertRaises(local_app.ApiProblem) as replay:
+                    controller.submit_chat_input(
+                        "team_1",
+                        {"challenge_id": challenge["challenge_id"], "answer": "Ada"},
+                        "openai",
+                        "sk-test-0123456789",
+                    )
+
+        self.assertEqual(response["reply"], "Answered.")
+        self.assertEqual([envelope["answers"] for envelope in envelopes], [[], ["Ada"], ["Ada", 3]])
+        self.assertEqual(runtime.resumes, [{"power-1": LOOKUP_RESULT}])
+        self.assertEqual(replay.exception.code, "assistant-input-challenge-expired")
 
     def test_once_approval_is_remembered_for_one_team_assistant_power_release_and_can_be_revoked(self) -> None:
         class Runtime:

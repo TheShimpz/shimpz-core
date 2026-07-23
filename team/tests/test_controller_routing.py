@@ -45,6 +45,8 @@ class ControllerRoutingTests(unittest.TestCase):
         cases = (
             (strict_http.HOSTED_CONTROLLER, "POST", "/v1/teams/team_1/chat/stream", "chat-stream"),
             (strict_http.LOCAL_CONTROLLER, "GET", "/v1/teams/team_1/chat/approval", "chat-approval-pending"),
+            (strict_http.LOCAL_CONTROLLER, "GET", "/v1/teams/team_1/chat/input", "chat-input-pending"),
+            (strict_http.LOCAL_CONTROLLER, "POST", "/v1/teams/team_1/chat/input", "chat-input-submit"),
         )
         for profile, method, path, operation in cases:
             with self.subTest(profile=profile, path=path):

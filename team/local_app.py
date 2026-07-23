@@ -20,7 +20,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,6 +53,8 @@ import team_storage
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_flow as assistant_approval_flow
 from assistant_human import approval_grants as assistant_approval_grants
+from assistant_human import input_challenges as assistant_input_challenges
+from assistant_human import input_flow as assistant_input_flow
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig, Ulimit
 from local_registry import (
@@ -163,6 +165,7 @@ class _PendingLocalChat:
     file_ids: tuple[str, ...]
     provider: str
     identity: tuple[object, ...]
+    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
 def _required_active_assistant(
@@ -372,6 +375,7 @@ class LocalController:
         oauth_service: oauth_account_service.BrokeredOAuthAccountService | None = None,
         approval_challenges: assistant_approval_challenges.ApprovalChallengeStore | None = None,
         approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None,
+        input_challenges: assistant_input_challenges.InputChallengeStore | None = None,
     ) -> None:
         self.client = client
         self.space_id = validate_space_id(space_id)
@@ -403,6 +407,7 @@ class LocalController:
         self.approval_grants = approval_grants or assistant_approval_grants.ApprovalGrantStore(
             LOCAL_APPROVAL_GRANTS_PATH
         )
+        self.input_challenges = input_challenges or assistant_input_challenges.InputChallengeStore()
         self._assistant_genesis_cache = assistant_genesis.GenesisCache()
         self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
         self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
@@ -1281,6 +1286,7 @@ class LocalController:
         team_id: str,
         bindings: dict[str, _ActiveAssistant],
         request: brain_runtime_client.PowerRequest,
+        answers: tuple[object, ...] = (),
     ) -> None:
         active = _required_active_assistant(bindings, request.assistant_id)
         secret_values = self._resolve_power_secrets(team_id, active.spec, request.power)
@@ -1290,6 +1296,7 @@ class LocalController:
                 request.input,
                 secret_values,
                 account_values,
+                answers,
             )
         except assistant_secret_flow.SecretFlowError as exc:
             raise ApiProblem(
@@ -1459,10 +1466,11 @@ class LocalController:
                 network = self._network(team_id)
                 container = self._assistant_container(team_id, spec.assistant_id)
                 self._validate_container(container, team_id, spec, network.name)
-                # A paused continuation is bound to the generations it observed. Cancelling both
-                # challenge kinds before the atomic write prevents stale JIT input from winning later.
+                # A paused continuation is bound to the generations it observed. Cancelling every
+                # affected challenge before the atomic write prevents stale JIT input from winning later.
                 self.secret_challenges.cancel_team(team_id)
                 self.approval_challenges.cancel_team(team_id)
+                self.input_challenges.cancel_team(team_id)
                 try:
                     self.assistant_secrets.put_many(team_id, spec.assistant_id, replacements)
                     installed = self.list_assistants(team_id)["assistants"]
@@ -1497,6 +1505,12 @@ class LocalController:
         self._network(team_id)
         challenge = self.approval_challenges.current(team_id)
         return self._approval_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
+
+    def pending_chat_input(self, team_id: str) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        self._network(team_id)
+        challenge = self.input_challenges.current(team_id)
+        return self._input_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
     def pending_chat_accounts(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
@@ -1541,6 +1555,7 @@ class LocalController:
         frozen_container_id: str,
         power: str,
         payload: object,
+        answers: tuple[object, ...] = (),
     ) -> object:
         with self._lock(team_id):
             spec = self._resolve(assistant_id)
@@ -1562,7 +1577,11 @@ class LocalController:
                     raise chat_orchestrator.ChatStoppedError("chat turn stopped")
                 self._active_power_containers[team_id] = (token, container)
             try:
-                invocation = self.invoke(team_id, assistant_id, power, payload)
+                invocation = (
+                    self.invoke(team_id, assistant_id, power, payload, answers=answers)
+                    if answers
+                    else self.invoke(team_id, assistant_id, power, payload)
+                )
             except ApiProblem:
                 if self._chat_cancelled(token):
                     raise chat_orchestrator.ChatStoppedError("chat turn stopped") from None
@@ -1763,14 +1782,23 @@ class LocalController:
         continuation: chat_orchestrator.ChatContinuation | None = None,
         expected_identity: tuple[object, ...] | None = None,
         approved_interrupts: frozenset[str] = frozenset(),
+        answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = (),
     ) -> tuple[
         str,
         tuple[object, ...],
         chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension,
         tuple[assistant_account_challenges.AccountRequirement, ...],
         tuple[assistant_secret_challenges.SecretRequirement, ...],
+        tuple[chat_orchestrator.HumanInteraction, ...],
         tuple[assistant_approval_challenges.ApprovalRequirement, ...],
     ]:
+        answers_by_interrupt = dict(answer_logs)
+        if len(answers_by_interrupt) != len(answer_logs):
+            raise ApiProblem(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "invalid chat answer log",
+                code="internal-error",
+            )
         bindings: dict[str, _ActiveAssistant] = {}
         identity: tuple[object, ...] = ()
         network_id = ""
@@ -1784,6 +1812,7 @@ class LocalController:
                 active.container_id,
                 request.power,
                 request.input,
+                answers_by_interrupt.get(request.interrupt_id, ()),
             )
 
         def prepare() -> chat_turn_engine.PreparedSegment:
@@ -1827,7 +1856,12 @@ class LocalController:
                 bindings,
                 lambda active: (active.container_id, active.spec.image),
                 execute_power,
-                lambda request: self._require_power_rpc_envelope(team_id, bindings, request),
+                lambda request: self._require_power_rpc_envelope(
+                    team_id,
+                    bindings,
+                    request,
+                    answers_by_interrupt.get(request.interrupt_id, ()),
+                ),
                 lambda request: self._power_secret_generations(
                     team_id,
                     _required_active_assistant(bindings, request.assistant_id),
@@ -1885,7 +1919,15 @@ class LocalController:
             continuation=continuation,
             expected_identity=expected_identity,
         )
-        return team_name, identity, outcome, requirements.accounts, requirements.secrets, requirements.approvals
+        return (
+            team_name,
+            identity,
+            outcome,
+            requirements.accounts,
+            requirements.secrets,
+            requirements.inputs,
+            requirements.approvals,
+        )
 
     def _pause_chat(
         self,
@@ -1966,6 +2008,113 @@ class LocalController:
             self.approval_challenges.cancel_team(team_id)
             raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
         return self._approval_response(challenge)
+
+    @staticmethod
+    def _input_response(
+        challenge: assistant_input_challenges.PendingInputChallenge,
+    ) -> dict[str, object]:
+        return assistant_input_flow.challenge_payload(challenge)
+
+    def _pause_input(
+        self,
+        team_id: str,
+        token: str,
+        outcome: chat_orchestrator.ChatSuspension,
+        requirements: tuple[chat_orchestrator.HumanInteraction, ...],
+        payload: _PendingLocalChat,
+    ) -> dict[str, object]:
+        if len(requirements) != 1:
+            raise ApiProblem(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "invalid human input suspension",
+                code="internal-error",
+            )
+        interaction = requirements[0]
+        answers = dict(payload.answer_logs).get(interaction.request.interrupt_id, ())
+        try:
+            spec = self._resolve(interaction.request.assistant_id)
+            requirement = assistant_input_flow.requirement(interaction, spec.image, len(answers))
+            challenge = self.input_challenges.create(team_id, requirement, payload)
+        except (
+            assistant_input_challenges.InputChallengeError,
+            assistant_input_flow.InputFlowError,
+        ) as exc:
+            raise ApiProblem(
+                HTTPStatus.BAD_GATEWAY,
+                "Assistant human input request is invalid",
+                code="invalid-assistant-input-request",
+            ) from exc
+        if outcome.continuation != payload.continuation or not self._commit_chat_terminal(team_id, token):
+            self.input_challenges.cancel_team(team_id)
+            raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
+        return self._input_response(challenge)
+
+    def _store_chat_input(
+        self,
+        team_id: str,
+        challenge_id: object,
+        provider: str,
+        body: object,
+    ) -> _PendingLocalChat:
+        try:
+            challenge = self.input_challenges.get(team_id, challenge_id)
+            answer = assistant_input_flow.submitted_answer(challenge, body)
+        except assistant_input_challenges.InputChallengeNotFoundError as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant input request expired; retry the message",
+                code="assistant-input-challenge-expired",
+            ) from exc
+        except (
+            assistant_input_challenges.InputChallengeError,
+            assistant_input_flow.InputFlowError,
+        ) as exc:
+            raise ApiProblem(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "Assistant input submission is invalid",
+                code="invalid-assistant-input",
+            ) from exc
+        pending = challenge.payload
+        if not isinstance(pending, _PendingLocalChat) or pending.provider != provider:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Team capabilities changed; retry",
+                code="team-context-changed",
+            )
+        with self._lock(team_id):
+            current = self._chat_setup(team_id, list(pending.file_ids), provider, pending.assistant_ids)
+            if self._chat_identity(*current) != pending.identity:
+                self.input_challenges.cancel_team(team_id)
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Team capabilities changed; retry",
+                    code="team-context-changed",
+                )
+            answer_logs = dict(pending.answer_logs)
+            existing = answer_logs.get(challenge.requirement.interrupt_id, ())
+            if len(existing) != challenge.requirement.ordinal:
+                self.input_challenges.cancel_team(team_id)
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Assistant input replay changed; retry the message",
+                    code="assistant-input-replay-changed",
+                )
+            try:
+                claimed = self.input_challenges.claim(team_id, challenge_id)
+            except assistant_input_challenges.InputChallengeNotFoundError as exc:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Assistant input request expired; retry the message",
+                    code="assistant-input-challenge-expired",
+                ) from exc
+            if claimed is not challenge:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "Assistant input request expired; retry the message",
+                    code="assistant-input-challenge-expired",
+                )
+            answer_logs[challenge.requirement.interrupt_id] = (*existing, answer)
+        return replace(pending, answer_logs=tuple(sorted(answer_logs.items())))
 
     def _store_chat_approval(
         self,
@@ -2098,8 +2247,9 @@ class LocalController:
     def _pending_chat_continuation(self, team_id: str) -> dict[str, object] | None:
         existing_account = self.account_challenges.current(team_id)
         existing_secret = self.secret_challenges.current(team_id)
+        existing_input = self.input_challenges.current(team_id)
         existing_approval = self.approval_challenges.current(team_id)
-        if sum(item is not None for item in (existing_account, existing_secret, existing_approval)) > 1:
+        if sum(item is not None for item in (existing_account, existing_secret, existing_input, existing_approval)) > 1:
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Team chat continuation state is unavailable",
@@ -2109,6 +2259,8 @@ class LocalController:
             return self._account_response(existing_account)
         if existing_secret is not None:
             return self._challenge_response(existing_secret)
+        if existing_input is not None:
+            return self._input_response(existing_input)
         if existing_approval is not None:
             return self._approval_response(existing_approval)
         return None
@@ -2125,7 +2277,9 @@ class LocalController:
         provider: str,
         account_requirements: tuple[assistant_account_challenges.AccountRequirement, ...],
         secret_requirements: tuple[assistant_secret_challenges.SecretRequirement, ...],
+        input_requirements: tuple[chat_orchestrator.HumanInteraction, ...],
         approval_requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...],
+        answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = (),
     ) -> dict[str, object]:
         def pending(suspension: chat_orchestrator.ChatSuspension) -> _PendingLocalChat:
             return _PendingLocalChat(
@@ -2134,6 +2288,7 @@ class LocalController:
                 file_ids=file_ids,
                 provider=provider,
                 identity=identity,
+                answer_logs=answer_logs,
             )
 
         def complete(terminal: chat_orchestrator.ChatOutcome) -> dict[str, object]:
@@ -2141,13 +2296,10 @@ class LocalController:
                 raise ApiProblem(HTTPStatus.CONFLICT, "chat turn stopped", code="chat-stopped")
             return {"team_id": team_id, "team_name": team_name, "reply": terminal.reply}
 
-        def unsupported_input(*_args) -> object:
-            raise ValueError("human input suspension is unavailable")
-
         try:
             return chat_turn_engine.dispatch(
                 outcome,
-                (account_requirements, secret_requirements, (), approval_requirements),
+                (account_requirements, secret_requirements, input_requirements, approval_requirements),
                 pending,
                 (
                     lambda suspension, requirements, state: self._pause_account(
@@ -2156,7 +2308,9 @@ class LocalController:
                     lambda suspension, requirements, state: self._pause_chat(
                         team_id, token, suspension, requirements, state
                     ),
-                    unsupported_input,
+                    lambda suspension, requirements, state: self._pause_input(
+                        team_id, token, suspension, requirements, state
+                    ),
                     lambda suspension, requirements, state: self._pause_approval(
                         team_id, token, suspension, requirements, state
                     ),
@@ -2207,6 +2361,7 @@ class LocalController:
                 outcome,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
             ) = self._run_chat_segment(
                 team_id,
@@ -2228,6 +2383,7 @@ class LocalController:
                 provider,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
             )
 
@@ -2302,6 +2458,7 @@ class LocalController:
                 outcome,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
             ) = self._run_chat_segment(
                 team_id,
@@ -2312,6 +2469,7 @@ class LocalController:
                 token,
                 continuation=pending.continuation,
                 expected_identity=pending.identity,
+                answer_logs=pending.answer_logs,
             )
             return self._segment_response(
                 team_id,
@@ -2324,7 +2482,9 @@ class LocalController:
                 provider,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
+                pending.answer_logs,
             )
 
     def submit_chat_secrets(
@@ -2349,6 +2509,7 @@ class LocalController:
                 outcome,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
             ) = self._run_chat_segment(
                 team_id,
@@ -2359,6 +2520,7 @@ class LocalController:
                 token,
                 continuation=pending.continuation,
                 expected_identity=pending.identity,
+                answer_logs=pending.answer_logs,
             )
             return self._segment_response(
                 team_id,
@@ -2371,7 +2533,55 @@ class LocalController:
                 provider,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
+                pending.answer_logs,
+            )
+
+    def submit_chat_input(
+        self,
+        team_id: str,
+        body: object,
+        provider: str,
+        api_key: str,
+    ) -> dict[str, object]:
+        team_id = validate_team_id(team_id)
+        challenge_id = body.get("challenge_id") if isinstance(body, dict) else None
+        with self._exclusive_chat_turn(team_id) as token:
+            pending = self._store_chat_input(team_id, challenge_id, provider, body)
+            (
+                team_name,
+                identity,
+                outcome,
+                account_requirements,
+                secret_requirements,
+                input_requirements,
+                approval_requirements,
+            ) = self._run_chat_segment(
+                team_id,
+                list(pending.file_ids),
+                pending.assistant_ids,
+                provider,
+                api_key,
+                token,
+                continuation=pending.continuation,
+                expected_identity=pending.identity,
+                answer_logs=pending.answer_logs,
+            )
+            return self._segment_response(
+                team_id,
+                token,
+                team_name,
+                identity,
+                outcome,
+                pending.assistant_ids,
+                pending.file_ids,
+                provider,
+                account_requirements,
+                secret_requirements,
+                input_requirements,
+                approval_requirements,
+                pending.answer_logs,
             )
 
     def submit_chat_approval(
@@ -2393,6 +2603,7 @@ class LocalController:
                 outcome,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
             ) = self._run_chat_segment(
                 team_id,
@@ -2404,6 +2615,7 @@ class LocalController:
                 continuation=pending.continuation,
                 expected_identity=pending.identity,
                 approved_interrupts=approved_interrupts,
+                answer_logs=pending.answer_logs,
             )
             return self._segment_response(
                 team_id,
@@ -2416,7 +2628,9 @@ class LocalController:
                 provider,
                 account_requirements,
                 secret_requirements,
+                input_requirements,
                 approval_requirements,
+                pending.answer_logs,
             )
 
     def stop_chat(self, team_id: str) -> dict[str, object]:
@@ -2426,6 +2640,7 @@ class LocalController:
         self.oauth_pkce.cancel_team(team_id)
         challenge_cancelled = self.secret_challenges.cancel_team(team_id)
         approval_cancelled = self.approval_challenges.cancel_team(team_id)
+        input_cancelled = self.input_challenges.cancel_team(team_id)
         power_stopped = False
         with self._active_chat_guard:
             token = self._active_chat_tokens.get(team_id)
@@ -2435,7 +2650,13 @@ class LocalController:
             if token is not None and active is not None and active[0] == token:
                 self._fail_stop_power(active[1])
                 power_stopped = True
-        accepted = token is not None or account_cancelled or challenge_cancelled or approval_cancelled
+        accepted = (
+            token is not None
+            or account_cancelled
+            or challenge_cancelled
+            or input_cancelled
+            or approval_cancelled
+        )
         return {
             "team_id": team_id,
             "requested": accepted,
@@ -3101,6 +3322,7 @@ class LocalController:
         spec = self._resolve(assistant_id)
         self.secret_challenges.cancel_team(team_id)
         self.approval_challenges.cancel_team(team_id)
+        self.input_challenges.cancel_team(team_id)
         with self._lock(team_id):
             network = self._network(team_id)
             self._revoke_assistant_approval_grants(team_id, assistant_id)
@@ -3184,7 +3406,15 @@ class LocalController:
             ) from exc
         return {"assistant": spec.assistant_id, **help_payload}
 
-    def invoke(self, team_id: str, assistant_id: str, power: str, payload: object) -> dict[str, object]:
+    def invoke(
+        self,
+        team_id: str,
+        assistant_id: str,
+        power: str,
+        payload: object,
+        *,
+        answers: tuple[object, ...] = (),
+    ) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         spec = self._resolve(assistant_id)
         power_spec = spec.powers.get(power)
@@ -3237,7 +3467,7 @@ class LocalController:
                         "input": safe_payload,
                         "secrets": secret_values,
                         "accounts": account_values,
-                        "answers": [],
+                        "answers": list(answers),
                     },
                 )
             except ApiProblem:
@@ -3314,6 +3544,7 @@ class LocalController:
         team_id = validate_team_id(team_id)
         self.secret_challenges.cancel_team(team_id)
         self.approval_challenges.cancel_team(team_id)
+        self.input_challenges.cancel_team(team_id)
         self._cancel_chat_for_destroy(team_id)
 
         chat_lock = self._chat_lock(team_id)
@@ -3451,6 +3682,7 @@ class LocalController:
         """Remove every exactly owned workload/network without accepting resource ids."""
         self.secret_challenges.cancel_all()
         self.approval_challenges.cancel_all()
+        self.input_challenges.cancel_all()
         with ExitStack() as locks:
             for lock in self._locks:
                 locks.enter_context(lock)
@@ -3766,7 +3998,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.server.controller.chat(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"accounts-required", "secrets-required", "approval-required"}
+                if payload.get("status")
+                in {"accounts-required", "secrets-required", "input-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat",
@@ -3791,7 +4024,8 @@ class Handler(BaseHTTPRequestHandler):
             )
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"accounts-required", "secrets-required", "approval-required"}
+                if payload.get("status")
+                in {"accounts-required", "secrets-required", "input-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat-account-submit",
@@ -3812,7 +4046,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.server.controller.submit_chat_secrets(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"accounts-required", "secrets-required", "approval-required"}
+                if payload.get("status")
+                in {"accounts-required", "secrets-required", "input-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat-secret-submit",
@@ -3827,13 +4062,36 @@ class Handler(BaseHTTPRequestHandler):
                 team_id,
                 None,
             )
+        if len(parts) == 5 and parts[4] == "input" and self.command == "GET":
+            return (
+                HTTPStatus.OK,
+                self.server.controller.pending_chat_input(team_id),
+                "chat-input-pending",
+                team_id,
+                None,
+            )
+        if len(parts) == 5 and parts[4] == "input" and self.command == "POST":
+            provider, api_key = self._model_credential_headers()
+            body = self._body(max_bytes=MAX_SECRET_BODY_BYTES)
+            payload = self.server.controller.submit_chat_input(team_id, body, provider, api_key)
+            return (
+                HTTPStatus.PRECONDITION_REQUIRED
+                if payload.get("status")
+                in {"accounts-required", "secrets-required", "input-required", "approval-required"}
+                else HTTPStatus.OK,
+                payload,
+                "chat-input-submit",
+                team_id,
+                None,
+            )
         if len(parts) == 5 and parts[4] == "approval" and self.command == "POST":
             provider, api_key = self._model_credential_headers()
             body = self._body(max_bytes=MAX_SECRET_BODY_BYTES)
             payload = self.server.controller.submit_chat_approval(team_id, body, provider, api_key)
             return (
                 HTTPStatus.PRECONDITION_REQUIRED
-                if payload.get("status") in {"accounts-required", "secrets-required", "approval-required"}
+                if payload.get("status")
+                in {"accounts-required", "secrets-required", "input-required", "approval-required"}
                 else HTTPStatus.OK,
                 payload,
                 "chat-approval-submit",

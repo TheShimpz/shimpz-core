@@ -39,6 +39,7 @@ def require_power_rpc_envelope(
     power_input: object,
     secret_values: Mapping[str, str],
     account_values: Mapping[str, object] | None = None,
+    answers: Sequence[object] = (),
 ) -> None:
     """Prove the complete private Power request fits before journaling it."""
     encode_private_rpc_envelope(
@@ -46,7 +47,7 @@ def require_power_rpc_envelope(
             "input": power_input,
             "secrets": dict(secret_values),
             "accounts": dict(account_values or {}),
-            "answers": [],
+            "answers": list(answers),
         }
     )
 

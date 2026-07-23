@@ -376,7 +376,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
         self.assertIsInstance(result[2], chat_orchestrator.ChatSuspension)
         self.assertEqual(len(result[3]), 1)
         self.assertEqual(result[3][0].accounts[0][0], "cloudflare")
-        self.assertEqual(result[4:], ((), ()))
+        self.assertEqual(result[4:], ((), (), ()))
 
     def test_account_resume_is_one_use_and_returns_completed_turn(self) -> None:
         registry = self._registry()
@@ -448,6 +448,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 "Team One",
                 identity,
                 chat_orchestrator.ChatOutcome("Done", ()),
+                (),
                 (),
                 (),
                 (),
