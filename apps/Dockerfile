@@ -70,7 +70,7 @@ COPY pyproject.toml uv.lock ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py audit.py token_store.py caddy_routes.py egress_lock.py ./
+COPY app.py validate.py manifests.py audit.py token_store.py caddy_routes.py egress_lock.py stdlib_http.py ./
 
 # Pre-create + own every path a NAMED VOLUME will be mounted onto — Docker copies an image
 # directory's ownership/content into a fresh empty volume on first mount, which is otherwise

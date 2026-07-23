@@ -44,7 +44,7 @@ class HttpSecurityStaticTests(unittest.TestCase):
         authorized = _handler_method("_authed")
         returned = next(node for node in authorized.body if isinstance(node, ast.Return))
 
-        self.assertEqual(ast.unparse(returned.value), "hmac.compare_digest(auth, f'Bearer {_token}')")
+        self.assertEqual(ast.unparse(returned.value), "stdlib_http.bearer_authorized(self.headers, _token)")
 
     def test_unexpected_exception_text_is_redacted_from_http_500(self) -> None:
         dispatch = _handler_method("_dispatch")

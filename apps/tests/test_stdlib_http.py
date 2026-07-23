@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import io
+import sys
+import unittest
+from email.message import Message
+from http import HTTPStatus
+from pathlib import Path
+from unittest import mock
+
+APPS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(APPS))
+
+import stdlib_http
+
+
+class StdlibHttpTests(unittest.TestCase):
+    def test_bearer_requires_one_header_and_uses_constant_time_comparison(self) -> None:
+        headers = Message()
+        headers["Authorization"] = "Bearer expected"
+        with mock.patch.object(
+            stdlib_http.hmac,
+            "compare_digest",
+            wraps=stdlib_http.hmac.compare_digest,
+        ) as compare:
+            self.assertTrue(stdlib_http.bearer_authorized(headers, "expected"))
+        compare.assert_called_once_with("Bearer expected", "Bearer expected")
+
+        headers["Authorization"] = "Bearer expected"
+        self.assertFalse(stdlib_http.bearer_authorized(headers, "expected"))
+
+    def test_json_reader_bounds_and_validates_objects(self) -> None:
+        cases = (
+            ("invalid", b"{}", HTTPStatus.BAD_REQUEST),
+            ("-1", b"", HTTPStatus.REQUEST_ENTITY_TOO_LARGE),
+            ("3", b"[]", HTTPStatus.BAD_REQUEST),
+        )
+        for length, body, expected in cases:
+            with self.subTest(length=length, body=body), self.assertRaises(stdlib_http.HttpError) as caught:
+                stdlib_http.read_json_body({"Content-Length": length}, io.BytesIO(body), max_bytes=16)
+            self.assertEqual(caught.exception.status, expected)
+
+        self.assertEqual(
+            stdlib_http.read_json_body({"Content-Length": "7"}, io.BytesIO(b'{"a":1}'), max_bytes=16),
+            {"a": 1},
+        )
+
+    def test_json_response_sets_exact_framing(self) -> None:
+        handler = mock.Mock()
+        handler.wfile = io.BytesIO()
+
+        stdlib_http.send_json(handler, HTTPStatus.OK, {"ok": True})
+
+        handler.send_response.assert_called_once_with(HTTPStatus.OK)
+        self.assertEqual(
+            handler.send_header.call_args_list,
+            [
+                mock.call("Content-Type", "application/json"),
+                mock.call("Content-Length", "12"),
+            ],
+        )
+        handler.end_headers.assert_called_once_with()
+        self.assertEqual(handler.wfile.getvalue(), b'{"ok": true}')
+
+
+if __name__ == "__main__":
+    unittest.main()

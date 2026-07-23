@@ -20,7 +20,6 @@ Endpoints (all require `Authorization: Bearer <token>` — see token_store.py):
 from __future__ import annotations
 
 import contextlib
-import hmac
 import ipaddress
 import json
 import os
@@ -41,6 +40,7 @@ import docker
 import docker.errors
 import egress_lock
 import manifests
+import stdlib_http
 import token_store
 import validate
 
@@ -98,11 +98,7 @@ def _lock_for(name: str) -> threading.Lock:
         return _locks[name]
 
 
-class ApiError(Exception):
-    def __init__(self, status: HTTPStatus, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
+ApiError = stdlib_http.HttpError
 
 
 def _list_apps() -> dict:
@@ -603,32 +599,13 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "shimpz-driver/1.0"
 
     def _authed(self) -> bool:
-        auth = self.headers.get("Authorization", "")
-        return hmac.compare_digest(auth, f"Bearer {_token}")
+        return stdlib_http.bearer_authorized(self.headers, _token)
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
-        body = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        stdlib_http.send_json(self, status, payload)
 
     def _body(self) -> dict:
-        raw_length = self.headers.get("Content-Length", "0") or "0"
-        try:
-            length = int(raw_length)
-        except ValueError as exc:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
-        if length < 0 or length > MAX_BODY_BYTES:
-            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is too large")
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
+        return stdlib_http.read_json_body(self.headers, self.rfile, max_bytes=MAX_BODY_BYTES)
 
     def _dispatch(self, method: str) -> None:
         if not self._authed():
