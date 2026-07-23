@@ -745,7 +745,7 @@ def _caddy_reconcile_loop() -> None:
         time.sleep(CADDY_RECONCILE_SECONDS)
         try:
             reconcile_caddy_networks()
-        except Exception as exc:
+        except docker.errors.DockerException as exc:
             print(f"caddy-reconcile: pass errored (continuing): {exc}", file=sys.stderr)
 
 

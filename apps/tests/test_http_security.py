@@ -59,6 +59,15 @@ class HttpSecurityStaticTests(unittest.TestCase):
         self.assertIn("{'error': 'internal error'}", boundary)
         self.assertNotIn("str(exc)", boundary)
 
+    def test_caddy_reconcile_loop_catches_only_docker_failures(self) -> None:
+        loop = ast.parse(APP_SOURCE.read_text(encoding="utf-8"))
+        function = next(
+            node for node in loop.body if isinstance(node, ast.FunctionDef) and node.name == "_caddy_reconcile_loop"
+        )
+        caught_types = [ast.unparse(node.type) for node in ast.walk(function) if isinstance(node, ast.ExceptHandler)]
+
+        self.assertEqual(caught_types, ["docker.errors.DockerException"])
+
 
 class HttpBodyTests(unittest.TestCase):
     @classmethod
