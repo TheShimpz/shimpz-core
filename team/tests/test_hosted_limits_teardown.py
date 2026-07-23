@@ -1,0 +1,135 @@
+"""Hosted rate, capacity, and durable teardown state contracts."""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from http import HTTPStatus
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_hosted_app import _patched, app
+
+
+class HostedLimitAndTeardownTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        app._capacity_reservations.clear()
+
+    def test_fixed_window_rate_limiter_allows_denies_and_resets(self) -> None:
+        limiter = app._FixedWindowRateLimiter(limit=2, window_seconds=10)
+
+        self.assertEqual(limiter.consume("account", now=0), 0)
+        self.assertEqual(limiter.consume("account", now=1), 0)
+        self.assertEqual(limiter.consume("other", now=2), 0)
+        self.assertEqual(limiter.consume("account", now=2), 8)
+        self.assertEqual(limiter.consume("account", now=9.9), 1)
+        self.assertEqual(limiter.consume("account", now=10), 0)
+
+    def test_capacity_reservations_count_inflight_memory_and_release(self) -> None:
+        empty_usage = app._MemoryUsage(total=0, by_owner={})
+        with _patched(
+            _memory_usage=lambda **_kwargs: empty_usage,
+            GLOBAL_MEMORY_BUDGET_BYTES=100,
+            OWNER_MEMORY_BUDGET_BYTES=100,
+        ), app._reserve_capacity("team:one", "account_1", 60, team_slot=False):
+            self.assertIn("team:one", app._capacity_reservations)
+            with (
+                self.assertRaises(app.ApiError) as exhausted,
+                app._reserve_capacity("app:one:extra", "account_1", 41, team_slot=False),
+            ):
+                self.fail("an over-budget reservation was admitted")
+            self.assertEqual(exhausted.exception.status, HTTPStatus.TOO_MANY_REQUESTS)
+
+        self.assertEqual(app._capacity_reservations, {})
+
+    def test_capacity_rejects_duplicate_inflight_resource(self) -> None:
+        empty_usage = app._MemoryUsage(total=0, by_owner={})
+        with _patched(
+            _memory_usage=lambda **_kwargs: empty_usage,
+            GLOBAL_MEMORY_BUDGET_BYTES=100,
+            OWNER_MEMORY_BUDGET_BYTES=100,
+        ), app._reserve_capacity(
+            "team:one", "account_1", 10, team_slot=False
+        ), self.assertRaises(app.ApiError) as duplicate, app._reserve_capacity(
+            "team:one", "account_1", 10, team_slot=False
+        ):
+            self.fail("a duplicate reservation was admitted")
+
+        self.assertEqual(duplicate.exception.status, HTTPStatus.CONFLICT)
+        self.assertEqual(app._capacity_reservations, {})
+
+    def test_teardown_advances_and_removes_real_durable_cleanup_record(self) -> None:
+        events: list[object] = []
+        brain = SimpleNamespace(id="a" * 64)
+
+        def phase(name: str, result=True):
+            def run(*_args, **_kwargs):
+                events.append(name)
+                return result
+
+            return run
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(app.cleanup_state, "STATE_DIR", Path(directory)),
+            _patched(
+                _owned_teardown_brain=lambda *_args: (True, brain),
+                _stop_teardown_brain=phase("stop"),
+                _teardown_apps=phase("apps"),
+                _teardown_storage=phase("storage"),
+                _teardown_inference=phase("inference"),
+                _teardown_assistant_secrets=phase("secrets"),
+                _teardown_assistant_accounts=phase("accounts"),
+                _teardown_network_planes=phase("networks"),
+                _remove_teardown_brain=phase("brain"),
+                _teardown_volumes=phase("volumes"),
+            ),
+            mock.patch.object(app.pgdriver_client, "drop_team", side_effect=phase("database")),
+            mock.patch.object(app.pgdriver_client, "finalize_team_drop", side_effect=phase("finalize")),
+        ):
+            result = app._teardown("team_1", owner="account_1", brain_id=brain.id)
+            pending = app.cleanup_state.load("team_1")
+
+        self.assertTrue(result.complete)
+        self.assertIsNone(pending)
+        self.assertEqual(
+            events,
+            [
+                "stop",
+                "apps",
+                "storage",
+                "inference",
+                "secrets",
+                "accounts",
+                "networks",
+                "brain",
+                "volumes",
+                "database",
+                "finalize",
+            ],
+        )
+
+    def test_teardown_failure_preserves_owner_bound_cleanup_record(self) -> None:
+        brain = SimpleNamespace(id="b" * 64)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(app.cleanup_state, "STATE_DIR", Path(directory)),
+            _patched(
+                _owned_teardown_brain=lambda *_args: (True, brain),
+                _stop_teardown_brain=lambda _brain: True,
+                _teardown_apps=lambda _team_id: False,
+            ),
+        ):
+            result = app._teardown("team_1", owner="account_1", brain_id=brain.id)
+            pending = app.cleanup_state.load("team_1")
+
+        self.assertFalse(result.complete)
+        self.assertIsNotNone(pending)
+        self.assertEqual((pending.owner, pending.brain_id, pending.db_dropped), ("account_1", brain.id, False))
+
+
+if __name__ == "__main__":
+    unittest.main()
