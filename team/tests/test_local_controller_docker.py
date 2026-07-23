@@ -7,7 +7,6 @@ import hashlib
 import ipaddress
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -31,6 +30,7 @@ LOCAL_PROFILE = "single-owner-local-v1"
 
 sys.path.insert(0, str(TEAM))
 import power_execution
+from docker_harness import DockerHarnessMixin
 from local_app import half_cpu_set
 
 
@@ -98,8 +98,11 @@ class _DockerFlow:
     original_assistant_id: str = ""
 
 
-class DockerFlowTests(unittest.TestCase):
+class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
     maxDiff = None
+    docker_command = "docker"
+    docker_cwd = TEAM
+    controller_kind = "local controller"
 
     def _new_flow(self) -> _DockerFlow:
         unique = uuid.uuid4().hex[:12]
@@ -148,23 +151,6 @@ class DockerFlowTests(unittest.TestCase):
             brain_server=brain_server,
             brain_thread=brain_thread,
         )
-
-    def _run(self, *arguments: str, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            ["docker", *arguments],
-            cwd=TEAM,
-            env={**os.environ, "DOCKER_BUILDKIT": "1"},
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-        if check and result.returncode != 0:
-            self.fail(f"docker {arguments[0]} failed (rc={result.returncode}): {result.stderr[-2000:]}")
-        return result
-
-    def _remove(self, *arguments: str) -> None:
-        self._run(*arguments, check=False, timeout=120)
 
     @staticmethod
     def _ownership(space_id: str, kind: str) -> dict[str, str]:
@@ -219,38 +205,8 @@ class DockerFlowTests(unittest.TestCase):
                 time.sleep(0.2)
         self.fail("the test OCI registry did not become ready")
 
-    def _api(
-        self,
-        port: int,
-        token: str | None,
-        method: str,
-        path: str,
-        body: dict[str, object] | None = None,
-    ) -> tuple[int, dict[str, object]]:
-        encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
-        headers = {"Connection": "close"}
-        if token is not None:
-            headers["Authorization"] = f"Bearer {token}"
-        if encoded is not None:
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}{path}",
-            data=encoded,
-            headers=headers,
-            method=method,
-        )
-        try:
-            response = urllib.request.urlopen(request, timeout=30)
-        except urllib.error.HTTPError as exc:
-            response = exc
-        with response:
-            payload = json.loads(response.read(32 * 1024 + 1))
-            self.assertIsInstance(payload, dict)
-            return response.status, payload
-
-    def _wait_controller(self, container: str) -> tuple[int, str]:
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
+    def _wait_local_controller(self, container: str) -> tuple[int, str]:
+        def probe() -> tuple[int, str] | None:
             state = self._run("inspect", "--format", "{{.State.Status}}", container, check=False)
             if state.returncode == 0 and state.stdout.strip() == "running":
                 token_result = self._run(
@@ -271,11 +227,9 @@ class DockerFlowTests(unittest.TestCase):
                     else:
                         if status == 200:
                             return port, token_result.stdout.strip()
-            time.sleep(0.25)
-        log_result = self._run("logs", container, check=False)
-        logs = (log_result.stdout + log_result.stderr)[-2000:]
-        self.fail(f"the local controller did not become ready: {logs}")
-        raise AssertionError("unreachable")
+            return None
+
+        return self._wait_controller(container, probe, interval=0.25)
 
     def _prepare_images(self, flow: _DockerFlow) -> None:
         self._run(
@@ -483,7 +437,7 @@ class DockerFlowTests(unittest.TestCase):
             "127.0.0.1::7077",
             flow.controller_tag,
         )
-        flow.port, flow.token = self._wait_controller(flow.controller)
+        flow.port, flow.token = self._wait_local_controller(flow.controller)
         journal_mode = self._run(
             "exec",
             flow.controller,
@@ -582,7 +536,7 @@ class DockerFlowTests(unittest.TestCase):
         )
 
         self._run("restart", flow.controller)
-        flow.port, flow.token = self._wait_controller(flow.controller)
+        flow.port, flow.token = self._wait_local_controller(flow.controller)
         _, files_after_restart = self._api(flow.port, flow.token, "GET", "/v1/teams/demo_team/files")
         self.assertEqual(files_after_restart["files"][0]["id"], flow.file_id)
 

@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import threading
-import time
 import unittest
 import urllib.error
-import urllib.request
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +14,8 @@ from pathlib import Path
 from typing import ClassVar
 
 TEAM = Path(__file__).resolve().parents[1]
-DOCKER = shutil.which("docker") or "/usr/bin/docker"
+
+from docker_harness import DockerHarnessMixin
 
 
 class _AccountsHandler(BaseHTTPRequestHandler):
@@ -46,68 +43,27 @@ class _AccountsHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
-class HostedControllerDockerTests(unittest.TestCase):
+class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
     maxDiff = None
+    docker_cwd = TEAM
+    credential_header = "X-Shimpz-Account"
+    credential_prefix = ""
+    api_timeout = 15
+    api_read_limit = 64 * 1024 + 1
+    controller_kind = "hosted Controller"
 
-    def _run(self, *arguments: str, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            [DOCKER, *arguments],
-            cwd=TEAM,
-            env={**os.environ, "DOCKER_BUILDKIT": "1"},
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-        if check and result.returncode != 0:
-            self.fail(f"docker {arguments[0]} failed (rc={result.returncode}): {result.stderr[-2000:]}")
-        return result
-
-    def _remove(self, *arguments: str) -> None:
-        self._run(*arguments, check=False, timeout=120)
-
-    def _api(
-        self,
-        port: int,
-        session: str,
-        method: str,
-        path: str,
-        body: dict[str, object] | None = None,
-    ) -> tuple[int, dict[str, object]]:
-        encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
-        headers = {"Connection": "close", "X-Shimpz-Account": session}
-        if encoded is not None:
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}{path}",
-            data=encoded,
-            headers=headers,
-            method=method,
-        )
-        try:
-            response = urllib.request.urlopen(request, timeout=15)
-        except urllib.error.HTTPError as exc:
-            response = exc
-        with response:
-            payload = json.loads(response.read(64 * 1024 + 1))
-            self.assertIsInstance(payload, dict)
-            return response.status, payload
-
-    def _wait_controller(self, container: str) -> int:
+    def _wait_hosted_controller(self, container: str) -> int:
         mapping = self._run("port", container, "7077/tcp").stdout.strip()
         port = int(mapping.rsplit(":", 1)[1])
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
+
+        def probe() -> int | None:
             try:
                 status, _ = self._api(port, "session-b", "GET", "/v1/teams")
             except OSError, urllib.error.URLError:
-                time.sleep(0.2)
-            else:
-                if status == HTTPStatus.OK:
-                    return port
-        logs = self._run("logs", container, check=False).stdout[-2000:]
-        self.fail(f"the hosted Controller did not become ready: {logs}")
-        raise AssertionError("unreachable")
+                return None
+            return port if status == HTTPStatus.OK else None
+
+        return self._wait_controller(container, probe)
 
     @unittest.skipUnless(os.environ.get("SHIMPZ_RUN_DOCKER_TESTS") == "1", "real Docker test is opt-in")
     def test_account_b_cannot_reach_any_account_a_team_route(self) -> None:
@@ -195,7 +151,7 @@ class HostedControllerDockerTests(unittest.TestCase):
                 "127.0.0.1::7077",
                 image,
             )
-            port = self._wait_controller(controller)
+            port = self._wait_hosted_controller(controller)
 
             owner_status, owner_team = self._api(port, "session-a", "GET", f"/v1/teams/{team_id}/status")
             self.assertEqual(owner_status, HTTPStatus.OK, owner_team)
