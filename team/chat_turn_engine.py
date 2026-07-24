@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NoReturn
 
 import assistant_account_challenges
 import assistant_account_flow
@@ -227,6 +228,10 @@ def suspension_gate_count(*requirements: tuple[object, ...]) -> int:
     return sum(bool(group) for group in requirements)
 
 
+def _raise_unreachable_suspension() -> NoReturn:
+    raise AssertionError("unreachable")
+
+
 def commit_suspension(
     continuation: object,
     pending_continuation: object,
@@ -259,4 +264,4 @@ def dispatch(
     for group, handler in zip(requirements, pause, strict=True):
         if group:
             return handler(outcome, group, state)
-    raise AssertionError("unreachable")
+    _raise_unreachable_suspension()

@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import NoReturn
 
 import assistant_secret_flow
 import power_journal
@@ -27,12 +28,16 @@ RPC_FAILURE_STATUSES = {
 }
 
 
+def _raise_unknown_rpc_failure(kind: str) -> NoReturn:
+    raise AssertionError(f"unknown RPC failure: {kind}")
+
+
 def rpc_failure_status(kind: str) -> HTTPStatus:
     """Map every non-routing RPC failure kind to its shared HTTP status."""
     try:
         return RPC_FAILURE_STATUSES[kind]
     except KeyError:
-        raise AssertionError(f"unknown RPC failure: {kind}") from None
+        _raise_unknown_rpc_failure(kind)
 
 
 def power_operation(
