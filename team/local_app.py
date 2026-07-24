@@ -193,6 +193,7 @@ class AssistantLifecycle:
     _trusted_image = local_assistant_resources._trusted_image
     _assistant_labels = local_assistant_resources._assistant_labels
     _validate_container_profile = local_assistant_resources._validate_container_profile
+    _validate_container_egress_environment = local_assistant_resources._validate_container_egress_environment
     _validate_container_egress = local_assistant_resources._validate_container_egress
     _validate_container_isolation = local_assistant_resources._validate_container_isolation
     _validate_container_security = local_assistant_resources._validate_container_security
@@ -225,6 +226,9 @@ class AssistantLifecycle:
     _validate_egress_proxy_attachment = local_egress._validate_egress_proxy_attachment
     _disconnect_egress_proxy = local_egress._disconnect_egress_proxy
     _disconnect_egress_proxy_if_attached = local_egress._disconnect_egress_proxy_if_attached
+    _managed_team_networks = local_egress._managed_team_networks
+    _team_requires_egress_proxy = local_egress._team_requires_egress_proxy
+    _reconcile_egress_proxy_attachments = local_egress._reconcile_egress_proxy_attachments
     _team_has_egress_assistant = local_egress._team_has_egress_assistant
     _release_assistant_egress = local_egress._release_assistant_egress
     _remove_assistant_policy_if_needed = local_egress._remove_assistant_policy_if_needed
@@ -490,6 +494,7 @@ class LocalController:
         daemon_info = self._require_default_seccomp()
         self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
         self._wire_collaborators()
+        self.assistant_lifecycle._reconcile_egress_proxy_attachments()
         self.chat_turn_service._restore_all_chat_continuations()
 
     def _wire_collaborators(self) -> None:

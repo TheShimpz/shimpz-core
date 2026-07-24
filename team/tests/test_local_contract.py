@@ -275,6 +275,7 @@ class LocalContractTests(LocalContractCase):
         approval_grants = SimpleNamespace()
         client = SimpleNamespace(
             info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2},
+            networks=SimpleNamespace(list=lambda **_kwargs: []),
         )
 
         controller = local_app.LocalController(

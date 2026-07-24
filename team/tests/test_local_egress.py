@@ -163,6 +163,38 @@ class LocalAssistantEgressTests(unittest.TestCase):
             local_egress.APP_EGRESS_PROXY_PORT,
         )
 
+    def test_startup_reconnects_recreated_proxy_to_owned_egress_team(self) -> None:
+        team_id = "team_1"
+        self.network.attrs["Labels"] = {
+            local_app.MANAGED_LABEL: "1",
+            local_app.PROFILE_LABEL: local_app.PROFILE,
+            local_app.SPACE_LABEL: self.controller.space_id,
+            local_app.KIND_LABEL: "team",
+            local_app.TEAM_LABEL: team_id,
+            local_app.TEAM_NAME_LABEL: "Team 1",
+        }
+        assistant = types.SimpleNamespace(labels={local_app.ASSISTANT_LABEL: self.spec.assistant_id})
+        self.controller.client.containers.installed = [assistant]
+        self.controller.client.networks = types.SimpleNamespace(list=mock.Mock(return_value=[self.network]))
+        self.controller.assistant_lifecycle._validate_network = mock.Mock()
+        self.controller.assistant_lifecycle._validate_container_profile = mock.Mock(return_value=({}, {}))
+        self.controller.assistant_lifecycle._validate_container_egress_environment = mock.Mock(
+            return_value=self.spec.allowed_hosts
+        )
+
+        self.controller.assistant_lifecycle._reconcile_egress_proxy_attachments()
+
+        self.assertEqual(
+            self.proxy.attrs["NetworkSettings"]["Networks"][self.network.name]["Aliases"],
+            [local_egress.APP_EGRESS_PROXY_ALIAS],
+        )
+        self.controller.assistant_lifecycle._validate_container_profile.assert_called_once_with(
+            assistant,
+            team_id,
+            self.spec,
+            self.network.name,
+        )
+
     def test_last_uninstall_removes_policy_and_detaches_proxy(self) -> None:
         environment = self.controller.assistant_lifecycle._activate_assistant_egress(
             "team_1",

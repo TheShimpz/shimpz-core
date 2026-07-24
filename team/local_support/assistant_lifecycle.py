@@ -192,7 +192,7 @@ def _replace_unready_assistant(self, team_id: str, spec: AssistantSpec, network,
 
 def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network, existing) -> None:
     image = self._trusted_image(spec)
-    config = self._validate_container_security(existing, team_id, spec, network.name)
+    config = self._validate_container_isolation(existing, team_id, spec, network.name)
     if self._has_current_assistant_artifact(config, spec):
         raise ApiProblem(
             HTTPStatus.CONFLICT,
@@ -232,11 +232,11 @@ def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object
         network = self._network(team_id)
         existing = self._assistant_container(team_id, assistant_id, required=False)
         if existing is not None:
-            config = self._validate_container_security(existing, team_id, spec, network.name)
+            config = self._validate_container_isolation(existing, team_id, spec, network.name)
             if not self._has_current_assistant_artifact(config, spec):
                 self._replace_outdated_assistant(team_id, spec, network, existing)
                 return {"assistant": assistant_id, "installed": False}
-            self._validate_container_security(existing, team_id, spec, network.name)
+            self._validate_container_security(existing, team_id, spec, network.name, refresh=False)
             existing.reload()
             if existing.status != "running":
                 try:

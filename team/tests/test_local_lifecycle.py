@@ -72,6 +72,9 @@ class LocalLifecycleTests(LocalContractCase):
 
     def test_install_replaces_an_outdated_release_after_current_contract_admission(self) -> None:
         controller, container, events = self._lifecycle_controller()
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: self.fail(
+            "an outdated manifest must not block release replacement"
+        )
         controller.assistant_accounts.put(
             "team_1",
             "shimpz-cloudflare",

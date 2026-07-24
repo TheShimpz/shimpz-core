@@ -115,7 +115,10 @@ class LocalOAuthAccountTests(unittest.TestCase):
         injected_store = SimpleNamespace()
         injected_challenges = assistant_account_challenges.AccountChallengeStore()
         controller = local_app.LocalController(
-            SimpleNamespace(info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2}),
+            SimpleNamespace(
+                info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2},
+                networks=SimpleNamespace(list=lambda **_kwargs: []),
+            ),
             "local-space",
             self._registry(),
             SimpleNamespace(),
@@ -249,7 +252,10 @@ class LocalOAuthAccountTests(unittest.TestCase):
             ) as service_type,
         ):
             controller = local_app.LocalController(
-                SimpleNamespace(info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2}),
+                SimpleNamespace(
+                    info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2},
+                    networks=SimpleNamespace(list=lambda **_kwargs: []),
+                ),
                 "local-space",
                 self._registry(),
                 SimpleNamespace(),

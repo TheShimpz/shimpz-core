@@ -171,13 +171,11 @@ def _validate_container_profile(
     return admitted
 
 
-def _validate_container_egress(
+def _validate_container_egress_environment(
     self,
     team_id: str,
     spec: AssistantSpec,
-    network_name: str,
     environment: dict[str, str],
-    egress_proxy=None,
 ) -> tuple[str, ...]:
     try:
         reviewed_hosts = assistant_manifest.canonical_allowed_hosts(spec.allowed_hosts)
@@ -190,14 +188,27 @@ def _validate_container_egress(
     expected_proxy_environment = None
     if reviewed_hosts:
         expected_proxy_environment = self._validate_egress_policy(team_id, spec, reviewed_hosts)
-        proxy = egress_proxy() if egress_proxy is not None else None
-        self._validate_egress_proxy_attachment(network_name, proxy)
     if not local_container_policy.egress_environment_valid(environment, expected_proxy_environment):
         raise ApiProblem(
             HTTPStatus.CONFLICT,
             "the installed Assistant failed its isolation profile",
             code="assistant-isolation-drift",
         )
+    return reviewed_hosts
+
+
+def _validate_container_egress(
+    self,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    environment: dict[str, str],
+    egress_proxy=None,
+) -> tuple[str, ...]:
+    reviewed_hosts = self._validate_container_egress_environment(team_id, spec, environment)
+    if reviewed_hosts:
+        proxy = egress_proxy() if egress_proxy is not None else None
+        self._validate_egress_proxy_attachment(network_name, proxy)
     return reviewed_hosts
 
 

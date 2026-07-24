@@ -21,7 +21,7 @@ from local_support.labels import (
     TEAM_NAME_LABEL,
 )
 from local_support.validation import space_prefix as _space_prefix
-from local_support.validation import validate_team_name
+from local_support.validation import validate_team_id, validate_team_name
 
 PROFILE = "single-owner-local-v1"
 MAX_EGRESS_POLICY_BYTES = egress_policy.MAX_POLICY_BYTES
@@ -320,6 +320,82 @@ def _disconnect_egress_proxy_if_attached(self, network) -> None:
         )
     if any(endpoint.get("Name") == APP_EGRESS_PROXY_CONTAINER for endpoint in endpoints.values()):
         self._disconnect_egress_proxy(network)
+
+
+def _managed_team_networks(self) -> list:
+    labels = [
+        f"{MANAGED_LABEL}=1",
+        f"{PROFILE_LABEL}={PROFILE}",
+        f"{SPACE_LABEL}={self.space_id}",
+        f"{KIND_LABEL}=team",
+    ]
+    try:
+        return self.client.networks.list(filters={"label": labels})
+    except DockerException as exc:
+        raise ApiProblem(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Docker is unavailable",
+            code="docker-unavailable",
+        ) from exc
+
+
+def _team_requires_egress_proxy(self, team_id: str, network) -> bool:
+    try:
+        containers = self.client.containers.list(**self._assistant_filters(team_id))
+    except DockerException as exc:
+        raise ApiProblem(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Docker is unavailable",
+            code="docker-unavailable",
+        ) from exc
+    seen: set[str] = set()
+    requires_proxy = False
+    for container in containers:
+        assistant_id = (container.labels or {}).get(ASSISTANT_LABEL)
+        spec = self.registry.get(assistant_id)
+        if spec is None or assistant_id in seen:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "an installed Assistant is no longer allowlisted",
+                code="assistant-registry-drift",
+            )
+        seen.add(assistant_id)
+        _config, environment = self._validate_container_profile(
+            container,
+            team_id,
+            spec,
+            network.name,
+        )
+        reviewed_hosts = self._validate_container_egress_environment(team_id, spec, environment)
+        requires_proxy = requires_proxy or bool(reviewed_hosts)
+    return requires_proxy
+
+
+def _reconcile_egress_proxy_attachments(self) -> None:
+    seen: set[str] = set()
+    for network in self._managed_team_networks():
+        labels = network.attrs.get("Labels") or {}
+        team_id = labels.get(TEAM_LABEL)
+        try:
+            team_id = validate_team_id(team_id)
+        except ApiProblem as exc:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Team resource ownership conflict",
+                code="ownership-conflict",
+            ) from exc
+        if team_id in seen:
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Team resource ownership conflict",
+                code="ownership-conflict",
+            )
+        seen.add(team_id)
+        self._validate_network(network, team_id)
+        if self._team_requires_egress_proxy(team_id, network):
+            self._connect_egress_proxy(network)
+        else:
+            self._disconnect_egress_proxy_if_attached(network)
 
 
 def _team_has_egress_assistant(self, team_id: str, *, excluding: str | None = None) -> bool:
