@@ -50,20 +50,22 @@ from local_registry import (
     validate_power_input,
     validate_power_output,
 )
+from local_support import assistant_lifecycle as local_assistant_lifecycle
+from local_support import assistant_resources as local_assistant_resources
+from local_support import assistant_rpc as local_assistant_rpc
 from local_support import audit as local_audit
-from local_support.assistant_lifecycle import LocalAssistantLifecycleMixin
-from local_support.assistant_resources import LocalAssistantResourcesMixin
-from local_support.assistant_rpc import LocalAssistantRpcMixin
+from local_support import chat_api as local_chat_api
+from local_support import chat_execution as local_chat_execution
+from local_support import chat_pause as local_chat_pause
+from local_support import chat_private as local_chat_private
+from local_support import chat_resume as local_chat_resume
+from local_support import chat_segment as local_chat_segment
+from local_support import chat_state as local_chat_state
+from local_support import chat_submission as local_chat_submission
+from local_support import egress as local_egress
+from local_support import team_lifecycle as local_team_lifecycle
 from local_support.assistant_rpc import UnsupportedAssistantRpcPathError as _UnsupportedAssistantRpcPathError
-from local_support.chat_api import LocalChatApiMixin
-from local_support.chat_execution import LocalChatExecutionMixin
-from local_support.chat_pause import LocalChatPauseMixin
-from local_support.chat_private import LocalChatPrivateMixin
-from local_support.chat_resume import LocalChatResumeMixin
-from local_support.chat_segment import LocalChatSegmentMixin
-from local_support.chat_state import LocalChatStateMixin
-from local_support.chat_submission import LocalChatSubmissionMixin
-from local_support.egress import PROFILE, LocalEgressMixin
+from local_support.egress import PROFILE
 from local_support.errors import ApiProblemError as ApiProblem
 from local_support.http import REQUEST_TIMEOUT_SECONDS, BoundedServer, Handler
 from local_support.labels import (
@@ -76,7 +78,6 @@ from local_support.labels import (
     TEAM_NAME_LABEL,
 )
 from local_support.labels import IMAGE_LABEL as _LOCAL_IMAGE_LABEL
-from local_support.team_lifecycle import LocalTeamLifecycleMixin
 from local_support.validation import brain_thread_id as _local_brain_thread_id
 from local_support.validation import (
     half_cpu_set,
@@ -136,28 +137,145 @@ class _ControllerCollaborator:
         return getattr(self._controller, name)
 
 
-class AssistantLifecycle(
-    _ControllerCollaborator,
-    LocalAssistantLifecycleMixin,
-    LocalAssistantResourcesMixin,
-    LocalAssistantRpcMixin,
-    LocalEgressMixin,
-):
+class AssistantLifecycle(_ControllerCollaborator):
     """Own Assistant admission, resources, RPC, and egress lifecycle."""
 
+    _rollback_assistant_install = local_assistant_lifecycle._rollback_assistant_install
+    _create_assistant_container = local_assistant_lifecycle._create_assistant_container
+    _replace_unready_assistant = local_assistant_lifecycle._replace_unready_assistant
+    _replace_outdated_assistant = local_assistant_lifecycle._replace_outdated_assistant
+    install_assistant = local_assistant_lifecycle.install_assistant
+    uninstall_assistant = local_assistant_lifecycle.uninstall_assistant
 
-class ChatTurnService(
-    _ControllerCollaborator,
-    LocalChatApiMixin,
-    LocalChatExecutionMixin,
-    LocalChatPauseMixin,
-    LocalChatPrivateMixin,
-    LocalChatResumeMixin,
-    LocalChatSegmentMixin,
-    LocalChatStateMixin,
-    LocalChatSubmissionMixin,
-):
+    _assistant_filters = local_assistant_resources._assistant_filters
+    _assistant_container = local_assistant_resources._assistant_container
+    _assistant_ids = local_assistant_resources._assistant_ids
+    _resolve = local_assistant_resources._resolve
+    _image_labels_valid = staticmethod(local_assistant_resources._image_labels_valid)
+    _trusted_image = local_assistant_resources._trusted_image
+    _assistant_labels = local_assistant_resources._assistant_labels
+    _validate_container_profile = local_assistant_resources._validate_container_profile
+    _validate_container_egress = local_assistant_resources._validate_container_egress
+    _validate_container_isolation = local_assistant_resources._validate_container_isolation
+    _validate_container_security = local_assistant_resources._validate_container_security
+    _has_current_assistant_artifact = staticmethod(local_assistant_resources._has_current_assistant_artifact)
+    _validate_current_assistant_artifact = local_assistant_resources._validate_current_assistant_artifact
+    _validate_container = local_assistant_resources._validate_container
+
+    _close_exec_stream = staticmethod(local_assistant_rpc._close_exec_stream)
+    _fail_stop_power = local_assistant_rpc._fail_stop_power
+    _power_not_running = staticmethod(local_assistant_rpc._power_not_running)
+    _read_rpc_frames = local_assistant_rpc._read_rpc_frames
+    _rpc = local_assistant_rpc._rpc
+    _wait_ready = local_assistant_rpc._wait_ready
+
+    _base_labels = local_egress._base_labels
+    _network_name = local_egress._network_name
+    _container_name = local_egress._container_name
+    _egress_policy_identity = local_egress._egress_policy_identity
+    _egress_token = local_egress._egress_token
+    _proxy_environment = staticmethod(local_egress._proxy_environment)
+    _reserve_assistant_egress_environment = local_egress._reserve_assistant_egress_environment
+    _write_egress_policy = local_egress._write_egress_policy
+    _validate_egress_policy = local_egress._validate_egress_policy
+    _read_admitted_egress_policy = local_egress._read_admitted_egress_policy
+    _remove_egress_policy = local_egress._remove_egress_policy
+    _egress_proxy = local_egress._egress_proxy
+    _connect_egress_proxy = local_egress._connect_egress_proxy
+    _validate_egress_proxy_attachment = local_egress._validate_egress_proxy_attachment
+    _disconnect_egress_proxy = local_egress._disconnect_egress_proxy
+    _disconnect_egress_proxy_if_attached = local_egress._disconnect_egress_proxy_if_attached
+    _team_has_egress_assistant = local_egress._team_has_egress_assistant
+    _release_assistant_egress = local_egress._release_assistant_egress
+    _remove_assistant_policy_if_needed = local_egress._remove_assistant_policy_if_needed
+    _activate_assistant_egress = local_egress._activate_assistant_egress
+    _labels_include = staticmethod(local_egress._labels_include)
+    _validate_network = local_egress._validate_network
+    _network = local_egress._network
+
+
+class ChatTurnService(_ControllerCollaborator):
     """Own local chat turns, continuations, challenges, and private state."""
+
+    _pending_chat_continuation = local_chat_api._pending_chat_continuation
+    _segment_response = local_chat_api._segment_response
+    chat = local_chat_api.chat
+    resume_chat_accounts = local_chat_api.resume_chat_accounts
+
+    _invoke_chat_power = local_chat_execution._invoke_chat_power
+    _chat_identity = staticmethod(local_chat_execution._chat_identity)
+    _raise_chat_problem = staticmethod(local_chat_execution._raise_chat_problem)
+    _validate_chat_power = staticmethod(local_chat_execution._validate_chat_power)
+    _require_chat_private_inputs = local_chat_execution._require_chat_private_inputs
+    _validate_chat_context = local_chat_execution._validate_chat_context
+
+    _pause_chat = local_chat_pause._pause_chat
+    _commit_suspension = local_chat_pause._commit_suspension
+    _account_response = local_chat_pause._account_response
+    _pause_account = local_chat_pause._pause_account
+    _pause_approval = local_chat_pause._pause_approval
+    _input_response = staticmethod(local_chat_pause._input_response)
+    _pause_input = local_chat_pause._pause_input
+
+    _power_secret_generations = local_chat_private._power_secret_generations
+    _resolve_power_secrets = local_chat_private._resolve_power_secrets
+    _power_account_generations = local_chat_private._power_account_generations
+    _refresh_oauth_account = local_chat_private._refresh_oauth_account
+    _resolve_power_accounts = local_chat_private._resolve_power_accounts
+    _require_power_rpc_envelope = local_chat_private._require_power_rpc_envelope
+    _contains_secret = staticmethod(local_chat_private._contains_secret)
+    list_assistant_secrets = local_chat_private.list_assistant_secrets
+    _raise_account_problem = staticmethod(local_chat_private._raise_account_problem)
+    list_assistant_accounts = local_chat_private.list_assistant_accounts
+    start_assistant_account_authorization = local_chat_private.start_assistant_account_authorization
+    _current_account_declaration = local_chat_private._current_account_declaration
+    complete_cloudflare_oauth_callback = local_chat_private.complete_cloudflare_oauth_callback
+    disconnect_assistant_account = local_chat_private.disconnect_assistant_account
+    replace_assistant_secrets = local_chat_private.replace_assistant_secrets
+    _challenge_response = staticmethod(local_chat_private._challenge_response)
+    pending_chat_secrets = local_chat_private.pending_chat_secrets
+    _approval_response = staticmethod(local_chat_private._approval_response)
+    pending_chat_approval = local_chat_private.pending_chat_approval
+    pending_chat_input = local_chat_private.pending_chat_input
+    pending_chat_accounts = local_chat_private.pending_chat_accounts
+    list_assistant_approval_grants = local_chat_private.list_assistant_approval_grants
+    revoke_assistant_approval_grants = local_chat_private.revoke_assistant_approval_grants
+
+    submit_chat_secrets = local_chat_resume.submit_chat_secrets
+    submit_chat_input = local_chat_resume.submit_chat_input
+    submit_chat_approval = local_chat_resume.submit_chat_approval
+    stop_chat = local_chat_resume.stop_chat
+
+    _run_chat_segment = local_chat_segment._run_chat_segment
+    _run_chat_segment_with_metadata = local_chat_segment._run_chat_segment_with_metadata
+
+    _chat_file_metadata = local_chat_state._chat_file_metadata
+    _chat_setup = local_chat_state._chat_setup
+    _active_assistant_genesis = local_chat_state._active_assistant_genesis
+    _admit_assistant_allowed_hosts = local_chat_state._admit_assistant_allowed_hosts
+    _active_chat_assistants = local_chat_state._active_chat_assistants
+    _raise_secret_problem = staticmethod(local_chat_state._raise_secret_problem)
+    _delete_assistant_secret_state = local_chat_state._delete_assistant_secret_state
+    _delete_team_secret_state = local_chat_state._delete_team_secret_state
+    _delete_all_secret_state = local_chat_state._delete_all_secret_state
+    _delete_assistant_account_state = local_chat_state._delete_assistant_account_state
+    _delete_team_account_state = local_chat_state._delete_team_account_state
+    _delete_all_account_state = local_chat_state._delete_all_account_state
+    _retain_declared_assistant_account_state = local_chat_state._retain_declared_assistant_account_state
+    _raise_approval_grant_problem = staticmethod(local_chat_state._raise_approval_grant_problem)
+    _revoke_assistant_approval_grants = local_chat_state._revoke_assistant_approval_grants
+    _revoke_team_approval_grants = local_chat_state._revoke_team_approval_grants
+    _revoke_all_approval_grants = local_chat_state._revoke_all_approval_grants
+    _raise_chat_continuation_problem = staticmethod(local_chat_state._raise_chat_continuation_problem)
+    _persist_chat_continuation = local_chat_state._persist_chat_continuation
+    _restore_chat_continuation = local_chat_state._restore_chat_continuation
+    _restore_all_chat_continuations = local_chat_state._restore_all_chat_continuations
+    _delete_chat_continuation = local_chat_state._delete_chat_continuation
+    _clear_chat_continuations = local_chat_state._clear_chat_continuations
+
+    _store_chat_input = local_chat_submission._store_chat_input
+    _store_chat_approval = local_chat_submission._store_chat_approval
+    _store_chat_secrets = local_chat_submission._store_chat_secrets
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,20 +299,20 @@ class LocalControllerDependencies:
 
 
 class LocalController:
-    _purge_power_generation = LocalTeamLifecycleMixin._purge_power_generation
-    _team_assistant_containers = LocalTeamLifecycleMixin._team_assistant_containers
-    _validate_destroy_containers = LocalTeamLifecycleMixin._validate_destroy_containers
-    _delete_team_conversation = LocalTeamLifecycleMixin._delete_team_conversation
-    _remove_team_assistants = LocalTeamLifecycleMixin._remove_team_assistants
-    _delete_team_persistence = LocalTeamLifecycleMixin._delete_team_persistence
-    _delete_team_private_state = LocalTeamLifecycleMixin._delete_team_private_state
-    _remove_team_network = LocalTeamLifecycleMixin._remove_team_network
-    destroy_team = LocalTeamLifecycleMixin.destroy_team
-    _validate_reset_container = LocalTeamLifecycleMixin._validate_reset_container
-    _reset_inventory = LocalTeamLifecycleMixin._reset_inventory
-    _reset_assistant_identities = LocalTeamLifecycleMixin._reset_assistant_identities
-    _remove_space_resources = LocalTeamLifecycleMixin._remove_space_resources
-    reset_space = LocalTeamLifecycleMixin.reset_space
+    _purge_power_generation = local_team_lifecycle._purge_power_generation
+    _team_assistant_containers = local_team_lifecycle._team_assistant_containers
+    _validate_destroy_containers = local_team_lifecycle._validate_destroy_containers
+    _delete_team_conversation = local_team_lifecycle._delete_team_conversation
+    _remove_team_assistants = local_team_lifecycle._remove_team_assistants
+    _delete_team_persistence = local_team_lifecycle._delete_team_persistence
+    _delete_team_private_state = local_team_lifecycle._delete_team_private_state
+    _remove_team_network = local_team_lifecycle._remove_team_network
+    destroy_team = local_team_lifecycle.destroy_team
+    _validate_reset_container = local_team_lifecycle._validate_reset_container
+    _reset_inventory = local_team_lifecycle._reset_inventory
+    _reset_assistant_identities = local_team_lifecycle._reset_assistant_identities
+    _remove_space_resources = local_team_lifecycle._remove_space_resources
+    reset_space = local_team_lifecycle.reset_space
 
     def __init__(
         self,

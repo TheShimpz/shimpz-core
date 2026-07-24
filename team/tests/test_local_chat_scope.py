@@ -73,10 +73,13 @@ class LocalChatScopeTests(LocalContractCase):
                     controller._invoke_chat_power,
                     first_team,
                     token,
-                    "shimpz-cloudflare",
+                    brain_runtime_client.PowerRequest(
+                        interrupt_id="interrupt-1",
+                        assistant_id="shimpz-cloudflare",
+                        power="list-zones",
+                        input=LOOKUP_INPUT,
+                    ),
                     frozen_container_id,
-                    "list-zones",
-                    LOOKUP_INPUT,
                 )
                 try:
                     self.assertTrue(started.wait(timeout=1))
@@ -326,10 +329,13 @@ class LocalChatScopeTests(LocalContractCase):
                 controller._invoke_chat_power(
                     "team_1",
                     "turn-token",
-                    "shimpz-cloudflare",
+                    brain_runtime_client.PowerRequest(
+                        interrupt_id="interrupt-1",
+                        assistant_id="shimpz-cloudflare",
+                        power="list-zones",
+                        input=LOOKUP_INPUT,
+                    ),
                     frozen.id,
-                    "list-zones",
-                    LOOKUP_INPUT,
                 )
 
         self.assertEqual(lookups, [frozen.id, replacement.id])

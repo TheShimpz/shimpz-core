@@ -303,6 +303,24 @@ class LocalContractTests(LocalContractCase):
         self.assertIs(controller.assistant_lifecycle._controller, controller)
         self.assertIs(controller.chat_turn_service._controller, controller)
         self.assertEqual(local_app.LocalController.__bases__, (object,))
+        self.assertEqual(local_app.AssistantLifecycle.__bases__, (local_app._ControllerCollaborator,))
+        self.assertEqual(local_app.ChatTurnService.__bases__, (local_app._ControllerCollaborator,))
+        for module in (
+            local_app.local_assistant_lifecycle,
+            local_app.local_assistant_resources,
+            local_app.local_assistant_rpc,
+            local_app.local_chat_api,
+            local_app.local_chat_execution,
+            local_app.local_chat_pause,
+            local_app.local_chat_private,
+            local_app.local_chat_resume,
+            local_app.local_chat_segment,
+            local_app.local_chat_state,
+            local_app.local_chat_submission,
+            local_app.local_egress,
+            local_app.local_team_lifecycle,
+        ):
+            self.assertFalse(any(name.endswith("Mixin") for name in vars(module)))
         self.assertEqual(
             local_app.LOCAL_POWER_JOURNAL_PATH,
             Path("/var/lib/shimpz-local/power-journal/journal.sqlite3"),

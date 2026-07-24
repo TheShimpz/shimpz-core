@@ -20,258 +20,266 @@ from local_support.labels import (
 )
 
 
-class LocalAssistantResourcesMixin:
-    def _assistant_filters(self, team_id: str) -> dict[str, list[str] | bool]:
-        return {
-            "all": True,
-            "filters": {
-                "label": [
-                    f"{MANAGED_LABEL}=1",
-                    f"{PROFILE_LABEL}={PROFILE}",
-                    f"{SPACE_LABEL}={self.space_id}",
-                    f"{KIND_LABEL}=assistant",
-                    f"{TEAM_LABEL}={team_id}",
-                ]
-            },
-        }
+def _assistant_filters(self, team_id: str) -> dict[str, list[str] | bool]:
+    return {
+        "all": True,
+        "filters": {
+            "label": [
+                f"{MANAGED_LABEL}=1",
+                f"{PROFILE_LABEL}={PROFILE}",
+                f"{SPACE_LABEL}={self.space_id}",
+                f"{KIND_LABEL}=assistant",
+                f"{TEAM_LABEL}={team_id}",
+            ]
+        },
+    }
 
-    def _assistant_container(self, team_id: str, assistant_id: str, *, required: bool = True):
-        name = self._container_name(team_id, assistant_id)
-        try:
-            container = self.client.containers.get(name)
-        except NotFound:
-            if required:
-                raise ApiProblem(
-                    HTTPStatus.NOT_FOUND,
-                    "Assistant is not installed",
-                    code="assistant-not-found",
-                ) from None
-            return None
-        return container
 
-    def _assistant_ids(self, team_id: str, *, running_only: bool = False) -> tuple[str, ...]:
-        """Enumerate owned, allowlisted Assistant identities without deep container admission."""
-        self._network(team_id)
-        try:
-            containers = self.client.containers.list(**self._assistant_filters(team_id))
-        except DockerException as exc:
+def _assistant_container(self, team_id: str, assistant_id: str, *, required: bool = True):
+    name = self._container_name(team_id, assistant_id)
+    try:
+        container = self.client.containers.get(name)
+    except NotFound:
+        if required:
             raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Docker is unavailable",
-                code="docker-unavailable",
-            ) from exc
-        seen: set[str] = set()
-        assistant_ids: list[str] = []
-        for container in containers:
-            labels = container.labels
-            assistant_id = labels.get(ASSISTANT_LABEL) if isinstance(labels, dict) else None
-            spec = self.registry.get(assistant_id) if isinstance(assistant_id, str) else None
-            if spec is None:
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "an installed Assistant is no longer allowlisted",
-                    code="assistant-registry-drift",
-                )
-            expected_labels = self._base_labels(team_id, "assistant")
-            expected_labels[ASSISTANT_LABEL] = assistant_id
-            if (
-                container.name != self._container_name(team_id, assistant_id)
-                or not self._labels_include(labels, expected_labels)
-                or not isinstance(container.status, str)
-                or assistant_id in seen
-            ):
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "the installed Assistant failed its isolation profile",
-                    code="assistant-isolation-drift",
-                )
-            seen.add(assistant_id)
-            if not running_only or container.status == "running":
-                assistant_ids.append(assistant_id)
-        return tuple(sorted(assistant_ids))
+                HTTPStatus.NOT_FOUND,
+                "Assistant is not installed",
+                code="assistant-not-found",
+            ) from None
+        return None
+    return container
 
-    def _resolve(self, assistant_id: str) -> AssistantSpec:
-        spec = self.registry.get(assistant_id)
+
+def _assistant_ids(self, team_id: str, *, running_only: bool = False) -> tuple[str, ...]:
+    """Enumerate owned, allowlisted Assistant identities without deep container admission."""
+    self._network(team_id)
+    try:
+        containers = self.client.containers.list(**self._assistant_filters(team_id))
+    except DockerException as exc:
+        raise ApiProblem(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Docker is unavailable",
+            code="docker-unavailable",
+        ) from exc
+    seen: set[str] = set()
+    assistant_ids: list[str] = []
+    for container in containers:
+        labels = container.labels
+        assistant_id = labels.get(ASSISTANT_LABEL) if isinstance(labels, dict) else None
+        spec = self.registry.get(assistant_id) if isinstance(assistant_id, str) else None
         if spec is None:
-            # Resolution is intentionally completed before any image lookup/pull.
-            raise ApiProblem(HTTPStatus.NOT_FOUND, "Assistant is not allowlisted", code="assistant-not-allowlisted")
-        return spec
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "an installed Assistant is no longer allowlisted",
+                code="assistant-registry-drift",
+            )
+        expected_labels = self._base_labels(team_id, "assistant")
+        expected_labels[ASSISTANT_LABEL] = assistant_id
+        if (
+            container.name != self._container_name(team_id, assistant_id)
+            or not self._labels_include(labels, expected_labels)
+            or not isinstance(container.status, str)
+            or assistant_id in seen
+        ):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "the installed Assistant failed its isolation profile",
+                code="assistant-isolation-drift",
+            )
+        seen.add(assistant_id)
+        if not running_only or container.status == "running":
+            assistant_ids.append(assistant_id)
+    return tuple(sorted(assistant_ids))
 
-    @staticmethod
-    def _image_labels_valid(image, spec: AssistantSpec) -> bool:
-        labels = (image.attrs.get("Config") or {}).get("Labels") or {}
-        return (
-            labels.get("org.shimpz.assistant.id") == spec.assistant_id and labels.get("org.shimpz.assistant.api") == "1"
-        )
 
-    def _trusted_image(self, spec: AssistantSpec):
+def _resolve(self, assistant_id: str) -> AssistantSpec:
+    spec = self.registry.get(assistant_id)
+    if spec is None:
+        # Resolution is intentionally completed before any image lookup/pull.
+        raise ApiProblem(HTTPStatus.NOT_FOUND, "Assistant is not allowlisted", code="assistant-not-allowlisted")
+    return spec
+
+
+def _image_labels_valid(image, spec: AssistantSpec) -> bool:
+    labels = (image.attrs.get("Config") or {}).get("Labels") or {}
+    return labels.get("org.shimpz.assistant.id") == spec.assistant_id and labels.get("org.shimpz.assistant.api") == "1"
+
+
+def _trusted_image(self, spec: AssistantSpec):
+    try:
+        image = self.client.images.get(spec.image)
+    except ImageNotFound:
         try:
-            image = self.client.images.get(spec.image)
-        except ImageNotFound:
-            try:
-                image = self.client.images.pull(spec.image)
-            except DockerException as exc:
-                raise ApiProblem(
-                    HTTPStatus.BAD_GATEWAY,
-                    "the trusted Assistant image could not be pulled",
-                    code="image-pull-failed",
-                ) from exc
+            image = self.client.images.pull(spec.image)
         except DockerException as exc:
             raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Docker is unavailable",
-                code="docker-unavailable",
+                HTTPStatus.BAD_GATEWAY,
+                "the trusted Assistant image could not be pulled",
+                code="image-pull-failed",
             ) from exc
-        image.reload()
-        repo_digests = image.attrs.get("RepoDigests") or []
-        if spec.image not in repo_digests or not self._image_labels_valid(image, spec):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "the Assistant image does not match its trusted contract",
-                code="image-contract-mismatch",
-            )
-        return image
+    except DockerException as exc:
+        raise ApiProblem(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Docker is unavailable",
+            code="docker-unavailable",
+        ) from exc
+    image.reload()
+    repo_digests = image.attrs.get("RepoDigests") or []
+    if spec.image not in repo_digests or not self._image_labels_valid(image, spec):
+        raise ApiProblem(
+            HTTPStatus.CONFLICT,
+            "the Assistant image does not match its trusted contract",
+            code="image-contract-mismatch",
+        )
+    return image
 
-    def _assistant_labels(self, team_id: str, spec: AssistantSpec) -> dict[str, str]:
-        labels = self._base_labels(team_id, "assistant")
-        labels.update({ASSISTANT_LABEL: spec.assistant_id, IMAGE_LABEL: spec.image})
-        return labels
 
-    def _validate_container_profile(
-        self,
+def _assistant_labels(self, team_id: str, spec: AssistantSpec) -> dict[str, str]:
+    labels = self._base_labels(team_id, "assistant")
+    labels.update({ASSISTANT_LABEL: spec.assistant_id, IMAGE_LABEL: spec.image})
+    return labels
+
+
+def _validate_container_profile(
+    self,
+    container,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    *,
+    refresh: bool = True,
+) -> tuple[dict, dict[str, str]]:
+    if refresh:
+        container.reload()
+    expected_labels = self._assistant_labels(team_id, spec)
+    expected_labels.pop(IMAGE_LABEL)
+    admitted = local_container_policy.inspect_profile(
+        container.attrs,
+        container.name,
+        expected_labels,
+        self._container_name(team_id, spec.assistant_id),
+        spec.image,
+        network_name,
+        self.cpuset_cpus,
+    )
+    if admitted is None:
+        raise ApiProblem(
+            HTTPStatus.CONFLICT,
+            "the installed Assistant failed its isolation profile",
+            code="assistant-isolation-drift",
+        )
+    return admitted
+
+
+def _validate_container_egress(
+    self,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    environment: dict[str, str],
+    egress_proxy=None,
+) -> tuple[str, ...]:
+    try:
+        reviewed_hosts = assistant_manifest.canonical_allowed_hosts(spec.allowed_hosts)
+    except assistant_manifest.ManifestError as exc:
+        raise ApiProblem(
+            HTTPStatus.CONFLICT,
+            "the reviewed Assistant allowed_hosts contract is invalid",
+            code="assistant-registry-drift",
+        ) from exc
+    expected_proxy_environment = None
+    if reviewed_hosts:
+        expected_proxy_environment = self._validate_egress_policy(team_id, spec, reviewed_hosts)
+        proxy = egress_proxy() if egress_proxy is not None else None
+        self._validate_egress_proxy_attachment(network_name, proxy)
+    if not local_container_policy.egress_environment_valid(environment, expected_proxy_environment):
+        raise ApiProblem(
+            HTTPStatus.CONFLICT,
+            "the installed Assistant failed its isolation profile",
+            code="assistant-isolation-drift",
+        )
+    return reviewed_hosts
+
+
+def _validate_container_isolation(
+    self,
+    container,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    egress_proxy=None,
+    *,
+    refresh: bool = True,
+) -> dict:
+    config, environment = self._validate_container_profile(
         container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-        *,
-        refresh: bool = True,
-    ) -> tuple[dict, dict[str, str]]:
-        if refresh:
-            container.reload()
-        expected_labels = self._assistant_labels(team_id, spec)
-        expected_labels.pop(IMAGE_LABEL)
-        admitted = local_container_policy.inspect_profile(
-            container.attrs,
-            container.name,
-            expected_labels,
-            self._container_name(team_id, spec.assistant_id),
-            spec.image,
-            network_name,
-            self.cpuset_cpus,
-        )
-        if admitted is None:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "the installed Assistant failed its isolation profile",
-                code="assistant-isolation-drift",
-            )
-        return admitted
+        team_id,
+        spec,
+        network_name,
+        refresh=refresh,
+    )
+    self._validate_container_egress(
+        team_id,
+        spec,
+        network_name,
+        environment,
+        egress_proxy,
+    )
+    return config
 
-    def _validate_container_egress(
-        self,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-        environment: dict[str, str],
-        egress_proxy=None,
-    ) -> tuple[str, ...]:
-        try:
-            reviewed_hosts = assistant_manifest.canonical_allowed_hosts(spec.allowed_hosts)
-        except assistant_manifest.ManifestError as exc:
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "the reviewed Assistant allowed_hosts contract is invalid",
-                code="assistant-registry-drift",
-            ) from exc
-        expected_proxy_environment = None
-        if reviewed_hosts:
-            expected_proxy_environment = self._validate_egress_policy(team_id, spec, reviewed_hosts)
-            proxy = egress_proxy() if egress_proxy is not None else None
-            self._validate_egress_proxy_attachment(network_name, proxy)
-        if not local_container_policy.egress_environment_valid(environment, expected_proxy_environment):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "the installed Assistant failed its isolation profile",
-                code="assistant-isolation-drift",
-            )
-        return reviewed_hosts
 
-    def _validate_container_isolation(
-        self,
+def _validate_container_security(
+    self,
+    container,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    egress_proxy=None,
+    *,
+    refresh: bool = True,
+) -> dict:
+    config = self._validate_container_isolation(
         container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-        egress_proxy=None,
-        *,
-        refresh: bool = True,
-    ) -> dict:
-        config, environment = self._validate_container_profile(
-            container,
-            team_id,
-            spec,
-            network_name,
-            refresh=refresh,
-        )
-        self._validate_container_egress(
-            team_id,
-            spec,
-            network_name,
-            environment,
-            egress_proxy,
-        )
-        return config
+        team_id,
+        spec,
+        network_name,
+        egress_proxy,
+        refresh=refresh,
+    )
+    self._admit_assistant_allowed_hosts(container, spec)
+    return config
 
-    def _validate_container_security(
-        self,
+
+def _has_current_assistant_artifact(config: dict, spec: AssistantSpec) -> bool:
+    labels = config.get("Labels") or {}
+    return config.get("Image") == spec.image and labels.get(IMAGE_LABEL) == spec.image
+
+
+def _validate_current_assistant_artifact(self, config: dict, spec: AssistantSpec) -> None:
+    if not self._has_current_assistant_artifact(config, spec):
+        raise ApiProblem(
+            HTTPStatus.CONFLICT,
+            "the installed Assistant must be updated",
+            code="assistant-update-required",
+        )
+
+
+def _validate_container(
+    self,
+    container,
+    team_id: str,
+    spec: AssistantSpec,
+    network_name: str,
+    egress_proxy=None,
+    *,
+    refresh: bool = True,
+) -> None:
+    config = self._validate_container_security(
         container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-        egress_proxy=None,
-        *,
-        refresh: bool = True,
-    ) -> dict:
-        config = self._validate_container_isolation(
-            container,
-            team_id,
-            spec,
-            network_name,
-            egress_proxy,
-            refresh=refresh,
-        )
-        self._admit_assistant_allowed_hosts(container, spec)
-        return config
-
-    @staticmethod
-    def _has_current_assistant_artifact(config: dict, spec: AssistantSpec) -> bool:
-        labels = config.get("Labels") or {}
-        return config.get("Image") == spec.image and labels.get(IMAGE_LABEL) == spec.image
-
-    def _validate_current_assistant_artifact(self, config: dict, spec: AssistantSpec) -> None:
-        if not self._has_current_assistant_artifact(config, spec):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "the installed Assistant must be updated",
-                code="assistant-update-required",
-            )
-
-    def _validate_container(
-        self,
-        container,
-        team_id: str,
-        spec: AssistantSpec,
-        network_name: str,
-        egress_proxy=None,
-        *,
-        refresh: bool = True,
-    ) -> None:
-        config = self._validate_container_security(
-            container,
-            team_id,
-            spec,
-            network_name,
-            egress_proxy,
-            refresh=refresh,
-        )
-        self._validate_current_assistant_artifact(config, spec)
+        team_id,
+        spec,
+        network_name,
+        egress_proxy,
+        refresh=refresh,
+    )
+    self._validate_current_assistant_artifact(config, spec)
