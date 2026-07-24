@@ -226,7 +226,7 @@ class Handler(socketserver.BaseRequestHandler):
     @staticmethod
     def _tunnel(a: socket.socket, b: socket.socket) -> None:
         for s in (a, b):
-            s.settimeout(None)
+            s.settimeout(IDLE_TIMEOUT)
         try:
             while True:
                 readable, _, errored = select.select([a, b], [], [a, b], IDLE_TIMEOUT)
