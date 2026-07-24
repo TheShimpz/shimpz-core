@@ -1,4 +1,4 @@
-"""Local chat start and account-resume API mixin."""
+"""Local chat start and account-resume API operations."""
 
 from http import HTTPStatus
 

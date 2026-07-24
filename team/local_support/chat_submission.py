@@ -1,4 +1,4 @@
-"""Local chat human-submission transaction mixin."""
+"""Local chat human-submission transaction operations."""
 
 from dataclasses import replace
 from http import HTTPStatus

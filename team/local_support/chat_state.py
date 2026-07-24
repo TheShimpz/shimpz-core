@@ -1,4 +1,4 @@
-"""Local chat setup and persisted state mixin."""
+"""Local chat setup and persisted state operations."""
 
 import logging
 import math

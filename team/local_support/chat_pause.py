@@ -1,4 +1,4 @@
-"""Local chat suspension and challenge response mixin."""
+"""Local chat suspension and challenge response operations."""
 
 from http import HTTPStatus
 

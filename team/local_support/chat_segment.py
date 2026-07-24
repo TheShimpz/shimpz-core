@@ -1,4 +1,4 @@
-"""Local chat segment orchestration mixin."""
+"""Local chat segment orchestration operations."""
 
 from dataclasses import dataclass
 from http import HTTPStatus

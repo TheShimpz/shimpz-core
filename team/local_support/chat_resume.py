@@ -1,4 +1,4 @@
-"""Local chat submission-resume and stop API mixin."""
+"""Local chat submission-resume and stop API operations."""
 
 from http import HTTPStatus
 

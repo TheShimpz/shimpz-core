@@ -1,4 +1,4 @@
-"""Local Assistant secrets, accounts, and approval configuration mixin."""
+"""Local Assistant secrets, accounts, and approval configuration operations."""
 
 from http import HTTPStatus
 from typing import NoReturn

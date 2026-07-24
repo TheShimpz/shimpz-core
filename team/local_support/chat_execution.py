@@ -1,4 +1,4 @@
-"""Local chat Power execution and context validation mixin."""
+"""Local chat Power execution and context validation operations."""
 
 from http import HTTPStatus
 from typing import NoReturn
