@@ -111,6 +111,9 @@ class LocalLifecycleTests(LocalContractCase):
         container.name = controller.assistant_lifecycle._container_name("team_1", spec.assistant_id)
         controller.assistant_lifecycle._trusted_image = lambda _spec: events.append("trusted") or object()
         controller.assistant_lifecycle._create_assistant_container = lambda *_args: events.append("create")
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: self.fail(
+            "an outdated manifest must not block release discovery"
+        )
 
         self.assertEqual(
             controller.list_assistants("team_1"),
@@ -121,6 +124,28 @@ class LocalLifecycleTests(LocalContractCase):
             {"assistant": "future-assistant", "installed": False},
         )
         self.assertEqual(events, ["reload", "reload", "trusted", "reload", ("remove", True), "create"])
+
+    def test_listing_keeps_the_current_manifest_contract_strict(self) -> None:
+        controller, container, events = self._lifecycle_controller()
+        container.attrs["Config"]["Image"] = CURRENT_ASSISTANT_IMAGE
+        container.attrs["Config"]["Labels"][local_app.IMAGE_LABEL] = CURRENT_ASSISTANT_IMAGE
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = mock.Mock(
+            side_effect=local_app.ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Assistant manifest does not match its reviewed contract",
+                code="assistant-manifest-invalid",
+            )
+        )
+
+        with self.assertRaises(local_app.ApiProblem) as caught:
+            controller.list_assistants("team_1")
+
+        self.assertEqual(caught.exception.code, "assistant-manifest-invalid")
+        self.assertEqual(events, ["reload"])
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts.assert_called_once_with(
+            container,
+            controller.registry["shimpz-cloudflare"],
+        )
 
     def test_listing_fetches_the_egress_proxy_once_for_multiple_assistants(self) -> None:
         controller, first, _events = self._lifecycle_controller()

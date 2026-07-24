@@ -790,7 +790,7 @@ class LocalController:
                     "an installed Assistant is no longer allowlisted",
                     code="assistant-registry-drift",
                 )
-            config = self.assistant_lifecycle._validate_container_security(
+            config = self.assistant_lifecycle._validate_container_isolation(
                 container,
                 team_id,
                 spec,
