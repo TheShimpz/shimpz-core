@@ -464,7 +464,7 @@ def _revoke_assistant_approval_grants(team_id: str, assistant_id: str) -> None:
         raise _controller.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant approval state is unavailable") from exc
 
 
-def _revoke_team_approval_grants(team_id: str) -> bool:
+def _teardown_team_approval_grants(team_id: str) -> bool:
     try:
         _controller._assistant_approval_grants.revoke_team(team_id)
     except assistant_approval_grants.ApprovalGrantError:

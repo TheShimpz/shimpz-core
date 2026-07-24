@@ -579,13 +579,13 @@ from assistant_human.hosted_assistants import (
     _revoke_assistant_approval_grants as _revoke_assistant_approval_grants,
 )
 from assistant_human.hosted_assistants import (
-    _revoke_team_approval_grants as _revoke_team_approval_grants,
-)
-from assistant_human.hosted_assistants import (
     _secret_bindings as _secret_bindings,
 )
 from assistant_human.hosted_assistants import (
     _select_team_assistants as _select_team_assistants,
+)
+from assistant_human.hosted_assistants import (
+    _teardown_team_approval_grants as _teardown_team_approval_grants,
 )
 from assistant_human.hosted_assistants import (
     _validate_assistant_power_input as _validate_assistant_power_input,
