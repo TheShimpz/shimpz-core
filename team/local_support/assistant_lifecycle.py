@@ -199,7 +199,7 @@ def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network
             "the installed Assistant changed during update",
             code="assistant-update-conflict",
         )
-    self._retain_declared_assistant_account_state(team_id, spec)
+    self.chat_turn_service._retain_declared_assistant_account_state(team_id, spec)
     remaining_egress = (
         self._team_has_egress_assistant(team_id, excluding=spec.assistant_id) if spec.allowed_hosts else None
     )
@@ -214,7 +214,7 @@ def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network
             "Docker could not replace the Assistant",
             code="docker-remove-failed",
         ) from exc
-    self._revoke_assistant_approval_grants(team_id, spec.assistant_id)
+    self.chat_turn_service._revoke_assistant_approval_grants(team_id, spec.assistant_id)
     if spec.allowed_hosts:
         self._release_assistant_egress(
             team_id,
@@ -258,7 +258,7 @@ def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object
             return {"assistant": assistant_id, "installed": False}
 
         image = self._trusted_image(spec)
-        self._revoke_assistant_approval_grants(team_id, spec.assistant_id)
+        self.chat_turn_service._revoke_assistant_approval_grants(team_id, spec.assistant_id)
         self._create_assistant_container(team_id, spec, network, image)
         return {"assistant": assistant_id, "installed": True}
 
@@ -269,10 +269,10 @@ def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, obje
     self.secret_challenges.cancel_team(team_id)
     self.approval_challenges.cancel_team(team_id)
     self.input_challenges.cancel_team(team_id)
-    self._delete_chat_continuation(team_id)
+    self.chat_turn_service._delete_chat_continuation(team_id)
     with self._lock(team_id):
         network = self._network(team_id)
-        self._revoke_assistant_approval_grants(team_id, assistant_id)
+        self.chat_turn_service._revoke_assistant_approval_grants(team_id, assistant_id)
         container = self._assistant_container(team_id, assistant_id, required=False)
         if container is None:
             if self._egress_token(team_id, assistant_id, create=False) is not None:
@@ -283,8 +283,8 @@ def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, obje
                     network,
                     remaining_egress=remaining_egress,
                 )
-            self._delete_assistant_secret_state(team_id, assistant_id)
-            self._delete_assistant_account_state(team_id, assistant_id)
+            self.chat_turn_service._delete_assistant_secret_state(team_id, assistant_id)
+            self.chat_turn_service._delete_assistant_account_state(team_id, assistant_id)
             return {"assistant": assistant_id, "uninstalled": False}
         self._validate_container_security(container, team_id, spec, network.name)
         remaining_egress = (
@@ -309,6 +309,6 @@ def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, obje
                 network,
                 remaining_egress=remaining_egress,
             )
-        self._delete_assistant_secret_state(team_id, assistant_id)
-        self._delete_assistant_account_state(team_id, assistant_id)
+        self.chat_turn_service._delete_assistant_secret_state(team_id, assistant_id)
+        self.chat_turn_service._delete_assistant_account_state(team_id, assistant_id)
         return {"assistant": assistant_id, "uninstalled": True}

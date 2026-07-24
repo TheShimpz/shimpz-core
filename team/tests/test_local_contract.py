@@ -293,11 +293,12 @@ class LocalContractTests(LocalContractCase):
         self.assertIs(controller.approval_grants, approval_grants)
         self.assertIsInstance(controller.assistant_lifecycle, local_app.AssistantLifecycle)
         self.assertIsInstance(controller.chat_turn_service, local_app.ChatTurnService)
-        self.assertIs(controller.assistant_lifecycle._controller, controller)
-        self.assertIs(controller.chat_turn_service._controller, controller)
         self.assertEqual(local_app.LocalController.__bases__, (object,))
-        self.assertEqual(local_app.AssistantLifecycle.__bases__, (local_app._ControllerCollaborator,))
-        self.assertEqual(local_app.ChatTurnService.__bases__, (local_app._ControllerCollaborator,))
+        self.assertEqual(local_app.AssistantLifecycle.__bases__, (object,))
+        self.assertEqual(local_app.ChatTurnService.__bases__, (object,))
+        self.assertFalse(hasattr(local_app.LocalController, "__getattr__"))
+        self.assertIs(controller.assistant_lifecycle.__dict__, controller.__dict__)
+        self.assertIs(controller.chat_turn_service.__dict__, controller.__dict__)
         for module in (
             local_app.local_assistant_lifecycle,
             local_app.local_assistant_resources,
@@ -342,7 +343,7 @@ class LocalContractTests(LocalContractCase):
                 raise AssertionError("a proved stop must not be killed")
 
         stopped = Stoppable()
-        controller._fail_stop_power(stopped)
+        controller.assistant_lifecycle._fail_stop_power(stopped)
         self.assertEqual(stopped.status, "exited")
         self.assertNotIn(stopped.id, controller._blocked_power_workloads)
 
@@ -365,7 +366,7 @@ class LocalContractTests(LocalContractCase):
                 self.attrs["State"]["Running"] = False
 
         paused = Paused()
-        controller._fail_stop_power(paused)
+        controller.assistant_lifecycle._fail_stop_power(paused)
         self.assertTrue(paused.killed)
         self.assertNotIn(paused.id, controller._blocked_power_workloads)
 
@@ -388,7 +389,7 @@ class LocalContractTests(LocalContractCase):
 
         ambiguous = Ambiguous()
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller._fail_stop_power(ambiguous)
+            controller.assistant_lifecycle._fail_stop_power(ambiguous)
         self.assertEqual(caught.exception.code, "assistant-power-blocked")
         self.assertIn(ambiguous.id, controller._blocked_power_workloads)
 
@@ -409,7 +410,7 @@ class LocalContractTests(LocalContractCase):
 
         malformed = Malformed()
         with self.assertRaises(local_app.ApiProblem):
-            controller._fail_stop_power(malformed)
+            controller.assistant_lifecycle._fail_stop_power(malformed)
         self.assertIn(malformed.id, controller._blocked_power_workloads)
 
     def test_large_upload_admission_is_single_slot(self) -> None:
@@ -425,7 +426,7 @@ class LocalContractTests(LocalContractCase):
             controller._wire_collaborators()
             controller._locks = tuple(__import__("threading").RLock() for _ in range(64))
             controller.inference_store = inference_config.InferenceConfigStore(Path(directory) / "inference")
-            controller._network = lambda _team_id: object()
+            controller.assistant_lifecycle._network = lambda _team_id: object()
 
             configured = controller.configure_inference(
                 "team_1",
@@ -471,15 +472,17 @@ class LocalContractTests(LocalContractCase):
         captured: dict[str, object] = {}
 
         class Controller:
-            @staticmethod
-            def chat(team_id, payload, provider, api_key):
-                captured.update(
-                    team_id=team_id,
-                    payload=payload,
-                    provider=provider,
-                    api_key=api_key,
+            chat_turn_service = SimpleNamespace(
+                chat=lambda team_id, payload, provider, api_key: (
+                    captured.update(
+                        team_id=team_id,
+                        payload=payload,
+                        provider=provider,
+                        api_key=api_key,
+                    )
+                    or {"team_name": "Marketing", "reply": "Hello!"}
                 )
-                return {"team_name": "Marketing", "reply": "Hello!"}
+            )
 
         token_value = "a" * 32
         handler = object.__new__(local_app.Handler)
@@ -514,7 +517,7 @@ class LocalContractTests(LocalContractCase):
                 captured.append((spec.assistant_id, method, path, payload))
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
@@ -563,7 +566,7 @@ class LocalContractTests(LocalContractCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
-            controller._rpc = lambda *_args: suspension
+            controller.assistant_lifecycle._rpc = lambda *_args: suspension
             with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
                 response = controller.invoke(
                     "team_1",
@@ -579,7 +582,7 @@ class LocalContractTests(LocalContractCase):
         raw_secret = TEST_ACCOUNT_ACCESS_TOKEN
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
-            controller._rpc = lambda *_args: {
+            controller.assistant_lifecycle._rpc = lambda *_args: {
                 "id": "123456789",
                 "name": f"unsafe {raw_secret}",
                 "username": "OpenAI",

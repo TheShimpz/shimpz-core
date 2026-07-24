@@ -68,8 +68,8 @@ def _chat_setup(
     inference_config.InferenceConfig,
 ]:
     with self._lock(team_id):
-        network = self._network(team_id)
-        team_name = self._validate_network(network, team_id, refresh=False)
+        network = self.assistant_lifecycle._network(team_id)
+        team_name = self.assistant_lifecycle._validate_network(network, team_id, refresh=False)
         network_id = getattr(network, "id", None)
         if not isinstance(network_id, str) or not network_id:
             raise ApiProblem(HTTPStatus.CONFLICT, "Team resource ownership conflict", code="ownership-conflict")
@@ -119,7 +119,7 @@ def _active_assistant_genesis(self, active: _ActiveAssistant) -> str:
             code="assistant-genesis-drift",
         )
     try:
-        return self._assistant_genesis_cache.get(container)
+        return self.assistant_lifecycle._assistant_genesis_cache.get(container)
     except assistant_genesis.GenesisError as exc:
         raise ApiProblem(
             HTTPStatus.CONFLICT,
@@ -134,8 +134,10 @@ def _admit_assistant_allowed_hosts(self, container, spec: AssistantSpec) -> tupl
             allowed_hosts=spec.allowed_hosts,
             accounts=spec.accounts,
         )
-        declared = self._assistant_allowed_hosts_cache.get(container, reviewed)
-        self._assistant_machine_contract_cache.get(container, declared.accounts, spec.machine_contract)
+        declared = self.assistant_lifecycle._assistant_allowed_hosts_cache.get(container, reviewed)
+        self.assistant_lifecycle._assistant_machine_contract_cache.get(
+            container, declared.accounts, spec.machine_contract
+        )
     except assistant_manifest.ManifestError as exc:
         log.warning("Assistant manifest admission failed: %s", exc)
         raise ApiProblem(
@@ -149,7 +151,7 @@ def _admit_assistant_allowed_hosts(self, container, spec: AssistantSpec) -> tupl
 
 def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_ActiveAssistant, ...]:
     try:
-        containers = self.client.containers.list(**self._assistant_filters(team_id))
+        containers = self.client.containers.list(**self.assistant_lifecycle._assistant_filters(team_id))
     except DockerException as exc:
         raise ApiProblem(
             HTTPStatus.SERVICE_UNAVAILABLE,
@@ -162,7 +164,7 @@ def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_Act
     def current_egress_proxy():
         nonlocal egress_proxy
         if egress_proxy is None:
-            egress_proxy = self._egress_proxy()
+            egress_proxy = self.assistant_lifecycle._egress_proxy()
         return egress_proxy
 
     for container in containers:
@@ -174,7 +176,7 @@ def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_Act
                 "an installed Assistant is no longer allowlisted",
                 code="assistant-registry-drift",
             )
-        self._validate_container(
+        self.assistant_lifecycle._validate_container(
             container,
             team_id,
             spec,
@@ -182,7 +184,7 @@ def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_Act
             current_egress_proxy,
             refresh=False,
         )
-        if container.id in self._blocked_power_workloads:
+        if container.id in self.assistant_lifecycle._blocked_power_workloads:
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Assistant Power execution is blocked until this Assistant is reinstalled",

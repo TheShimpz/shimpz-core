@@ -51,7 +51,9 @@ class LocalChatScopeTests(LocalContractCase):
             controller = self._chat_controller(directory, object())
             first_team = "team_1"
             token = "turn-token"
-            frozen_container_id = controller._assistant_container(first_team, "shimpz-cloudflare").id
+            frozen_container_id = controller.assistant_lifecycle._assistant_container(
+                first_team, "shimpz-cloudflare"
+            ).id
             controller._active_chat_tokens[first_team] = token
             colliding_team = next(
                 f"team_{index}"
@@ -64,13 +66,13 @@ class LocalChatScopeTests(LocalContractCase):
                 release.wait(timeout=2)
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             with (
                 mock.patch.object(local_app.local_audit, "record", return_value="trace"),
                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor,
             ):
                 future = executor.submit(
-                    controller._invoke_chat_power,
+                    controller.chat_turn_service._invoke_chat_power,
                     first_team,
                     token,
                     brain_runtime_client.PowerRequest(
@@ -95,13 +97,13 @@ class LocalChatScopeTests(LocalContractCase):
     def test_chat_setup_validates_the_network_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
-            labels = controller._base_labels("team_1", "team")
+            labels = controller.assistant_lifecycle._base_labels("team_1", "team")
             labels[local_app.TEAM_NAME_LABEL] = "Marketing"
             network = SimpleNamespace(
                 id="a" * 64,
-                name=controller._network_name("team_1"),
+                name=controller.assistant_lifecycle._network_name("team_1"),
                 attrs={
-                    "Name": controller._network_name("team_1"),
+                    "Name": controller.assistant_lifecycle._network_name("team_1"),
                     "Driver": "bridge",
                     "Internal": True,
                     "Attachable": False,
@@ -110,12 +112,14 @@ class LocalChatScopeTests(LocalContractCase):
                 reload=mock.Mock(),
             )
             controller.client = SimpleNamespace(networks=SimpleNamespace(get=lambda _name: network))
-            controller._network = local_app.AssistantLifecycle._network.__get__(controller.assistant_lifecycle)
-            controller._validate_network = local_app.AssistantLifecycle._validate_network.__get__(
+            controller.assistant_lifecycle._network = local_app.AssistantLifecycle._network.__get__(
+                controller.assistant_lifecycle
+            )
+            controller.assistant_lifecycle._validate_network = local_app.AssistantLifecycle._validate_network.__get__(
                 controller.assistant_lifecycle
             )
 
-            setup = controller._chat_setup("team_1", [], "openai", ())
+            setup = controller.chat_turn_service._chat_setup("team_1", [], "openai", ())
 
         self.assertEqual(setup[0], "Marketing")
         network.reload.assert_called_once_with()
@@ -145,7 +149,7 @@ class LocalChatScopeTests(LocalContractCase):
             controller = self._chat_controller(directory, Runtime())
             controller.storage = SimpleNamespace(metadata=metadata, metadata_connection=metadata_connection)
 
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Summarize", "files": [file_id], "assistant_ids": []},
                 "openai",
@@ -161,7 +165,7 @@ class LocalChatScopeTests(LocalContractCase):
         answer = "human-submitted-private-value"
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
-            controller._rpc = lambda *_args: {"echo": answer}
+            controller.assistant_lifecycle._rpc = lambda *_args: {"echo": answer}
             with (
                 mock.patch.object(local_app.local_audit, "record", return_value="trace"),
                 self.assertRaises(local_app.ApiProblem) as leaked,
@@ -196,12 +200,12 @@ class LocalChatScopeTests(LocalContractCase):
                 powers={"lookup": replace(hello.powers["list-zones"], path="/v1/powers/lookup")},
             )
             controller.registry[account_helper.assistant_id] = account_helper
-            controller._active_chat_assistants = lambda _team_id, _network: (
+            controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
                 ActiveAssistant(hello, "hello-container"),
                 ActiveAssistant(account_helper, "account-helper-container"),
             )
 
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {
                     "message": "Check the accounts",
@@ -236,13 +240,13 @@ class LocalChatScopeTests(LocalContractCase):
         runtime = Runtime()
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, runtime)
-            scanner = controller._active_chat_assistants
+            scanner = controller.chat_turn_service._active_chat_assistants
             calls: list[str] = []
-            controller._active_chat_assistants = lambda team_id, network: (
+            controller.chat_turn_service._active_chat_assistants = lambda team_id, network: (
                 calls.append(f"{team_id}:{network}") or scanner(team_id, network)
             )
 
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Hello", "files": [], "assistant_ids": []},
                 "openai",
@@ -267,7 +271,7 @@ class LocalChatScopeTests(LocalContractCase):
             )
             for assistant_ids in invalid:
                 with self.subTest(assistant_ids=assistant_ids), self.assertRaises(local_app.ApiProblem) as caught:
-                    controller.chat(
+                    controller.chat_turn_service.chat(
                         "team_1",
                         {"message": "Hello", "files": [], "assistant_ids": assistant_ids},
                         "openai",
@@ -276,7 +280,7 @@ class LocalChatScopeTests(LocalContractCase):
                 self.assertEqual(caught.exception.code, "invalid-assistants")
 
             with self.assertRaises(local_app.ApiProblem) as unavailable:
-                controller.chat(
+                controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Hello", "files": [], "assistant_ids": ["account-helper"]},
                     "openai",
@@ -296,10 +300,12 @@ class LocalChatScopeTests(LocalContractCase):
             controller = self._chat_controller(directory, Runtime())
             spec = controller.registry["shimpz-cloudflare"]
             generations = iter(("assistant-v1", "assistant-v2"))
-            controller._active_chat_assistants = lambda _team_id, _network: (ActiveAssistant(spec, next(generations)),)
+            controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
+                ActiveAssistant(spec, next(generations)),
+            )
 
             with self.assertRaises(local_app.ApiProblem) as caught:
-                controller.chat(
+                controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Hello", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",
@@ -321,12 +327,14 @@ class LocalChatScopeTests(LocalContractCase):
                 lookups.append(container.id)
                 return container
 
-            controller._assistant_container = assistant_container
-            controller._rpc = lambda *_args: self.fail("a replacement Assistant container executed the Power")
+            controller.assistant_lifecycle._assistant_container = assistant_container
+            controller.assistant_lifecycle._rpc = lambda *_args: self.fail(
+                "a replacement Assistant container executed the Power"
+            )
             controller._active_chat_tokens["team_1"] = "turn-token"
 
             with self.assertRaises(local_app.ApiProblem) as caught:
-                controller._invoke_chat_power(
+                controller.chat_turn_service._invoke_chat_power(
                     "team_1",
                     "turn-token",
                     brain_runtime_client.PowerRequest(
@@ -371,14 +379,14 @@ class LocalChatScopeTests(LocalContractCase):
                 powers={"lookup": replace(hello.powers["list-zones"], path="/v1/powers/lookup")},
             )
             controller.registry[account_helper.assistant_id] = account_helper
-            controller._active_chat_assistants = lambda _team_id, _network: (
+            controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
                 ActiveAssistant(hello, "hello-container"),
                 ActiveAssistant(account_helper, "account-helper-container"),
             )
             controller.invoke = lambda *_args: self.fail("an unselected Assistant Power executed")
 
             with self.assertRaises(local_app.ApiProblem) as caught:
-                controller.chat(
+                controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Accounts", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",

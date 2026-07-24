@@ -50,7 +50,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com",),
         )
-        network = SimpleNamespace(name=controller._network_name("team_1"))
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
         container = SimpleNamespace(
             id="assistant-generation",
@@ -60,19 +60,19 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             remove=lambda *, force: events.append(("remove", force)),
         )
         controller.client = SimpleNamespace(containers=SimpleNamespace(create=lambda **_kwargs: container))
-        controller._egress_token = lambda *_args, **_kwargs: "a" * 32
-        controller._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
+        controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: "a" * 32
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
             local_app.ApiProblem(
                 HTTPStatus.CONFLICT,
                 "installed Assistant manifest failed its reviewed contract",
                 code="assistant-manifest-invalid",
             )
         )
-        controller._activate_assistant_egress = lambda *_args: events.append("activate-egress")
-        controller._release_assistant_egress = lambda *_args: events.append("release-egress")
+        controller.assistant_lifecycle._activate_assistant_egress = lambda *_args: events.append("activate-egress")
+        controller.assistant_lifecycle._release_assistant_egress = lambda *_args: events.append("release-egress")
 
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller._create_assistant_container("team_1", spec, network, image)
+            controller.assistant_lifecycle._create_assistant_container("team_1", spec, network, image)
 
         self.assertEqual(caught.exception.code, "assistant-manifest-invalid")
         self.assertNotIn("start", events)
@@ -94,7 +94,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com",),
         )
-        network = SimpleNamespace(name=controller._network_name("team_1"))
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
 
         class Container:
@@ -118,19 +118,19 @@ class LocalLifecycleTeardownTests(LocalContractCase):
 
         container = Container()
         controller.client = SimpleNamespace(containers=SimpleNamespace(create=lambda **_kwargs: container))
-        controller._egress_token = lambda *_args, **_kwargs: "a" * 32
-        controller._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
+        controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: "a" * 32
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
             local_app.ApiProblem(
                 HTTPStatus.CONFLICT,
                 "installed Assistant manifest failed its reviewed contract",
                 code="assistant-manifest-invalid",
             )
         )
-        controller._activate_assistant_egress = lambda *_args: events.append("activate-egress")
-        controller._release_assistant_egress = lambda *_args: events.append("release-egress")
+        controller.assistant_lifecycle._activate_assistant_egress = lambda *_args: events.append("activate-egress")
+        controller.assistant_lifecycle._release_assistant_egress = lambda *_args: events.append("release-egress")
 
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller._create_assistant_container("team_1", spec, network, image)
+            controller.assistant_lifecycle._create_assistant_container("team_1", spec, network, image)
 
         self.assertEqual(caught.exception.code, "assistant-install-rollback-incomplete")
         self.assertNotIn("activate-egress", events)
@@ -155,7 +155,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             ),
         )
 
-        result = controller.uninstall_assistant("team_1", "shimpz-cloudflare")
+        result = controller.assistant_lifecycle.uninstall_assistant("team_1", "shimpz-cloudflare")
 
         self.assertEqual(result, {"assistant": "shimpz-cloudflare", "uninstalled": True})
         self.assertEqual(events, ["reload", ("remove", True)])
@@ -164,10 +164,12 @@ class LocalLifecycleTeardownTests(LocalContractCase):
     def test_install_rejects_security_drift_without_resolving_or_removing(self) -> None:
         controller, container, events = self._lifecycle_controller()
         container.attrs["HostConfig"]["Privileged"] = True
-        controller._trusted_image = lambda _spec: self.fail("security drift reached image resolution")
+        controller.assistant_lifecycle._trusted_image = lambda _spec: self.fail(
+            "security drift reached image resolution"
+        )
 
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller.install_assistant("team_1", "shimpz-cloudflare")
+            controller.assistant_lifecycle.install_assistant("team_1", "shimpz-cloudflare")
 
         self.assertEqual(
             (caught.exception.status, caught.exception.code),
@@ -180,7 +182,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
         container.labels[local_app.SPACE_LABEL] = "other-space"
 
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller.uninstall_assistant("team_1", "shimpz-cloudflare")
+            controller.assistant_lifecycle.uninstall_assistant("team_1", "shimpz-cloudflare")
 
         self.assertEqual(caught.exception.code, "assistant-isolation-drift")
         self.assertEqual(events, ["reload"])
@@ -193,11 +195,11 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             {"assistants": [{"assistant": "shimpz-cloudflare", "status": "outdated"}]},
         )
         with self.assertRaises(local_app.ApiProblem) as update_required:
-            controller._validate_container(
+            controller.assistant_lifecycle._validate_container(
                 container,
                 "team_1",
                 controller.registry["shimpz-cloudflare"],
-                controller._network_name("team_1"),
+                controller.assistant_lifecycle._network_name("team_1"),
             )
         self.assertEqual(update_required.exception.code, "assistant-update-required")
         self.assertEqual(update_required.exception.message, "the installed Assistant must be updated")
@@ -220,7 +222,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
                 code="assistant-manifest-invalid",
             )
 
-        controller._admit_assistant_allowed_hosts = reject
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = reject
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.list_assistants("team_1")
 

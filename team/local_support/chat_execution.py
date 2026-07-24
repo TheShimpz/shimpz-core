@@ -30,10 +30,10 @@ def _invoke_chat_power(
 ) -> object:
     assistant_id = power_request.assistant_id
     with self._lock(team_id):
-        spec = self._resolve(assistant_id)
-        network = self._network(team_id)
-        container = self._assistant_container(team_id, assistant_id)
-        self._validate_container(container, team_id, spec, network.name)
+        spec = self.assistant_lifecycle._resolve(assistant_id)
+        network = self.assistant_lifecycle._network(team_id)
+        container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
+        self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
         if container.id != frozen_container_id:
             raise ApiProblem(
                 HTTPStatus.CONFLICT,
@@ -50,9 +50,11 @@ def _invoke_chat_power(
             self._active_power_containers[team_id] = (token, container)
     try:
         invocation = (
-            self.invoke(team_id, assistant_id, power_request.power, power_request.input, answers=answers)
+            self.assistant_lifecycle.invoke(
+                team_id, assistant_id, power_request.power, power_request.input, answers=answers
+            )
             if answers
-            else self.invoke(team_id, assistant_id, power_request.power, power_request.input)
+            else self.assistant_lifecycle.invoke(team_id, assistant_id, power_request.power, power_request.input)
         )
     except ApiProblem:
         if self._chat_cancelled(token):

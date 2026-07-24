@@ -67,7 +67,9 @@ class PowerRpcFrameTests(unittest.TestCase):
         with _socket_bytes(payload, pieces=(1, 2, 5, 3, 7)) as hosted_socket:
             stdout, stderr = hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1)
         with _socket_bytes(payload, pieces=(4, 1, 6, 2)) as local_socket:
-            local_stdout, local_stderr = self.local._read_rpc_frames(local_socket, time.monotonic() + 1)
+            local_stdout, local_stderr = self.local.assistant_lifecycle._read_rpc_frames(
+                local_socket, time.monotonic() + 1
+            )
 
         self.assertEqual(stdout, b'{"ok":true}')
         self.assertEqual(stderr, b"warning")
@@ -189,13 +191,16 @@ class PowerRpcFrameTests(unittest.TestCase):
                 with _socket_bytes(payload) as hosted_socket, self.assertRaises(ValueError):
                     hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1)
                 with _socket_bytes(payload) as local_socket, self.assertRaises(ValueError):
-                    self.local._read_rpc_frames(local_socket, time.monotonic() + 1)
+                    self.local.assistant_lifecycle._read_rpc_frames(local_socket, time.monotonic() + 1)
 
     def test_clean_eof_is_the_only_empty_success(self) -> None:
         with _socket_bytes(b"") as hosted_socket:
             self.assertEqual(hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1), (b"", b""))
         with _socket_bytes(b"") as local_socket:
-            self.assertEqual(self.local._read_rpc_frames(local_socket, time.monotonic() + 1), (b"", b""))
+            self.assertEqual(
+                self.local.assistant_lifecycle._read_rpc_frames(local_socket, time.monotonic() + 1),
+                (b"", b""),
+            )
 
     def test_both_power_batch_adapters_reject_the_same_generation_drift(self) -> None:
         request = brain_runtime_client.PowerRequest("interrupt-1", "assistant", "lookup", {"query": "safe"})
@@ -279,7 +284,7 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaises(runtime_state.ApiError) as hosted_secret:
             hosted_assistants._resolve_power_secrets("team_1", "assistant", hosted_contract, "missing")
         with self.assertRaises(local_app.ApiProblem) as local_secret:
-            self.local._resolve_power_secrets("team_1", local_spec, "missing")
+            self.local.chat_turn_service._resolve_power_secrets("team_1", local_spec, "missing")
         self.assertEqual(
             hosted_secret.exception.status,
             local_secret.exception.status,
@@ -294,7 +299,7 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaises(runtime_state.ApiError) as hosted_account:
             hosted_assistants._resolve_power_accounts("team_1", hosted_active, "missing")
         with self.assertRaises(local_app.ApiProblem) as local_account:
-            self.local._resolve_power_accounts("team_1", local_spec, "missing")
+            self.local.chat_turn_service._resolve_power_accounts("team_1", local_spec, "missing")
         self.assertEqual(
             hosted_account.exception.status,
             local_account.exception.status,
@@ -346,7 +351,7 @@ class PowerRpcFrameTests(unittest.TestCase):
             controller = object.__new__(local_app.LocalController)
             controller._wire_collaborators()
             controller.client = SimpleNamespace(api=api)
-            controller._fail_stop_power = mock.Mock()
+            controller.assistant_lifecycle._fail_stop_power = mock.Mock()
             spec = SimpleNamespace(rpc_command="/app/rpc")
             with (
                 mock.patch.object(
@@ -356,10 +361,12 @@ class PowerRpcFrameTests(unittest.TestCase):
                 ),
                 self.assertRaises(local_app.ApiProblem) as caught,
             ):
-                controller._rpc(SimpleNamespace(id="assistant-container"), spec, "POST", "/v1/powers/test", {})
+                controller.assistant_lifecycle._rpc(
+                    SimpleNamespace(id="assistant-container"), spec, "POST", "/v1/powers/test", {}
+                )
 
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
-        controller._fail_stop_power.assert_called_once()
+        controller.assistant_lifecycle._fail_stop_power.assert_called_once()
         self.assertEqual(create.call_args.kwargs["workdir"], local_assistant_rpc.ASSISTANT_WORKDIR)
         self.assertEqual(create.call_args.kwargs["environment"], {})
 

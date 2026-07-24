@@ -76,25 +76,25 @@ class LocalChatControlTests(LocalContractCase):
                     )
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
 
-            first = controller.chat(
+            first = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "First", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 "sk-test-0123456789",
             )
             self.assertEqual(first["requirements"][0]["approval"], "once")
-            controller.submit_chat_approval(
+            controller.chat_turn_service.submit_chat_approval(
                 "team_1",
                 {"challenge_id": first["challenge_id"], "approved": True},
                 "openai",
                 "sk-test-0123456789",
             )
-            second = controller.chat(
+            second = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Second", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -111,9 +111,9 @@ class LocalChatControlTests(LocalContractCase):
                     ),
                 )
             )
-            inventory = controller.list_assistant_approval_grants("team_1")
-            revoked = controller.revoke_assistant_approval_grants("team_1")
-            third = controller.chat(
+            inventory = controller.chat_turn_service.list_assistant_approval_grants("team_1")
+            revoked = controller.chat_turn_service.revoke_assistant_approval_grants("team_1")
+            third = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Third", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -170,17 +170,17 @@ class LocalChatControlTests(LocalContractCase):
                     )
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
-            secret_challenge = controller.chat(
+            secret_challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Publish", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 "sk-test-0123456789",
             )
-            approval_challenge = controller.submit_chat_secrets(
+            approval_challenge = controller.chat_turn_service.submit_chat_secrets(
                 "team_1",
                 self._secret_submission(secret_challenge),
                 "openai",
@@ -188,7 +188,7 @@ class LocalChatControlTests(LocalContractCase):
             )
             self.assertEqual(approval_challenge["status"], "approval-required")
             self.assertEqual(approval_challenge["requirements"][0]["title"], "Publish zones")
-            response = controller.submit_chat_approval(
+            response = controller.chat_turn_service.submit_chat_approval(
                 "team_1",
                 {"challenge_id": approval_challenge["challenge_id"], "approved": True},
                 "openai",
@@ -216,7 +216,7 @@ class LocalChatControlTests(LocalContractCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime())
-            controller._rpc = lambda *_args: local_app.power_execution.RpcSuspension(
+            controller.assistant_lifecycle._rpc = lambda *_args: local_app.power_execution.RpcSuspension(
                 {
                     "ordinal": 0,
                     "kind": "approval",
@@ -231,7 +231,7 @@ class LocalChatControlTests(LocalContractCase):
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
-            challenge = controller.chat(
+            challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Publish", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -251,7 +251,7 @@ class LocalChatControlTests(LocalContractCase):
 
             def submit() -> None:
                 try:
-                    controller.submit_chat_approval(
+                    controller.chat_turn_service.submit_chat_approval(
                         "team_1",
                         {"challenge_id": challenge["challenge_id"], "approved": True},
                         "openai",
@@ -264,14 +264,14 @@ class LocalChatControlTests(LocalContractCase):
                 thread = threading.Thread(target=submit)
                 thread.start()
                 self.assertTrue(claiming.wait(timeout=2))
-                repeated = controller.chat(
+                repeated = controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Different turn", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",
                     "sk-test-0123456789",
                 )
                 self.assertEqual(repeated["challenge_id"], challenge["challenge_id"])
-                stopped = controller.stop_chat("team_1")
+                stopped = controller.chat_turn_service.stop_chat("team_1")
                 release.set()
                 thread.join(timeout=2)
 
@@ -298,7 +298,7 @@ class LocalChatControlTests(LocalContractCase):
 
             def turn() -> None:
                 try:
-                    controller.chat(
+                    controller.chat_turn_service.chat(
                         "team_1",
                         {"message": "Wait", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                         "openai",
@@ -310,7 +310,7 @@ class LocalChatControlTests(LocalContractCase):
             worker = threading.Thread(target=turn)
             worker.start()
             self.assertTrue(started.wait(timeout=1))
-            stopped = controller.stop_chat("team_1")
+            stopped = controller.chat_turn_service.stop_chat("team_1")
             release.set()
             worker.join(timeout=2)
 

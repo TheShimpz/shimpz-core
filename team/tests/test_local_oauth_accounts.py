@@ -71,7 +71,7 @@ class LocalOAuthArtifactCurrencyTests(LocalContractCase):
         }
 
         with self.assertRaises(local_app.ApiProblem) as outdated:
-            controller.complete_cloudflare_oauth_callback(**callback)
+            controller.chat_turn_service.complete_cloudflare_oauth_callback(**callback)
         self.assertEqual(
             (outdated.exception.status, outdated.exception.code),
             (HTTPStatus.BAD_GATEWAY, "assistant-account-oauth-unavailable"),
@@ -81,7 +81,7 @@ class LocalOAuthArtifactCurrencyTests(LocalContractCase):
         config["Image"] = CURRENT_ASSISTANT_IMAGE
         config["Labels"][local_app.IMAGE_LABEL] = CURRENT_ASSISTANT_IMAGE
         self.assertEqual(
-            controller.complete_cloudflare_oauth_callback(**callback),
+            controller.chat_turn_service.complete_cloudflare_oauth_callback(**callback),
             {
                 "connected": True,
                 "team_id": "team_1",
@@ -157,7 +157,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 ),
             )
 
-            controller._delete_team_account_state("team_1")
+            controller.chat_turn_service._delete_team_account_state("team_1")
             recreated = controller.assistant_accounts.metadata(
                 "team_1",
                 "shimpz-cloudflare",
@@ -176,9 +176,9 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
-            controller._assistant_ids = lambda _team: ("shimpz-cloudflare",)
+            controller.assistant_lifecycle._assistant_ids = lambda _team: ("shimpz-cloudflare",)
 
-            payload = controller.list_assistant_accounts("team_1")
+            payload = controller.chat_turn_service.list_assistant_accounts("team_1")
 
         self.assertEqual(set(payload), {"team_id", "accounts"})
         self.assertEqual(payload["team_id"], "team_1")
@@ -210,7 +210,11 @@ class LocalOAuthAccountTests(unittest.TestCase):
         expected = {"team_id": "team_1", "accounts": []}
         handler = object.__new__(local_app.Handler)
         handler.command = "GET"
-        handler.server = SimpleNamespace(controller=SimpleNamespace(list_assistant_accounts=lambda team_id: expected))
+        handler.server = SimpleNamespace(
+            controller=SimpleNamespace(
+                chat_turn_service=SimpleNamespace(list_assistant_accounts=lambda team_id: expected)
+            )
+        )
 
         route = handler._assistant_account_route(["v1", "teams", "team_1", "assistant-accounts"])
 
@@ -305,14 +309,14 @@ class LocalOAuthAccountTests(unittest.TestCase):
         controller._wire_collaborators()
         controller.account_challenges = challenges
         controller.oauth_service = Service()
-        controller._current_account_declaration = lambda *_args: None
+        controller.chat_turn_service._current_account_declaration = lambda *_args: None
 
-        started = controller.start_assistant_account_authorization(
+        started = controller.chat_turn_service.start_assistant_account_authorization(
             "team_1",
             pending.id,
             "browser-session-private-123456789",
         )
-        completed = controller.complete_cloudflare_oauth_callback(
+        completed = controller.chat_turn_service.complete_cloudflare_oauth_callback(
             state="s" * 43,
             claim="a" * 64,
             session_binding="browser-session-private-123456789",
@@ -331,7 +335,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["start", "complete"])
 
     def test_internal_oauth_routes_are_closed_and_exact(self) -> None:
-        controller = SimpleNamespace(
+        chat_turn_service = SimpleNamespace(
             start_assistant_account_authorization=lambda team, challenge, binding: {
                 "authorization_url": f"https://shimpz.com/{team}/{challenge}/{binding}"
             },
@@ -344,7 +348,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
             disconnect_assistant_account=lambda *_values: {"disconnected": True},
         )
         handler = object.__new__(local_app.Handler)
-        handler.server = SimpleNamespace(controller=controller)
+        handler.server = SimpleNamespace(controller=SimpleNamespace(chat_turn_service=chat_turn_service))
         handler._body = lambda **_kwargs: {"session_binding": "browser-session-private-123456789"}
         handler.command = "POST"
 
@@ -428,15 +432,15 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 [],
                 inference_config.InferenceConfig("openai", "gpt-5-nano"),
             )
-            controller._chat_setup = lambda *_args: setup
-            controller._active_assistant_genesis = lambda _active: "Use reviewed Powers only."
+            controller.chat_turn_service._chat_setup = lambda *_args: setup
+            controller.assistant_lifecycle._active_assistant_genesis = lambda _active: "Use reviewed Powers only."
             controller._chat_cancelled = lambda _token: False
-            controller._invoke_chat_power = lambda *_args: (_ for _ in ()).throw(
+            controller.chat_turn_service._invoke_chat_power = lambda *_args: (_ for _ in ()).throw(
                 AssertionError("Power must not execute before OAuth consent")
             )
             turn_token = "turn-token"
 
-            result = controller._run_chat_segment(
+            result = controller.chat_turn_service._run_chat_segment(
                 SegmentRequest(
                     team_id="team_1",
                     file_ids=[],
@@ -497,8 +501,8 @@ class LocalOAuthAccountTests(unittest.TestCase):
             config = inference_config.InferenceConfig("openai", "gpt-5-nano")
             active = ActiveAssistant(spec, "b" * 64)
             setup = ("Team One", "c" * 64, (active,), [], config)
-            identity = controller._chat_identity(*setup)
-            controller._chat_setup = lambda *_args: setup
+            identity = controller.chat_turn_service._chat_identity(*setup)
+            controller.chat_turn_service._chat_setup = lambda *_args: setup
             pending = PendingLocalChat(
                 continuation=continuation,
                 assistant_ids=(spec.assistant_id,),
@@ -520,7 +524,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                     expires_in=3600,
                 ),
             )
-            controller._run_chat_segment = lambda *_args, **_kwargs: chat_turn_engine.SegmentResult(
+            controller.chat_turn_service._run_chat_segment = lambda *_args, **_kwargs: chat_turn_engine.SegmentResult(
                 "Team One",
                 identity,
                 chat_orchestrator.ChatOutcome("Done", ()),
@@ -531,7 +535,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 (),
             )
 
-            response = controller.resume_chat_accounts(
+            response = controller.chat_turn_service.resume_chat_accounts(
                 "team_1",
                 {"challenge_id": challenge.id},
                 "openai",
@@ -541,7 +545,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
             self.assertEqual(response, {"team_id": "team_1", "team_name": "Team One", "reply": "Done"})
             self.assertIsNone(controller.account_challenges.current("team_1"))
             with self.assertRaises(local_app.ApiProblem) as replay:
-                controller.resume_chat_accounts(
+                controller.chat_turn_service.resume_chat_accounts(
                     "team_1",
                     {"challenge_id": challenge.id},
                     "openai",
@@ -552,12 +556,12 @@ class LocalOAuthAccountTests(unittest.TestCase):
     def test_chat_account_routes_are_exact(self) -> None:
         pending = {"team_id": "team_1", "status": "accounts-required"}
         completed = {"team_id": "team_1", "team_name": "Team One", "reply": "Done"}
-        controller = SimpleNamespace(
+        chat_turn_service = SimpleNamespace(
             pending_chat_accounts=lambda team_id: pending,
             resume_chat_accounts=lambda team_id, body, provider, api_key: completed,
         )
         handler = object.__new__(local_app.Handler)
-        handler.server = SimpleNamespace(controller=controller)
+        handler.server = SimpleNamespace(controller=SimpleNamespace(chat_turn_service=chat_turn_service))
         handler._model_credential_headers = lambda: ("openai", "test-api-key")
         handler._body = lambda **_kwargs: {"challenge_id": "a" * 32}
 

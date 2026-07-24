@@ -13,7 +13,6 @@ import os
 import secrets
 import sys
 import threading
-from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -120,25 +119,11 @@ LOCAL_CHAT_CONTINUATIONS_KEY_PATH = Path(
 )
 
 
-class _ControllerCollaborator:
-    """Bind one explicit local-controller service to its owning resource boundary."""
-
-    def __init__(self, controller: LocalController) -> None:
-        self._controller = controller
-
-    def __getattribute__(self, name: str):
-        if name != "_controller":
-            controller = object.__getattribute__(self, "_controller")
-            if name in controller.__dict__:
-                return controller.__dict__[name]
-        return object.__getattribute__(self, name)
-
-    def __getattr__(self, name: str):
-        return getattr(self._controller, name)
-
-
-class AssistantLifecycle(_ControllerCollaborator):
+class AssistantLifecycle:
     """Own Assistant admission, resources, RPC, and egress lifecycle."""
+
+    def __init__(self, state: dict[str, object]) -> None:
+        self.__dict__ = state
 
     _rollback_assistant_install = local_assistant_lifecycle._rollback_assistant_install
     _create_assistant_container = local_assistant_lifecycle._create_assistant_container
@@ -161,6 +146,8 @@ class AssistantLifecycle(_ControllerCollaborator):
     _has_current_assistant_artifact = staticmethod(local_assistant_resources._has_current_assistant_artifact)
     _validate_current_assistant_artifact = local_assistant_resources._validate_current_assistant_artifact
     _validate_container = local_assistant_resources._validate_container
+    _active_assistant_genesis = local_chat_state._active_assistant_genesis
+    _admit_assistant_allowed_hosts = local_chat_state._admit_assistant_allowed_hosts
 
     _close_exec_stream = staticmethod(local_assistant_rpc._close_exec_stream)
     _fail_stop_power = local_assistant_rpc._fail_stop_power
@@ -194,8 +181,11 @@ class AssistantLifecycle(_ControllerCollaborator):
     _network = local_egress._network
 
 
-class ChatTurnService(_ControllerCollaborator):
+class ChatTurnService:
     """Own local chat turns, continuations, challenges, and private state."""
+
+    def __init__(self, state: dict[str, object]) -> None:
+        self.__dict__ = state
 
     _pending_chat_continuation = local_chat_api._pending_chat_continuation
     _segment_response = local_chat_api._segment_response
@@ -294,8 +284,6 @@ class LocalControllerDependencies:
     approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None
     input_challenges: assistant_input_challenges.InputChallengeStore | None = None
     chat_continuations: local_chat_continuation_store.EncryptedContinuationStore | None = None
-    assistant_lifecycle_factory: Callable[[LocalController], AssistantLifecycle] = AssistantLifecycle
-    chat_turn_service_factory: Callable[[LocalController], ChatTurnService] = ChatTurnService
 
 
 class LocalController:
@@ -367,38 +355,34 @@ class LocalController:
                 LOCAL_CHAT_CONTINUATIONS_KEY_PATH,
             )
         )
-        self._assistant_genesis_cache = assistant_genesis.GenesisCache()
-        self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
-        self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
-        self._blocked_power_workloads: set[str] = set()
         self._locks = tuple(threading.RLock() for _ in range(64))
         self._active_chat_guard = threading.Lock()
         self._chat_locks: dict[str, threading.Lock] = {}
         self._active_chat_tokens: dict[str, str] = {}
         self._active_power_containers: dict[str, tuple[str, object]] = {}
         self._cancelled_chat_tokens: set[str] = set()
-        self._wire_collaborators(
-            dependencies.assistant_lifecycle_factory,
-            dependencies.chat_turn_service_factory,
-        )
+        self._assistant_genesis_cache = assistant_genesis.GenesisCache()
+        self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
+        self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
+        self._blocked_power_workloads: set[str] = set()
+        self._wire_collaborators()
         daemon_info = self._require_default_seccomp()
         self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
-        self._restore_all_chat_continuations()
+        self.chat_turn_service._restore_all_chat_continuations()
 
-    def _wire_collaborators(
-        self,
-        assistant_lifecycle_factory: Callable[[LocalController], AssistantLifecycle] = AssistantLifecycle,
-        chat_turn_service_factory: Callable[[LocalController], ChatTurnService] = ChatTurnService,
-    ) -> None:
-        self.assistant_lifecycle = assistant_lifecycle_factory(self)
-        self.chat_turn_service = chat_turn_service_factory(self)
-
-    def __getattr__(self, name: str):
-        for collaborator_name in ("assistant_lifecycle", "chat_turn_service"):
-            collaborator = self.__dict__.get(collaborator_name)
-            if collaborator is not None and hasattr(type(collaborator), name):
-                return getattr(collaborator, name)
-        raise AttributeError(name)
+    def _wire_collaborators(self) -> None:
+        state = self.__dict__
+        state["_lock"] = self._lock
+        state["_raise_storage_problem"] = self._raise_storage_problem
+        state["invoke"] = self.invoke
+        state["list_assistants"] = self.list_assistants
+        state["_chat_lock"] = self._chat_lock
+        state["_chat_cancelled"] = self._chat_cancelled
+        state["_commit_chat_terminal"] = self._commit_chat_terminal
+        state["_cancel_chat_for_destroy"] = self._cancel_chat_for_destroy
+        state["_exclusive_chat_turn"] = self._exclusive_chat_turn
+        self.assistant_lifecycle = AssistantLifecycle(state)
+        self.chat_turn_service = ChatTurnService(state)
 
     def _require_default_seccomp(self) -> dict:
         try:
@@ -489,7 +473,7 @@ class LocalController:
             if not isinstance(team_id, str):
                 raise ApiProblem(HTTPStatus.CONFLICT, "Team resource ownership conflict", code="ownership-conflict")
             validate_team_id(team_id)
-            team_name = self._validate_network(network, team_id)
+            team_name = self.assistant_lifecycle._validate_network(network, team_id)
             teams.append({"team_id": team_id, "team_name": team_name, "status": "running"})
         teams.sort(key=lambda item: item["team_id"])
         return {"teams": teams}
@@ -498,9 +482,9 @@ class LocalController:
         team_id = validate_team_id(team_id)
         team_name = validate_team_name(team_name)
         with self._lock(team_id):
-            existing = self._network(team_id, required=False)
+            existing = self.assistant_lifecycle._network(team_id, required=False)
             if existing is not None:
-                existing_name = self._validate_network(existing, team_id)
+                existing_name = self.assistant_lifecycle._validate_network(existing, team_id)
                 if existing_name != team_name:
                     raise ApiProblem(
                         HTTPStatus.CONFLICT,
@@ -519,10 +503,10 @@ class LocalController:
             except inference_config.InferenceConfigError as exc:
                 self._raise_inference_problem(exc)
             try:
-                labels = self._base_labels(team_id, "team")
+                labels = self.assistant_lifecycle._base_labels(team_id, "team")
                 labels[TEAM_NAME_LABEL] = team_name
                 network = self.client.networks.create(
-                    self._network_name(team_id),
+                    self.assistant_lifecycle._network_name(team_id),
                     driver="bridge",
                     internal=True,
                     attachable=False,
@@ -532,14 +516,14 @@ class LocalController:
             except APIError as exc:
                 # A concurrent idempotent creator is safe only when the resulting
                 # resource proves the exact ownership/profile labels.
-                network = self._network(team_id, required=False)
+                network = self.assistant_lifecycle._network(team_id, required=False)
                 if network is None:
                     raise ApiProblem(
                         HTTPStatus.SERVICE_UNAVAILABLE,
                         "Docker could not create the Team",
                         code="docker-create-failed",
                     ) from exc
-                existing_name = self._validate_network(network, team_id)
+                existing_name = self.assistant_lifecycle._validate_network(network, team_id)
                 if existing_name != team_name:
                     raise ApiProblem(
                         HTTPStatus.CONFLICT,
@@ -547,7 +531,7 @@ class LocalController:
                         code="team-name-conflict",
                     ) from exc
                 return {"team_id": team_id, "team_name": team_name, "status": "running", "created": False}
-            self._validate_network(network, team_id)
+            self.assistant_lifecycle._validate_network(network, team_id)
             return {"team_id": team_id, "team_name": team_name, "status": "running", "created": True}
 
     @staticmethod
@@ -579,7 +563,7 @@ class LocalController:
     def inference_status(self, team_id: str) -> dict[str, str]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            self._network(team_id)
+            self.assistant_lifecycle._network(team_id)
             try:
                 config = self.inference_store.load(team_id)
             except inference_config.InferenceConfigError as exc:
@@ -603,7 +587,7 @@ class LocalController:
         except inference_config.InferenceConfigError as exc:
             raise ApiProblem(HTTPStatus.BAD_REQUEST, str(exc), code="invalid-inference") from exc
         with self._lock(team_id):
-            self._network(team_id)
+            self.assistant_lifecycle._network(team_id)
             try:
                 self.inference_store.save(team_id, config)
             except inference_config.InferenceConfigError as exc:
@@ -619,7 +603,7 @@ class LocalController:
     ) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            self._network(team_id)
+            self.assistant_lifecycle._network(team_id)
             try:
                 stored = self.storage.put(team_id, filename, content, media_type)
             except team_storage.StorageError as exc:
@@ -629,7 +613,7 @@ class LocalController:
     def list_files(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            self._network(team_id)
+            self.assistant_lifecycle._network(team_id)
             try:
                 listing = self.storage.list(team_id)
             except team_storage.StorageError as exc:
@@ -639,7 +623,7 @@ class LocalController:
     def delete_file(self, team_id: str, file_id: object) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            self._network(team_id)
+            self.assistant_lifecycle._network(team_id)
             try:
                 result = self.storage.delete(team_id, file_id)
             except team_storage.StorageError as exc:
@@ -673,18 +657,18 @@ class LocalController:
 
     def list_assistants(self, team_id: str) -> dict[str, list[dict[str, str]]]:
         team_id = validate_team_id(team_id)
-        self._network(team_id)
+        self.assistant_lifecycle._network(team_id)
         output: list[dict[str, str]] = []
         egress_proxy = None
 
         def current_egress_proxy():
             nonlocal egress_proxy
             if egress_proxy is None:
-                egress_proxy = self._egress_proxy()
+                egress_proxy = self.assistant_lifecycle._egress_proxy()
             return egress_proxy
 
         try:
-            containers = self.client.containers.list(**self._assistant_filters(team_id))
+            containers = self.client.containers.list(**self.assistant_lifecycle._assistant_filters(team_id))
         except DockerException as exc:
             raise ApiProblem(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -701,15 +685,15 @@ class LocalController:
                     "an installed Assistant is no longer allowlisted",
                     code="assistant-registry-drift",
                 )
-            config = self._validate_container_security(
+            config = self.assistant_lifecycle._validate_container_security(
                 container,
                 team_id,
                 spec,
-                self._network_name(team_id),
+                self.assistant_lifecycle._network_name(team_id),
                 current_egress_proxy,
             )
-            if self._has_current_assistant_artifact(config, spec):
-                self._admit_assistant_allowed_hosts(container, spec)
+            if self.assistant_lifecycle._has_current_assistant_artifact(config, spec):
+                self.assistant_lifecycle._admit_assistant_allowed_hosts(container, spec)
                 status = container.status
             else:
                 status = "outdated"
@@ -728,16 +712,16 @@ class LocalController:
                 "Assistant Help locale is not supported",
                 code="invalid-help-locale",
             ) from exc
-        spec = self._resolve(assistant_id)
+        spec = self.assistant_lifecycle._resolve(assistant_id)
         with self._lock(team_id):
-            network = self._network(team_id)
-            container = self._assistant_container(team_id, assistant_id)
-            self._validate_container(container, team_id, spec, network.name)
+            network = self.assistant_lifecycle._network(team_id)
+            container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
+            self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
             container.reload()
             if container.status != "running":
                 raise ApiProblem(HTTPStatus.CONFLICT, "Assistant is not running", code="assistant-not-running")
             try:
-                raw_result = self._rpc(
+                raw_result = self.assistant_lifecycle._rpc(
                     container,
                     spec,
                     "GET",
@@ -746,7 +730,7 @@ class LocalController:
                     detect_unsupported_path=True,
                 )
             except _UnsupportedAssistantRpcPathError:
-                raw_result = self._rpc(container, spec, "GET", "/v1/help", {})
+                raw_result = self.assistant_lifecycle._rpc(container, spec, "GET", "/v1/help", {})
         try:
             help_payload = assistant_help.validate_payload(raw_result)
         except ValueError as exc:
@@ -767,7 +751,7 @@ class LocalController:
         answers: tuple[object, ...] = (),
     ) -> dict[str, object]:
         team_id = validate_team_id(team_id)
-        spec = self._resolve(assistant_id)
+        spec = self.assistant_lifecycle._resolve(assistant_id)
         power_spec = spec.powers.get(power)
         if power_spec is None:
             raise ApiProblem(
@@ -778,9 +762,9 @@ class LocalController:
         except ValueError as exc:
             raise ApiProblem(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc), code="invalid-power-input") from exc
         with self._lock(team_id):
-            network = self._network(team_id)
-            container = self._assistant_container(team_id, assistant_id)
-            self._validate_container(container, team_id, spec, network.name)
+            network = self.assistant_lifecycle._network(team_id)
+            container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
+            self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
             if container.id in self._blocked_power_workloads:
                 raise ApiProblem(
                     HTTPStatus.SERVICE_UNAVAILABLE,
@@ -799,8 +783,8 @@ class LocalController:
                     "Team capabilities changed; retry",
                     code="team-context-changed",
                 )
-            secret_values = self._resolve_power_secrets(team_id, spec, power)
-            account_values = self._resolve_power_accounts(team_id, spec, power)
+            secret_values = self.chat_turn_service._resolve_power_secrets(team_id, spec, power)
+            account_values = self.chat_turn_service._resolve_power_accounts(team_id, spec, power)
             local_audit.record(
                 "assistant-power",
                 result="ok",
@@ -815,7 +799,7 @@ class LocalController:
                 "answers": list(answers),
             }
         try:
-            raw_result = self._rpc(
+            raw_result = self.assistant_lifecycle._rpc(
                 container,
                 spec,
                 power_spec.method,

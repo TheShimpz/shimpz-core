@@ -144,7 +144,10 @@ def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
 def list_assistant_secrets(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
     with self._lock(team_id):
-        specs = [self._resolve(assistant_id) for assistant_id in self._assistant_ids(team_id)]
+        specs = [
+            self.assistant_lifecycle._resolve(assistant_id)
+            for assistant_id in self.assistant_lifecycle._assistant_ids(team_id)
+        ]
         try:
             return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
         except assistant_secret_store.AssistantSecretError as exc:
@@ -162,7 +165,10 @@ def _raise_account_problem(exc: oauth_account_store.OAuthAccountStoreError) -> N
 def list_assistant_accounts(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
     with self._lock(team_id):
-        specs = [self._resolve(assistant_id) for assistant_id in self._assistant_ids(team_id)]
+        specs = [
+            self.assistant_lifecycle._resolve(assistant_id)
+            for assistant_id in self.assistant_lifecycle._assistant_ids(team_id)
+        ]
         try:
             payload = assistant_account_flow.inventory_payload(
                 team_id,
@@ -214,12 +220,15 @@ def _current_account_declaration(
     account_id: str,
 ) -> object:
     with self._lock(team_id):
-        spec = self._resolve(assistant_id)
+        spec = self.assistant_lifecycle._resolve(assistant_id)
         declaration = spec.accounts.get(account_id)
-        if assistant_id not in self._assistant_ids(team_id, running_only=True) or declaration is None:
+        if (
+            assistant_id not in self.assistant_lifecycle._assistant_ids(team_id, running_only=True)
+            or declaration is None
+        ):
             raise oauth_account_service.OAuthAccountDeclarationError("OAuth account declaration is unavailable")
         try:
-            container = self._assistant_container(team_id, assistant_id)
+            container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
             container.reload()
         except (ApiProblem, DockerException) as exc:
             raise oauth_account_service.OAuthAccountDeclarationError(
@@ -227,7 +236,7 @@ def _current_account_declaration(
             ) from exc
         attrs = container.attrs if isinstance(container.attrs, dict) else {}
         config = attrs.get("Config")
-        if not isinstance(config, dict) or not self._has_current_assistant_artifact(config, spec):
+        if not isinstance(config, dict) or not self.assistant_lifecycle._has_current_assistant_artifact(config, spec):
             raise oauth_account_service.OAuthAccountDeclarationError("OAuth account declaration is unavailable")
         return declaration
 
@@ -291,7 +300,7 @@ def replace_assistant_secrets(self, team_id: str, body: object) -> dict[str, obj
         )
     assistant_id = body.get("assistant_id")
     try:
-        spec = self._resolve(assistant_id)
+        spec = self.assistant_lifecycle._resolve(assistant_id)
         replacements = assistant_secret_flow.replacement_values(spec, body)
     except (ApiProblem, assistant_secret_flow.SecretFlowError) as exc:
         raise ApiProblem(
@@ -308,9 +317,9 @@ def replace_assistant_secrets(self, team_id: str, body: object) -> dict[str, obj
         )
     try:
         with self._lock(team_id):
-            network = self._network(team_id)
-            container = self._assistant_container(team_id, spec.assistant_id)
-            self._validate_container(container, team_id, spec, network.name)
+            network = self.assistant_lifecycle._network(team_id)
+            container = self.assistant_lifecycle._assistant_container(team_id, spec.assistant_id)
+            self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
             # A paused continuation is bound to the generations it observed. Cancelling every
             # affected challenge before the atomic write prevents stale JIT input from winning later.
             self.secret_challenges.cancel_team(team_id)
@@ -319,8 +328,8 @@ def replace_assistant_secrets(self, team_id: str, body: object) -> dict[str, obj
             self._delete_chat_continuation(team_id)
             try:
                 self.assistant_secrets.put_many(team_id, spec.assistant_id, replacements)
-                installed = self.list_assistants(team_id)["assistants"]
-                specs = [self._resolve(item["assistant"]) for item in installed]
+                installed = self.assistant_lifecycle.list_assistants(team_id)["assistants"]
+                specs = [self.assistant_lifecycle._resolve(item["assistant"]) for item in installed]
                 return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
             except assistant_secret_store.AssistantSecretError as exc:
                 self._raise_secret_problem(exc)
@@ -336,7 +345,7 @@ def _challenge_response(
 
 def pending_chat_secrets(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     challenge = self.secret_challenges.current(team_id)
     return self._challenge_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
@@ -349,28 +358,28 @@ def _approval_response(
 
 def pending_chat_approval(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     challenge = self.approval_challenges.current(team_id)
     return self._approval_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
 
 def pending_chat_input(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     challenge = self.input_challenges.current(team_id)
     return self._input_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
 
 def pending_chat_accounts(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     challenge = self.account_challenges.current(team_id)
     return self._account_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
 
 def list_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     try:
         grants = self.approval_grants.list_team(team_id)
     except assistant_approval_grants.ApprovalGrantError as exc:
@@ -384,7 +393,7 @@ def list_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
 
 def revoke_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     chat_lock = self._chat_lock(team_id)
     if not chat_lock.acquire(blocking=False):
         raise ApiProblem(

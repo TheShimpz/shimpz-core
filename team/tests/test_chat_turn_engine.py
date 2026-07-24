@@ -105,27 +105,27 @@ def _local_controller(local_active, config, events: list[str], fail):
     controller.brain_runtime = SimpleNamespace()
     controller.power_state = SimpleNamespace()
     controller._lock = lambda _team_id: contextlib.nullcontext()
-    controller._network = lambda _team_id: SimpleNamespace(id="a" * 64, name="team-network")
-    controller._validate_network = lambda _network, _team_id, **_kwargs: "Team"
-    controller._active_chat_assistants = lambda _team_id, _network_name: (local_active,)
+    controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(id="a" * 64, name="team-network")
+    controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Team"
+    controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network_name: (local_active,)
     controller.storage = SimpleNamespace(
         metadata=lambda _team_id, _files, _connection=None: [],
         metadata_connection=lambda _team_id, _files: contextlib.nullcontext(None),
     )
     controller.inference_store = SimpleNamespace(load=lambda _team_id: config)
-    controller._active_assistant_genesis = lambda _active: "Use the declared Power."
+    controller.assistant_lifecycle._active_assistant_genesis = lambda _active: "Use the declared Power."
 
     def local_private_inputs(_team_id, _bindings, _requests, requirements) -> bool:
         requirements.accounts = ("account-required",)
         return True
 
-    controller._require_chat_private_inputs = local_private_inputs
-    controller._require_power_rpc_envelope = lambda *_args: events.append("preflight")
-    controller._power_secret_generations = lambda *_args: events.append("secrets") or ()
-    controller._power_account_generations = lambda *_args: events.append("accounts") or ()
+    controller.chat_turn_service._require_chat_private_inputs = local_private_inputs
+    controller.chat_turn_service._require_power_rpc_envelope = lambda *_args: events.append("preflight")
+    controller.chat_turn_service._power_secret_generations = lambda *_args: events.append("secrets") or ()
+    controller.chat_turn_service._power_account_generations = lambda *_args: events.append("accounts") or ()
     controller._chat_cancelled = lambda _token: False
-    controller._validate_chat_context = lambda *_args: None
-    controller._raise_chat_problem = lambda reason, _exc: fail(reason)
+    controller.chat_turn_service._validate_chat_context = lambda *_args: None
+    controller.chat_turn_service._raise_chat_problem = lambda reason, _exc: fail(reason)
     controller.approval_grants = SimpleNamespace()
     return controller
 
@@ -497,7 +497,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
         turn_token = "turn-token"
 
         with mock.patch.object(local_chat_segment.chat_turn_engine, "run_segment", side_effect=capture("local")):
-            controller._run_chat_segment(
+            controller.chat_turn_service._run_chat_segment(
                 SegmentRequest(
                     team_id="team_1",
                     file_ids=[],

@@ -66,7 +66,7 @@ def _account_response(
 ) -> dict[str, object]:
     bindings: dict[str, _ActiveAssistant] = {}
     for requirement in challenge.requirements:
-        spec = self._resolve(requirement.assistant_id)
+        spec = self.assistant_lifecycle._resolve(requirement.assistant_id)
         bindings[spec.assistant_id] = _ActiveAssistant(spec, "")
     try:
         return assistant_account_flow.challenge_payload(challenge, bindings)
@@ -151,7 +151,7 @@ def _pause_input(
     interaction = requirements[0]
     answers = dict(payload.answer_logs).get(interaction.request.interrupt_id, ())
     try:
-        spec = self._resolve(interaction.request.assistant_id)
+        spec = self.assistant_lifecycle._resolve(interaction.request.assistant_id)
         requirement = assistant_input_flow.requirement(interaction, spec.image, len(answers))
         challenge = self.input_challenges.create(team_id, requirement, payload)
     except (

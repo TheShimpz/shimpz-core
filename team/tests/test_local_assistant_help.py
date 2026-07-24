@@ -18,12 +18,12 @@ class LocalAssistantHelpTests(unittest.TestCase):
         spec = SimpleNamespace(assistant_id="example-assistant")
         controller.registry = {"example-assistant": spec}
         controller._locks = tuple(threading.RLock() for _ in range(64))
-        controller._network = lambda _team_id: SimpleNamespace(name="team-network")
+        controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(name="team-network")
         container = SimpleNamespace(status="running", reload=lambda: None)
-        controller._assistant_container = lambda _team_id, _assistant_id: container
-        controller._validate_container = lambda *_args: None
+        controller.assistant_lifecycle._assistant_container = lambda _team_id, _assistant_id: container
+        controller.assistant_lifecycle._validate_container = lambda *_args: None
         calls: list[tuple[str, str, object]] = []
-        controller._rpc = lambda _container, _spec, method, path, payload, **_kwargs: (
+        controller.assistant_lifecycle._rpc = lambda _container, _spec, method, path, payload, **_kwargs: (
             calls.append((method, path, payload)) or {"markdown": markdown}
         )
         return controller, calls
@@ -41,7 +41,7 @@ class LocalAssistantHelpTests(unittest.TestCase):
             },
         )
         self.assertEqual(calls, [("GET", "/v1/help/pt", {})])
-        controller._rpc = lambda *_args, **_kwargs: {"markdown": "x" * (32 * 1024 + 1)}
+        controller.assistant_lifecycle._rpc = lambda *_args, **_kwargs: {"markdown": "x" * (32 * 1024 + 1)}
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.assistant_help("team_1", "example-assistant", "pt")
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
@@ -65,7 +65,7 @@ class LocalAssistantHelpTests(unittest.TestCase):
             self.assertNotIn("detect_unsupported_path", kwargs)
             return {"markdown": "# English fallback"}
 
-        controller._rpc = rpc
+        controller.assistant_lifecycle._rpc = rpc
 
         result = controller.assistant_help("team_1", "example-assistant", "pt")
 
@@ -82,7 +82,7 @@ class LocalAssistantHelpTests(unittest.TestCase):
                 code="assistant-rpc-failed",
             )
 
-        controller._rpc = fail_rpc
+        controller.assistant_lifecycle._rpc = fail_rpc
         with self.assertRaises(local_app.ApiProblem):
             controller.assistant_help("team_1", "example-assistant", "pt")
         self.assertEqual(calls, [("GET", "/v1/help/pt", {})])

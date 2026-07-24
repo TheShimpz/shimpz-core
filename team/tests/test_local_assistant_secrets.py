@@ -56,10 +56,11 @@ class LocalAssistantSecretTests(LocalContractCase):
         captured: dict[str, object] = {}
 
         class Controller:
-            @staticmethod
-            def replace_assistant_secrets(team_id, payload):
-                captured.update(team_id=team_id, payload=payload)
-                return {"team_id": team_id, "assistants": []}
+            chat_turn_service = SimpleNamespace(
+                replace_assistant_secrets=lambda team_id, payload: (
+                    captured.update(team_id=team_id, payload=payload) or {"team_id": team_id, "assistants": []}
+                )
+            )
 
         handler = object.__new__(local_app.Handler)
         handler.command = "PUT"
@@ -94,14 +95,14 @@ class LocalAssistantSecretTests(LocalContractCase):
         key = "sk-test-0123456789"
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, runtime)
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Hello", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 key,
             )
             with self.assertRaises(local_app.ApiProblem):
-                controller.chat(
+                controller.chat_turn_service.chat(
                     "team_1",
                     {
                         "message": "Hello",
@@ -145,14 +146,14 @@ class LocalAssistantSecretTests(LocalContractCase):
             current = mock.Mock(side_effect=(None, challenge))
             controller.secret_challenges.current = current
 
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Hello", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 "sk-test-0123456789",
             )
 
-        self.assertEqual(response, controller._challenge_response(challenge))
+        self.assertEqual(response, controller.chat_turn_service._challenge_response(challenge))
         self.assertEqual(current.call_count, 2)
 
     def test_chat_collects_a_multi_secret_batch_before_any_power_side_effect(self) -> None:
@@ -182,7 +183,7 @@ class LocalAssistantSecretTests(LocalContractCase):
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
             controller.invoke = lambda *_args: self.fail("a Power ran before every secret was available")
 
-            response = controller.chat(
+            response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Read my account", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -231,7 +232,7 @@ class LocalAssistantSecretTests(LocalContractCase):
             controller.invoke = lambda *_args: self.fail("an oversized Power envelope executed")
 
             with self.assertRaises(local_app.ApiProblem) as caught:
-                controller.chat(
+                controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Find OpenAI", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",
@@ -270,7 +271,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 invocations.append((team_id, power_id, payload))
                 or {"assistant": assistant_id, "power": power_id, "result": DNS_RESULT}
             )
-            challenge = controller.chat(
+            challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Who am I?", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -296,7 +297,7 @@ class LocalAssistantSecretTests(LocalContractCase):
             )
             for invalid in invalid_submissions:
                 with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as rejected:
-                    controller.submit_chat_secrets(
+                    controller.chat_turn_service.submit_chat_secrets(
                         "team_1",
                         invalid,
                         "openai",
@@ -310,7 +311,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 side_effect=assistant_secret_store.AssistantSecretError("storage unavailable")
             )
             with self.assertRaises(local_app.ApiProblem) as unavailable:
-                controller.submit_chat_secrets(
+                controller.chat_turn_service.submit_chat_secrets(
                     "team_1",
                     exact,
                     "openai",
@@ -321,7 +322,7 @@ class LocalAssistantSecretTests(LocalContractCase):
             self.assertIsNotNone(controller.secret_challenges.current("team_1"))
 
             with self.assertRaises(local_app.ApiProblem) as isolated:
-                controller.submit_chat_secrets(
+                controller.chat_turn_service.submit_chat_secrets(
                     "team_2",
                     exact,
                     "openai",
@@ -329,14 +330,14 @@ class LocalAssistantSecretTests(LocalContractCase):
                 )
             self.assertEqual(isolated.exception.code, "assistant-secret-challenge-expired")
 
-            response = controller.submit_chat_secrets(
+            response = controller.chat_turn_service.submit_chat_secrets(
                 "team_1",
                 exact,
                 "openai",
                 "sk-test-0123456789",
             )
             with self.assertRaises(local_app.ApiProblem) as replay:
-                controller.submit_chat_secrets(
+                controller.chat_turn_service.submit_chat_secrets(
                     "team_1",
                     exact,
                     "openai",
@@ -374,16 +375,16 @@ class LocalAssistantSecretTests(LocalContractCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
             controller.invoke = lambda *_args: self.fail("a drifted continuation executed a Power")
-            challenge = controller.chat(
+            challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Find OpenAI", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 "sk-test-0123456789",
             )
-            controller._network = lambda _team_id: SimpleNamespace(id="b" * 64, name="team-network")
+            controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(id="b" * 64, name="team-network")
 
             with self.assertRaises(local_app.ApiProblem) as drifted:
-                controller.submit_chat_secrets(
+                controller.chat_turn_service.submit_chat_secrets(
                     "team_1",
                     self._secret_submission(challenge),
                     "openai",
@@ -399,7 +400,7 @@ class LocalAssistantSecretTests(LocalContractCase):
         raw_secret = TEST_SECRET_VALUES["service-token"]
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object(), configure_secrets=False)
-            controller._assistant_ids = mock.Mock(return_value=("shimpz-cloudflare",))
+            controller.assistant_lifecycle._assistant_ids = mock.Mock(return_value=("shimpz-cloudflare",))
             controller.list_assistants = mock.Mock(side_effect=AssertionError("deep listing must not run"))
             controller.assistant_secrets.put_many(
                 "team_1",
@@ -407,10 +408,10 @@ class LocalAssistantSecretTests(LocalContractCase):
                 {"service-token": raw_secret},
             )
 
-            own_inventory = controller.list_assistant_secrets("team_1")
-            other_inventory = controller.list_assistant_secrets("team_2")
+            own_inventory = controller.chat_turn_service.list_assistant_secrets("team_1")
+            other_inventory = controller.chat_turn_service.list_assistant_secrets("team_2")
 
-        self.assertEqual(controller._assistant_ids.call_count, 2)
+        self.assertEqual(controller.assistant_lifecycle._assistant_ids.call_count, 2)
         controller.list_assistants.assert_not_called()
         encoded = repr(own_inventory)
         self.assertNotIn(raw_secret, encoded)
@@ -434,7 +435,7 @@ class LocalAssistantSecretTests(LocalContractCase):
     def test_secret_replacement_is_declared_atomic_and_returns_only_refreshed_masks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object(), configure_secrets=True)
-            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
+            controller.assistant_lifecycle._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             controller.list_assistants = lambda _team_id: {
                 "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
             }
@@ -444,7 +445,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 ("client-key", "client-secret"),
             )
             replacement = "replacement-api-key-123456789"
-            response = controller.replace_assistant_secrets(
+            response = controller.chat_turn_service.replace_assistant_secrets(
                 "team_1",
                 {
                     "assistant_id": "shimpz-cloudflare",
@@ -472,7 +473,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 },
             ):
                 with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as rejected:
-                    controller.replace_assistant_secrets("team_1", invalid)
+                    controller.chat_turn_service.replace_assistant_secrets("team_1", invalid)
                 self.assertEqual(rejected.exception.code, "invalid-assistant-secrets")
                 self.assertEqual(controller.assistant_secrets.state_path.read_bytes(), state_before_invalid)
 
@@ -497,7 +498,7 @@ class LocalAssistantSecretTests(LocalContractCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=True)
-            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
+            controller.assistant_lifecycle._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             before = controller.assistant_secrets.resolve_many(
                 "team_1",
                 "shimpz-cloudflare",
@@ -507,7 +508,7 @@ class LocalAssistantSecretTests(LocalContractCase):
 
             def turn() -> None:
                 results.append(
-                    controller.chat(
+                    controller.chat_turn_service.chat(
                         "team_1",
                         {"message": "Wait", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                         "openai",
@@ -519,7 +520,7 @@ class LocalAssistantSecretTests(LocalContractCase):
             worker.start()
             self.assertTrue(started.wait(timeout=2))
             with self.assertRaises(local_app.ApiProblem) as blocked:
-                controller.replace_assistant_secrets(
+                controller.chat_turn_service.replace_assistant_secrets(
                     "team_1",
                     {
                         "assistant_id": "shimpz-cloudflare",
@@ -557,18 +558,18 @@ class LocalAssistantSecretTests(LocalContractCase):
         replacements = {secret_id: f"rotated-{index}-credential" for index, secret_id in enumerate(TEST_SECRET_VALUES)}
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
-            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
+            controller.assistant_lifecycle._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             controller.list_assistants = lambda _team_id: {
                 "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
             }
-            challenge = controller.chat(
+            challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Who am I?", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
                 "sk-test-0123456789",
             )
             stale = self._secret_submission(challenge)
-            controller.replace_assistant_secrets(
+            controller.chat_turn_service.replace_assistant_secrets(
                 "team_1",
                 {
                     "assistant_id": "shimpz-cloudflare",
@@ -576,7 +577,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 },
             )
             with self.assertRaises(local_app.ApiProblem) as rejected:
-                controller.submit_chat_secrets(
+                controller.chat_turn_service.submit_chat_secrets(
                     "team_1",
                     stale,
                     "openai",

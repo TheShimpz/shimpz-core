@@ -171,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
                     "OAuth callback is invalid",
                     code="invalid-body",
                 )
-            result = controller.complete_cloudflare_oauth_callback(
+            result = controller.chat_turn_service.complete_cloudflare_oauth_callback(
                 state=body["state"],
                 claim=body["claim"],
                 session_binding=body["session_binding"],
@@ -252,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
     ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None]:
         provider, api_key = self._model_credential_headers()
         body = self._body(max_bytes=MAX_CHAT_BODY_BYTES)
-        payload = self.server.controller.chat(team_id, body, provider, api_key)
+        payload = self.server.controller.chat_turn_service.chat(team_id, body, provider, api_key)
         return self._chat_status(payload), payload, "chat", team_id, None
 
     def _chat_pending(
@@ -269,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
         if pending is None:
             return None
         method_name, operation_name = pending
-        operation = getattr(self.server.controller, method_name)
+        operation = getattr(self.server.controller.chat_turn_service, method_name)
         return HTTPStatus.OK, operation(team_id), operation_name, team_id, None
 
     def _chat_submit(
@@ -286,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         if submission is None:
             return None
         method_name, operation_name, max_bytes = submission
-        operation = getattr(self.server.controller, method_name)
+        operation = getattr(self.server.controller.chat_turn_service, method_name)
         provider, api_key = self._model_credential_headers()
         payload = operation(team_id, self._body(max_bytes=max_bytes), provider, api_key)
         return self._chat_status(payload), payload, operation_name, team_id, None
@@ -301,7 +301,13 @@ class Handler(BaseHTTPRequestHandler):
                 "chat stop requires an empty object",
                 code="invalid-body",
             )
-        return HTTPStatus.OK, self.server.controller.stop_chat(team_id), "chat-stop", team_id, None
+        return (
+            HTTPStatus.OK,
+            self.server.controller.chat_turn_service.stop_chat(team_id),
+            "chat-stop",
+            team_id,
+            None,
+        )
 
     def _chat_route(
         self,
@@ -329,7 +335,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET":
             return (
                 HTTPStatus.OK,
-                self.server.controller.list_assistant_secrets(team_id),
+                self.server.controller.chat_turn_service.list_assistant_secrets(team_id),
                 "assistant-secret-list",
                 team_id,
                 None,
@@ -337,7 +343,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "PUT":
             return (
                 HTTPStatus.OK,
-                self.server.controller.replace_assistant_secrets(
+                self.server.controller.chat_turn_service.replace_assistant_secrets(
                     team_id,
                     self._body(max_bytes=MAX_SECRET_BODY_BYTES),
                 ),
@@ -357,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET":
             return (
                 HTTPStatus.OK,
-                self.server.controller.list_assistant_approval_grants(team_id),
+                self.server.controller.chat_turn_service.list_assistant_approval_grants(team_id),
                 "assistant-approval-list",
                 team_id,
                 None,
@@ -365,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "DELETE":
             return (
                 HTTPStatus.OK,
-                self.server.controller.revoke_assistant_approval_grants(team_id),
+                self.server.controller.chat_turn_service.revoke_assistant_approval_grants(team_id),
                 "assistant-approval-revoke",
                 team_id,
                 None,
@@ -382,7 +388,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 4 and self.command == "GET":
             return (
                 HTTPStatus.OK,
-                self.server.controller.list_assistant_accounts(team_id),
+                self.server.controller.chat_turn_service.list_assistant_accounts(team_id),
                 "assistant-account-list",
                 team_id,
                 None,
@@ -397,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return (
                 HTTPStatus.OK,
-                self.server.controller.start_assistant_account_authorization(
+                self.server.controller.chat_turn_service.start_assistant_account_authorization(
                     team_id,
                     parts[5],
                     body["session_binding"],
@@ -409,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 6 and self.command == "DELETE":
             return (
                 HTTPStatus.OK,
-                self.server.controller.disconnect_assistant_account(
+                self.server.controller.chat_turn_service.disconnect_assistant_account(
                     team_id,
                     parts[4],
                     parts[5],
@@ -475,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
             assistant_id = self._install_body()
             return (
                 HTTPStatus.OK,
-                controller.install_assistant(team_id, assistant_id),
+                controller.assistant_lifecycle.install_assistant(team_id, assistant_id),
                 operation,
                 team_id,
                 assistant_id,
@@ -484,7 +490,7 @@ class Handler(BaseHTTPRequestHandler):
         if operation == "assistant-uninstall":
             return (
                 HTTPStatus.OK,
-                controller.uninstall_assistant(team_id, assistant_id),
+                controller.assistant_lifecycle.uninstall_assistant(team_id, assistant_id),
                 operation,
                 team_id,
                 assistant_id,

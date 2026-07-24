@@ -41,7 +41,7 @@ def _purge_power_generation(self, generation: str) -> None:
 
 def _team_assistant_containers(self, team_id: str) -> list:
     try:
-        return self.client.containers.list(**self._assistant_filters(team_id))
+        return self.client.containers.list(**self.assistant_lifecycle._assistant_filters(team_id))
     except DockerException as exc:
         raise ApiProblem(
             HTTPStatus.SERVICE_UNAVAILABLE,
@@ -60,7 +60,7 @@ def _validate_destroy_containers(self, containers: list, team_id: str, network) 
                 "Team resources failed their ownership contract",
                 code="ownership-conflict",
             )
-        self._validate_container_security(container, team_id, spec, network.name)
+        self.assistant_lifecycle._validate_container_security(container, team_id, spec, network.name)
 
 
 def _delete_team_conversation(self, team_id: str, network) -> None:
@@ -90,8 +90,8 @@ def _remove_team_assistants(self, team_id: str, containers: list) -> int:
                 "Docker could not destroy the Team",
                 code="docker-remove-failed",
             ) from exc
-        self._blocked_power_workloads.discard(container.id)
-        self._remove_assistant_policy_if_needed(team_id, assistant_id, spec)
+        self.assistant_lifecycle._blocked_power_workloads.discard(container.id)
+        self.assistant_lifecycle._remove_assistant_policy_if_needed(team_id, assistant_id, spec)
     return len(containers)
 
 
@@ -108,14 +108,14 @@ def _delete_team_persistence(self, team_id: str) -> bool:
 
 
 def _delete_team_private_state(self, team_id: str) -> None:
-    self._delete_team_secret_state(team_id)
-    self._delete_team_account_state(team_id)
+    self.chat_turn_service._delete_team_secret_state(team_id)
+    self.chat_turn_service._delete_team_account_state(team_id)
 
 
 def _remove_team_network(self, network) -> bool:
     if network is None:
         return False
-    self._disconnect_egress_proxy_if_attached(network)
+    self.assistant_lifecycle._disconnect_egress_proxy_if_attached(network)
     try:
         network.remove()
     except DockerException as exc:
@@ -132,7 +132,7 @@ def destroy_team(self, team_id: str) -> dict[str, object]:
     self.secret_challenges.cancel_team(team_id)
     self.approval_challenges.cancel_team(team_id)
     self.input_challenges.cancel_team(team_id)
-    self._delete_chat_continuation(team_id)
+    self.chat_turn_service._delete_chat_continuation(team_id)
     self._cancel_chat_for_destroy(team_id)
 
     chat_lock = self._chat_lock(team_id)
@@ -144,7 +144,7 @@ def destroy_team(self, team_id: str) -> dict[str, object]:
         )
     try:
         with self._lock(team_id):
-            self._revoke_team_approval_grants(team_id)
+            self.chat_turn_service._revoke_team_approval_grants(team_id)
             network = self._network(team_id, required=False)
             containers = self._team_assistant_containers(team_id)
             self._validate_destroy_containers(containers, team_id, network)
@@ -176,8 +176,10 @@ def _validate_reset_container(self, container) -> None:
         or len(assistant_id) > MAX_ASSISTANT_ID_LENGTH
         or _ASSISTANT_ID.fullmatch(assistant_id) is None
         or not isinstance(labels.get(IMAGE_LABEL), str)
-        or not self._labels_include(labels, self._base_labels(team_id, "assistant"))
-        or container.name != self._container_name(team_id, assistant_id)
+        or not self.assistant_lifecycle._labels_include(
+            labels, self.assistant_lifecycle._base_labels(team_id, "assistant")
+        )
+        or container.name != self.assistant_lifecycle._container_name(team_id, assistant_id)
     ):
         raise ApiProblem(
             HTTPStatus.CONFLICT,
@@ -221,7 +223,7 @@ def _reset_assistant_identities(self, containers: list, networks: list) -> set[t
                 code="ownership-conflict",
             )
         validate_team_id(team_id)
-        self._validate_network(network, team_id)
+        self.assistant_lifecycle._validate_network(network, team_id)
         owned_team_ids.add(team_id)
     owned_assistants.update((team_id, assistant_id) for team_id in owned_team_ids for assistant_id in self.registry)
     return owned_assistants
@@ -233,16 +235,16 @@ def _remove_space_resources(
     networks: list,
     owned_assistants: set[tuple[str, str]],
 ) -> bool:
-    self._delete_all_secret_state()
-    self._delete_all_account_state()
-    self._revoke_all_approval_grants()
+    self.chat_turn_service._delete_all_secret_state()
+    self.chat_turn_service._delete_all_account_state()
+    self.chat_turn_service._revoke_all_approval_grants()
     for container in containers:
         container.remove(force=True)
-        self._blocked_power_workloads.discard(container.id)
+        self.assistant_lifecycle._blocked_power_workloads.discard(container.id)
     for team_id, assistant_id in sorted(owned_assistants):
-        self._remove_egress_policy(team_id, assistant_id)
+        self.assistant_lifecycle._remove_egress_policy(team_id, assistant_id)
     for network in networks:
-        self._disconnect_egress_proxy_if_attached(network)
+        self.assistant_lifecycle._disconnect_egress_proxy_if_attached(network)
     storage_removed = self.storage.destroy_all()
     for network in networks:
         team_id = network.attrs["Labels"][TEAM_LABEL]
@@ -257,7 +259,7 @@ def reset_space(self) -> dict[str, object]:
     self.secret_challenges.cancel_all()
     self.approval_challenges.cancel_all()
     self.input_challenges.cancel_all()
-    self._clear_chat_continuations()
+    self.chat_turn_service._clear_chat_continuations()
     with ExitStack() as locks:
         for lock in self._locks:
             locks.enter_context(lock)

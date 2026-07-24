@@ -185,18 +185,22 @@ class LocalContractCase(unittest.TestCase):
         controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
         controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
         controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
-        controller._admit_assistant_allowed_hosts = lambda _container, spec: tuple(sorted(spec.allowed_hosts))
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, spec: tuple(
+            sorted(spec.allowed_hosts)
+        )
         container = SimpleNamespace(id="assistant-container", status="running", reload=lambda: None)
         network = SimpleNamespace(id="a" * 64, name="team-network")
-        controller._network = lambda _team_id: network
-        controller._validate_network = lambda _network, _team_id, **_kwargs: "Marketing"
-        controller._assistant_container = lambda _team_id, _assistant: container
-        controller._validate_container = lambda *_args: None
-        controller._active_chat_assistants = lambda _team_id, _network: (
+        controller.assistant_lifecycle._network = lambda _team_id: network
+        controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Marketing"
+        controller.assistant_lifecycle._assistant_container = lambda _team_id, _assistant: container
+        controller.assistant_lifecycle._validate_container = lambda *_args: None
+        controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
             ActiveAssistant(controller.registry["shimpz-cloudflare"], container.id, container),
         )
-        controller._active_assistant_genesis = lambda _active: "Use only the declared Cloudflare Powers."
-        controller._restore_all_chat_continuations()
+        controller.assistant_lifecycle._active_assistant_genesis = lambda _active: (
+            "Use only the declared Cloudflare Powers."
+        )
+        controller.chat_turn_service._restore_all_chat_continuations()
         return controller
 
     @staticmethod
@@ -247,8 +251,10 @@ class LocalContractCase(unittest.TestCase):
             Path(secret_directory.name) / "assistant-approvals" / "grants.sqlite3"
         )
         self.addCleanup(controller.approval_grants.close)
-        controller._admit_assistant_allowed_hosts = lambda _container, spec: tuple(sorted(spec.allowed_hosts))
-        controller._read_admitted_egress_policy = lambda *_args: None
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, spec: tuple(
+            sorted(spec.allowed_hosts)
+        )
+        controller.assistant_lifecycle._read_admitted_egress_policy = lambda *_args: None
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
@@ -257,14 +263,14 @@ class LocalContractCase(unittest.TestCase):
             accounts={},
         )
         controller.registry = {spec.assistant_id: spec}
-        network_name = controller._network_name("team_1")
+        network_name = controller.assistant_lifecycle._network_name("team_1")
         network = SimpleNamespace(name=network_name)
-        controller._network = lambda _team_id: network
-        labels = controller._assistant_labels("team_1", spec)
+        controller.assistant_lifecycle._network = lambda _team_id: network
+        labels = controller.assistant_lifecycle._assistant_labels("team_1", spec)
         labels[local_app.IMAGE_LABEL] = OUTDATED_ASSISTANT_IMAGE
         container = SimpleNamespace(
             id="assistant-container",
-            name=controller._container_name("team_1", spec.assistant_id),
+            name=controller.assistant_lifecycle._container_name("team_1", spec.assistant_id),
             status="running",
             labels=labels,
             attrs={
@@ -305,6 +311,6 @@ class LocalContractCase(unittest.TestCase):
         )
         container.reload = lambda: events.append("reload")
         container.remove = lambda *, force: events.append(("remove", force))
-        controller._assistant_container = lambda *_args, **_kwargs: container
+        controller.assistant_lifecycle._assistant_container = lambda *_args, **_kwargs: container
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_kwargs: [container]))
         return controller, container, events

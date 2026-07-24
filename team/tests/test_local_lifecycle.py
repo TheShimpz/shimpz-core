@@ -41,21 +41,26 @@ OUTDATED_ASSISTANT_IMAGE = "ghcr.io/theshimpz/shimpz-space@sha256:" + "a" * 64
 class LocalLifecycleTests(LocalContractCase):
     def test_assistant_id_enumeration_avoids_deep_container_admission(self) -> None:
         controller, _container, events = self._lifecycle_controller()
-        controller._validate_container_security = mock.Mock(
+        controller.assistant_lifecycle._validate_container_security = mock.Mock(
             side_effect=AssertionError("deep admission must not run"),
         )
 
-        self.assertEqual(controller._assistant_ids("team_1"), ("shimpz-cloudflare",))
-        self.assertEqual(controller._assistant_ids("team_1", running_only=True), ("shimpz-cloudflare",))
+        self.assertEqual(controller.assistant_lifecycle._assistant_ids("team_1"), ("shimpz-cloudflare",))
+        self.assertEqual(
+            controller.assistant_lifecycle._assistant_ids("team_1", running_only=True), ("shimpz-cloudflare",)
+        )
         self.assertEqual(events, [])
-        controller._validate_container_security.assert_not_called()
+        controller.assistant_lifecycle._validate_container_security.assert_not_called()
 
     def test_assistant_lifecycle_is_rejected_before_mutation_during_an_active_chat(self) -> None:
         controller, _container, events = self._lifecycle_controller()
         chat_lock = controller._chat_lock("team_1")
         self.assertTrue(chat_lock.acquire(blocking=False))
         try:
-            operations = (controller.install_assistant, controller.uninstall_assistant)
+            operations = (
+                controller.assistant_lifecycle.install_assistant,
+                controller.assistant_lifecycle.uninstall_assistant,
+            )
             for operation in operations:
                 with self.subTest(operation=operation.__name__), self.assertRaises(local_app.ApiProblem) as caught:
                     operation("team_1", "shimpz-cloudflare")
@@ -81,12 +86,12 @@ class LocalLifecycleTests(LocalContractCase):
             ),
         )
         trusted_image = object()
-        controller._trusted_image = lambda _spec: events.append("trusted") or trusted_image
-        controller._create_assistant_container = lambda _team_id, _spec, _network, image: events.append(
-            ("create", image)
+        controller.assistant_lifecycle._trusted_image = lambda _spec: events.append("trusted") or trusted_image
+        controller.assistant_lifecycle._create_assistant_container = lambda _team_id, _spec, _network, image: (
+            events.append(("create", image))
         )
 
-        result = controller.install_assistant("team_1", "shimpz-cloudflare")
+        result = controller.assistant_lifecycle.install_assistant("team_1", "shimpz-cloudflare")
 
         self.assertEqual(result, {"assistant": "shimpz-cloudflare", "installed": False})
         self.assertEqual(events, ["reload", "trusted", "reload", ("remove", True), ("create", trusted_image)])
@@ -100,16 +105,16 @@ class LocalLifecycleTests(LocalContractCase):
         controller.registry[spec.assistant_id] = spec
         labels = container.attrs["Config"]["Labels"]
         labels[local_app.ASSISTANT_LABEL] = spec.assistant_id
-        container.name = controller._container_name("team_1", spec.assistant_id)
-        controller._trusted_image = lambda _spec: events.append("trusted") or object()
-        controller._create_assistant_container = lambda *_args: events.append("create")
+        container.name = controller.assistant_lifecycle._container_name("team_1", spec.assistant_id)
+        controller.assistant_lifecycle._trusted_image = lambda _spec: events.append("trusted") or object()
+        controller.assistant_lifecycle._create_assistant_container = lambda *_args: events.append("create")
 
         self.assertEqual(
             controller.list_assistants("team_1"),
             {"assistants": [{"assistant": "future-assistant", "status": "outdated"}]},
         )
         self.assertEqual(
-            controller.install_assistant("team_1", "future-assistant"),
+            controller.assistant_lifecycle.install_assistant("team_1", "future-assistant"),
             {"assistant": "future-assistant", "installed": False},
         )
         self.assertEqual(events, ["reload", "reload", "trusted", "reload", ("remove", True), "create"])
@@ -124,11 +129,11 @@ class LocalLifecycleTests(LocalContractCase):
         second = copy.deepcopy(first)
         second.labels[local_app.ASSISTANT_LABEL] = second_spec.assistant_id
         second.attrs["Config"]["Labels"][local_app.ASSISTANT_LABEL] = second_spec.assistant_id
-        second.name = controller._container_name("team_1", second_spec.assistant_id)
+        second.name = controller.assistant_lifecycle._container_name("team_1", second_spec.assistant_id)
         proxy_environment = {"HTTPS_PROXY": "http://app-egress-proxy:8889"}
         for container in (first, second):
             container.attrs["Config"]["Env"] = [f"{key}={value}" for key, value in proxy_environment.items()]
-        network_name = controller._network_name("team_1")
+        network_name = controller.assistant_lifecycle._network_name("team_1")
         proxy = SimpleNamespace(
             attrs={
                 "NetworkSettings": {
@@ -141,8 +146,8 @@ class LocalLifecycleTests(LocalContractCase):
             }
         )
         controller.client.containers.list = lambda **_kwargs: [first, second]
-        controller._validate_egress_policy = lambda *_args: proxy_environment
-        controller._egress_proxy = mock.Mock(return_value=proxy)
+        controller.assistant_lifecycle._validate_egress_policy = lambda *_args: proxy_environment
+        controller.assistant_lifecycle._egress_proxy = mock.Mock(return_value=proxy)
 
         result = controller.list_assistants("team_1")
 
@@ -150,7 +155,7 @@ class LocalLifecycleTests(LocalContractCase):
             tuple(item["assistant"] for item in result["assistants"]),
             ("future-assistant", "shimpz-cloudflare"),
         )
-        controller._egress_proxy.assert_called_once_with()
+        controller.assistant_lifecycle._egress_proxy.assert_called_once_with()
 
     def test_chat_inventory_uses_listed_attrs_and_one_egress_proxy_inspection(self) -> None:
         controller, first, events = self._lifecycle_controller()
@@ -162,9 +167,9 @@ class LocalLifecycleTests(LocalContractCase):
         second = copy.deepcopy(first)
         second.labels[local_app.ASSISTANT_LABEL] = second_spec.assistant_id
         second.attrs["Config"]["Labels"][local_app.ASSISTANT_LABEL] = second_spec.assistant_id
-        second.name = controller._container_name("team_1", second_spec.assistant_id)
+        second.name = controller.assistant_lifecycle._container_name("team_1", second_spec.assistant_id)
         proxy_environment = {"HTTPS_PROXY": "http://app-egress-proxy:8889"}
-        network_name = controller._network_name("team_1")
+        network_name = controller.assistant_lifecycle._network_name("team_1")
         for container in (first, second):
             container.attrs["Config"]["Image"] = CURRENT_ASSISTANT_IMAGE
             container.attrs["Config"]["Labels"][local_app.IMAGE_LABEL] = CURRENT_ASSISTANT_IMAGE
@@ -181,23 +186,27 @@ class LocalLifecycleTests(LocalContractCase):
             }
         )
         controller.client.containers.list = mock.Mock(return_value=[first, second])
-        controller._validate_egress_policy = lambda *_args: proxy_environment
-        controller._egress_proxy = mock.Mock(return_value=proxy)
+        controller.assistant_lifecycle._validate_egress_policy = lambda *_args: proxy_environment
+        controller.assistant_lifecycle._egress_proxy = mock.Mock(return_value=proxy)
 
-        active = controller._active_chat_assistants("team_1", network_name)
+        active = controller.chat_turn_service._active_chat_assistants("team_1", network_name)
 
         self.assertEqual(tuple(item.spec.assistant_id for item in active), ("future-assistant", "shimpz-cloudflare"))
         self.assertEqual(events, [])
-        controller.client.containers.list.assert_called_once_with(**controller._assistant_filters("team_1"))
-        controller._egress_proxy.assert_called_once_with()
+        controller.client.containers.list.assert_called_once_with(
+            **controller.assistant_lifecycle._assistant_filters("team_1")
+        )
+        controller.assistant_lifecycle._egress_proxy.assert_called_once_with()
 
     def test_release_update_rejects_a_previous_security_contract(self) -> None:
         controller, _container, events = self._lifecycle_controller()
         controller.registry["shimpz-cloudflare"].allowed_hosts = ("api.example.com",)
-        controller._trusted_image = lambda _spec: self.fail("contract drift reached image resolution")
+        controller.assistant_lifecycle._trusted_image = lambda _spec: self.fail(
+            "contract drift reached image resolution"
+        )
 
         with self.assertRaises(local_app.ApiProblem) as caught:
-            controller.install_assistant("team_1", "shimpz-cloudflare")
+            controller.assistant_lifecycle.install_assistant("team_1", "shimpz-cloudflare")
 
         self.assertEqual(caught.exception.code, "egress-policy-drift")
         self.assertEqual(events, ["reload"])
@@ -233,11 +242,13 @@ class LocalLifecycleTests(LocalContractCase):
                 ),
             )
         )
-        controller._trusted_image = lambda _spec: object()
-        controller._validate_container = lambda *_args: None
-        controller._create_assistant_container = lambda *_args: None
+        controller.assistant_lifecycle._trusted_image = lambda _spec: object()
+        controller.assistant_lifecycle._validate_container = lambda *_args: None
+        controller.assistant_lifecycle._create_assistant_container = lambda *_args: None
 
-        controller._replace_unready_assistant("team_1", spec, SimpleNamespace(name="team-network"), container)
+        controller.assistant_lifecycle._replace_unready_assistant(
+            "team_1", spec, SimpleNamespace(name="team-network"), container
+        )
 
         self.assertTrue(
             controller.approval_grants.is_granted(
@@ -264,7 +275,7 @@ class LocalLifecycleTests(LocalContractCase):
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com", "geocoding-api.open-meteo.com"),
         )
-        network = SimpleNamespace(name=controller._network_name("team_1"))
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
         container = SimpleNamespace(
             id="assistant-generation",
@@ -278,16 +289,16 @@ class LocalLifecycleTests(LocalContractCase):
                 create=lambda **_kwargs: events.append("create") or container,
             )
         )
-        controller._egress_token = lambda *_args, **_kwargs: events.append("token") or "a" * 32
-        controller._admit_assistant_allowed_hosts = lambda _container, _spec: (
+        controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: events.append("token") or "a" * 32
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, _spec: (
             events.append("admit") or tuple(sorted(_spec.allowed_hosts))
         )
-        controller._activate_assistant_egress = lambda *_args: events.append("activate-egress")
-        controller._validate_container = lambda *_args: events.append("validate")
-        controller._wait_ready = lambda *_args: events.append("ready")
-        controller._active_assistant_genesis = lambda *_args: events.append("genesis") or "Genesis"
+        controller.assistant_lifecycle._activate_assistant_egress = lambda *_args: events.append("activate-egress")
+        controller.assistant_lifecycle._validate_container = lambda *_args: events.append("validate")
+        controller.assistant_lifecycle._wait_ready = lambda *_args: events.append("ready")
+        controller.assistant_lifecycle._active_assistant_genesis = lambda *_args: events.append("genesis") or "Genesis"
 
-        controller._create_assistant_container("team_1", spec, network, image)
+        controller.assistant_lifecycle._create_assistant_container("team_1", spec, network, image)
 
         self.assertLess(events.index("admit"), events.index("activate-egress"))
         self.assertLess(events.index("admit"), events.index("start"))
@@ -308,7 +319,9 @@ class LocalLifecycleTests(LocalContractCase):
         )
         spec = self._registry(CURRENT_ASSISTANT_IMAGE)["shimpz-cloudflare"]
 
-        allowed_hosts = controller._admit_assistant_allowed_hosts(SimpleNamespace(id="generation"), spec)
+        allowed_hosts = controller.assistant_lifecycle._admit_assistant_allowed_hosts(
+            SimpleNamespace(id="generation"), spec
+        )
 
         self.assertEqual(allowed_hosts, tuple(sorted(spec.allowed_hosts)))
         self.assertEqual(len(reviewed_contracts), 1)
@@ -332,7 +345,9 @@ class LocalLifecycleTests(LocalContractCase):
             return_value=exact,
         ):
             self.assertEqual(
-                controller._admit_assistant_allowed_hosts(SimpleNamespace(id="exact-generation"), spec),
+                controller.assistant_lifecycle._admit_assistant_allowed_hosts(
+                    SimpleNamespace(id="exact-generation"), spec
+                ),
                 exact.allowed_hosts,
             )
         for index, declared in enumerate(drifted):
@@ -346,5 +361,7 @@ class LocalLifecycleTests(LocalContractCase):
                 ),
                 self.assertRaises(local_app.ApiProblem) as drift,
             ):
-                controller._admit_assistant_allowed_hosts(SimpleNamespace(id=f"drift-generation-{index}"), spec)
+                controller.assistant_lifecycle._admit_assistant_allowed_hosts(
+                    SimpleNamespace(id=f"drift-generation-{index}"), spec
+                )
             self.assertEqual(drift.exception.code, "assistant-manifest-invalid")

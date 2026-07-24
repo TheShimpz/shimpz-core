@@ -81,11 +81,11 @@ class LocalHumanInteractionTests(LocalContractCase):
                     )
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
-            challenge = controller.chat(
+            challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Publish it", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                 "openai",
@@ -103,16 +103,18 @@ class LocalHumanInteractionTests(LocalContractCase):
                 {**submission, "unexpected": True},
             ):
                 with self.subTest(invalid=invalid), self.assertRaises(local_app.ApiProblem) as rejected:
-                    controller.submit_chat_approval("team_1", invalid, "openai", "sk-test-0123456789")
+                    controller.chat_turn_service.submit_chat_approval("team_1", invalid, "openai", "sk-test-0123456789")
                 self.assertEqual(rejected.exception.code, "invalid-assistant-approval")
 
             with self.assertRaises(local_app.ApiProblem) as isolated:
-                controller.submit_chat_approval("team_2", submission, "openai", "sk-test-0123456789")
+                controller.chat_turn_service.submit_chat_approval("team_2", submission, "openai", "sk-test-0123456789")
             self.assertEqual(isolated.exception.code, "assistant-approval-challenge-expired")
 
-            response = controller.submit_chat_approval("team_1", submission, "openai", "sk-test-0123456789")
+            response = controller.chat_turn_service.submit_chat_approval(
+                "team_1", submission, "openai", "sk-test-0123456789"
+            )
             with self.assertRaises(local_app.ApiProblem) as replay:
-                controller.submit_chat_approval(
+                controller.chat_turn_service.submit_chat_approval(
                     "team_1",
                     submission,
                     "openai",
@@ -176,12 +178,12 @@ class LocalHumanInteractionTests(LocalContractCase):
                     )
                 return LOOKUP_RESULT
 
-            controller._rpc = rpc
+            controller.assistant_lifecycle._rpc = rpc
             audit = mock.patch.object(local_app.local_audit, "record", return_value="trace")
             audit.start()
             self.addCleanup(audit.stop)
             with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
-                challenge = controller.chat(
+                challenge = controller.chat_turn_service.chat(
                     "team_1",
                     {"message": "Ask", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",
@@ -203,7 +205,7 @@ class LocalHumanInteractionTests(LocalContractCase):
                         },
                     },
                 )
-                second = controller.submit_chat_input(
+                second = controller.chat_turn_service.submit_chat_input(
                     "team_1",
                     {"challenge_id": challenge["challenge_id"], "answer": "Ada"},
                     "openai",
@@ -211,14 +213,14 @@ class LocalHumanInteractionTests(LocalContractCase):
                 )
                 self.assertEqual(second["status"], "input-required")
                 self.assertEqual(second["request"]["type"], "int")
-                response = controller.submit_chat_input(
+                response = controller.chat_turn_service.submit_chat_input(
                     "team_1",
                     {"challenge_id": second["challenge_id"], "answer": 3},
                     "openai",
                     "sk-test-0123456789",
                 )
                 with self.assertRaises(local_app.ApiProblem) as replay:
-                    controller.submit_chat_input(
+                    controller.chat_turn_service.submit_chat_input(
                         "team_1",
                         {"challenge_id": challenge["challenge_id"], "answer": "Ada"},
                         "openai",
@@ -286,13 +288,13 @@ class LocalHumanInteractionTests(LocalContractCase):
             with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
                 before_restart = self._chat_controller(directory, runtime)
                 before_restart._rpc = rpc
-                first = before_restart.chat(
+                first = before_restart.chat_turn_service.chat(
                     "team_1",
                     {"message": "Ask across restart", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
                     "openai",
                     "sk-test-0123456789",
                 )
-                second = before_restart.submit_chat_input(
+                second = before_restart.chat_turn_service.submit_chat_input(
                     "team_1",
                     {"challenge_id": first["challenge_id"], "answer": "Ada"},
                     "openai",
@@ -321,10 +323,10 @@ class LocalHumanInteractionTests(LocalContractCase):
 
                 after_restart = self._chat_controller(directory, runtime)
                 after_restart._rpc = rpc
-                restored = after_restart._pending_chat_continuation("team_1")
+                restored = after_restart.chat_turn_service._pending_chat_continuation("team_1")
                 self.assertIsNotNone(restored)
                 self.assertEqual(restored["challenge_id"], second["challenge_id"])
-                response = after_restart.submit_chat_input(
+                response = after_restart.chat_turn_service.submit_chat_input(
                     "team_1",
                     {"challenge_id": second["challenge_id"], "answer": 3},
                     "openai",
