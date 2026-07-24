@@ -169,7 +169,7 @@ class HostedAssistantHelpTests(unittest.TestCase):
         handler = _RouteHarness()
         lease = object()
         with mock.patch.object(
-            app,
+            hosted_assistants,
             "_assistant_help",
             return_value={"assistant": "shimpz-cloudflare", "markdown": "# Help"},
         ) as assistant_help:
@@ -203,7 +203,7 @@ class HostedAssistantHelpTests(unittest.TestCase):
         handler = _RouteHarness()
         lease = object()
         with mock.patch.object(
-            app,
+            hosted_assistants,
             "_assistant_help",
             return_value={"assistant": "shimpz-cloudflare", "markdown": "# Help"},
         ) as assistant_help:
@@ -222,8 +222,8 @@ class HostedAssistantHelpTests(unittest.TestCase):
         handler = _RouteHarness()
         handler.path = "/v1/teams/team_1/assistants/shimpz-cloudflare/help/en?fallback=pt"
         with (
-            _patched(_authorize=lambda *_args: object()),
-            mock.patch.object(app, "_assistant_help") as assistant_help,
+            mock.patch.object(hosted_resources, "_authorize", return_value=object()),
+            mock.patch.object(hosted_assistants, "_assistant_help") as assistant_help,
             self.assertRaises(app.ApiError) as caught,
         ):
             app.Handler._route(handler, "GET", ("operator", None))

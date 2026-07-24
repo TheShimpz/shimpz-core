@@ -11,7 +11,6 @@ A compromised caller can only ever request what validate.py permits.
 from __future__ import annotations
 
 import sys
-from http import HTTPStatus
 
 import assistant_account_challenges as assistant_account_challenges
 import assistant_account_flow as assistant_account_flow
@@ -177,6 +176,9 @@ from runtime_state import (
     _docker as _docker,
 )
 from runtime_state import (
+    _enforce_rate as _enforce_rate,
+)
+from runtime_state import (
     _file_upload_slots as _file_upload_slots,
 )
 from runtime_state import (
@@ -211,6 +213,9 @@ from runtime_state import (
 )
 from runtime_state import (
     _raise_assistant_secret_error as _raise_assistant_secret_error,
+)
+from runtime_state import (
+    _rate_key as _rate_key,
 )
 from runtime_state import (
     _rate_limiters as _rate_limiters,
@@ -253,20 +258,6 @@ from runtime_state import (
 )
 
 network_policy = _network_policy
-
-
-def _rate_key(principal: tuple[str, str | None]) -> str:
-    kind, account_id = principal
-    return f"{kind}:{account_id or 'operator'}"
-
-
-def _enforce_rate(operation: str, principal: tuple[str, str | None]) -> None:
-    retry_after = _rate_limiters[operation].consume(_rate_key(principal))
-    if retry_after:
-        raise ApiError(
-            HTTPStatus.TOO_MANY_REQUESTS,
-            f"{operation} rate limit exceeded; retry in {retry_after}s",
-        )
 
 
 # ── docker helpers ───────────────────────────────────────────────────────────
@@ -795,7 +786,6 @@ from http_boundary import hosted_controller as hosted_http
 Handler = hosted_http.Handler
 _BoundedThreadingHTTPServer = hosted_http._BoundedThreadingHTTPServer
 main = hosted_http.main
-hosted_http.bind_controller(sys.modules[__name__])
 
 if __name__ == "__main__":
     main()

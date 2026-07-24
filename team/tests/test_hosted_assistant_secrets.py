@@ -437,8 +437,8 @@ class HostedAssistantSecretTests(unittest.TestCase):
         }
         handler = _RouteHarness({"message": "hello", "files": [], "assistant_ids": [ASSISTANT_ID]})
         with (
-            _patched(_chat=lambda *_args: challenge),
-            mock.patch.object(app, "_enforce_rate"),
+            mock.patch.object(hosted_chat_api, "_chat", return_value=challenge),
+            mock.patch.object(runtime_state, "_enforce_rate"),
         ):
             app.Handler._route_chat_turn(
                 handler,
@@ -582,8 +582,12 @@ class HostedAssistantSecretTests(unittest.TestCase):
         handler = _RouteHarness(body)
         principal = ("account", "account_1")
         with (
-            mock.patch.object(app, "_enforce_rate") as enforce,
-            mock.patch.object(app, "_replace_assistant_secrets", return_value=response) as replace_secrets,
+            mock.patch.object(runtime_state, "_enforce_rate") as enforce,
+            mock.patch.object(
+                hosted_assistants,
+                "_replace_assistant_secrets",
+                return_value=response,
+            ) as replace_secrets,
             mock.patch.object(app.audit, "log"),
         ):
             lease = object()
@@ -761,14 +765,14 @@ class HostedAssistantSecretTests(unittest.TestCase):
         with (
             _patched(
                 _assistant_secret_challenges=types.SimpleNamespace(current=current),
-                _exclusive_chat_turn=exclusive,
             ),
             mock.patch.object(
                 runtime_state,
                 "_assistant_secret_challenges",
                 types.SimpleNamespace(current=current),
             ),
-            mock.patch.object(app, "_enforce_rate"),
+            mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive),
+            mock.patch.object(runtime_state, "_enforce_rate"),
         ):
             app.Handler._route_chat_turn(
                 handler,

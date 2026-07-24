@@ -228,6 +228,20 @@ _rate_limiters = {
 _file_upload_slots = threading.BoundedSemaphore(2)
 
 
+def _rate_key(principal: tuple[str, str | None]) -> str:
+    kind, account_id = principal
+    return f"{kind}:{account_id or 'operator'}"
+
+
+def _enforce_rate(operation: str, principal: tuple[str, str | None]) -> None:
+    retry_after = _rate_limiters[operation].consume(_rate_key(principal))
+    if retry_after:
+        raise ApiError(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            f"{operation} rate limit exceeded; retry in {retry_after}s",
+        )
+
+
 def _storage() -> team_storage.TeamStorage:
     global _storage_instance
     with _storage_lock:

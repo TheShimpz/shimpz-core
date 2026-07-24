@@ -7,6 +7,7 @@ import tempfile
 import types
 import unittest
 from dataclasses import replace
+from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
@@ -215,7 +216,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(caught.exception.status, app.HTTPStatus.BAD_GATEWAY)
+        self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
         self.assertNotIn(ACCESS_TOKEN, caught.exception.message)
 
     def test_admitted_contract_prunes_removed_accounts_and_cancels_paused_turn(self) -> None:
@@ -451,7 +452,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
                 )
 
         self.assertEqual(started, {"authorization_url": "https://x.com/i/oauth2/authorize?state=opaque"})
-        self.assertEqual(extra_field.exception.status, app.HTTPStatus.UNPROCESSABLE_ENTITY)
+        self.assertEqual(extra_field.exception.status, HTTPStatus.UNPROCESSABLE_ENTITY)
         self.assertEqual(
             completed,
             {

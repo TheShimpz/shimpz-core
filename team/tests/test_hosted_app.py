@@ -19,6 +19,7 @@ from hosted_app_fixture import (
     app,
     hosted_apps,
     hosted_assistants,
+    hosted_chat_api,
     hosted_chat_segment,
     hosted_lifecycle,
     hosted_resources,
@@ -547,13 +548,17 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             yield "turn-token", types.SimpleNamespace(id=ANCHOR_ID)
 
         stream = StreamHarness()
-        with _patched(
-            _exclusive_chat_turn=exclusive_turn,
-            _chat_in_turn=lambda *_args: {
-                "team_id": "team_1",
-                "team_name": "Marketing",
-                "reply": "Campaign ready.",
-            },
+        with (
+            mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive_turn),
+            mock.patch.object(
+                hosted_chat_segment,
+                "_chat_in_turn",
+                return_value={
+                    "team_id": "team_1",
+                    "team_name": "Marketing",
+                    "reply": "Campaign ready.",
+                },
+            ),
         ):
             app.Handler._stream_chat(
                 stream,
