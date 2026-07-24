@@ -21,10 +21,8 @@ from typing import NoReturn
 
 import assistant_account_challenges
 import assistant_genesis
-import assistant_help
 import assistant_manifest
 import assistant_secret_challenges
-import assistant_secret_flow
 import assistant_secret_store
 import brain_runtime_client
 import brain_runtime_token_store
@@ -50,6 +48,7 @@ from local_registry import (
     validate_power_input,
     validate_power_output,
 )
+from local_support import assistant_api as local_assistant_api
 from local_support import assistant_lifecycle as local_assistant_lifecycle
 from local_support import assistant_resources as local_assistant_resources
 from local_support import assistant_rpc as local_assistant_rpc
@@ -63,13 +62,13 @@ from local_support import chat_segment as local_chat_segment
 from local_support import chat_state as local_chat_state
 from local_support import chat_submission as local_chat_submission
 from local_support import egress as local_egress
+from local_support import labels as local_labels
 from local_support import team_lifecycle as local_team_lifecycle
-from local_support.assistant_rpc import UnsupportedAssistantRpcPathError as _UnsupportedAssistantRpcPathError
 from local_support.egress import PROFILE
 from local_support.errors import ApiProblemError as ApiProblem
 from local_support.http import REQUEST_TIMEOUT_SECONDS, BoundedServer, Handler
+from local_support.labels import IMAGE_LABEL as _LOCAL_IMAGE_LABEL
 from local_support.labels import (
-    ASSISTANT_LABEL,
     KIND_LABEL,
     MANAGED_LABEL,
     PROFILE_LABEL,
@@ -77,7 +76,6 @@ from local_support.labels import (
     TEAM_LABEL,
     TEAM_NAME_LABEL,
 )
-from local_support.labels import IMAGE_LABEL as _LOCAL_IMAGE_LABEL
 from local_support.validation import brain_thread_id as _local_brain_thread_id
 from local_support.validation import (
     half_cpu_set,
@@ -87,6 +85,7 @@ from local_support.validation import (
 )
 
 IMAGE_LABEL = _LOCAL_IMAGE_LABEL
+ASSISTANT_LABEL = local_labels.ASSISTANT_LABEL
 _brain_thread_id = _local_brain_thread_id
 
 log = logging.getLogger("shimpz-team-driver-local")
@@ -423,6 +422,9 @@ class LocalControllerDependencies:
 
 
 class LocalController:
+    list_assistants = local_assistant_api.list_assistants
+    assistant_help = local_assistant_api.assistant_help_markdown
+
     _purge_power_generation = local_team_lifecycle._purge_power_generation
     _team_assistant_containers = local_team_lifecycle._team_assistant_containers
     _validate_destroy_containers = local_team_lifecycle._validate_destroy_containers
@@ -759,98 +761,6 @@ class LocalController:
                 code="docker-unavailable",
             ) from exc
         return {"status": "ok"}
-
-    def list_assistants(self, team_id: str) -> dict[str, list[dict[str, str]]]:
-        team_id = validate_team_id(team_id)
-        self.assistant_lifecycle._network(team_id)
-        output: list[dict[str, str]] = []
-        egress_proxy = None
-
-        def current_egress_proxy():
-            nonlocal egress_proxy
-            if egress_proxy is None:
-                egress_proxy = self.assistant_lifecycle._egress_proxy()
-            return egress_proxy
-
-        try:
-            containers = self.client.containers.list(**self.assistant_lifecycle._assistant_filters(team_id))
-        except DockerException as exc:
-            raise ApiProblem(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                "Docker is unavailable",
-                code="docker-unavailable",
-            ) from exc
-        for container in containers:
-            labels = container.labels
-            assistant_id = labels.get(ASSISTANT_LABEL)
-            spec = self.registry.get(assistant_id)
-            if spec is None:
-                raise ApiProblem(
-                    HTTPStatus.CONFLICT,
-                    "an installed Assistant is no longer allowlisted",
-                    code="assistant-registry-drift",
-                )
-            config = self.assistant_lifecycle._validate_container_isolation(
-                container,
-                team_id,
-                spec,
-                self.assistant_lifecycle._network_name(team_id),
-                current_egress_proxy,
-            )
-            if self.assistant_lifecycle._has_current_assistant_artifact(config, spec):
-                self.assistant_lifecycle._admit_assistant_allowed_hosts(container, spec)
-                status = container.status
-            else:
-                status = "outdated"
-            output.append({"assistant": assistant_id, "status": status})
-        output.sort(key=lambda item: item["assistant"])
-        return {"assistants": output}
-
-    def assistant_help(self, team_id: str, assistant_id: str, locale: str = "en") -> dict[str, str]:
-        """Read bounded Markdown only from one installed, running Assistant's fixed RPC."""
-        team_id = validate_team_id(team_id)
-        try:
-            locale = assistant_help.validate_locale(locale)
-        except ValueError as exc:
-            raise ApiProblem(
-                HTTPStatus.BAD_REQUEST,
-                "Assistant Help locale is not supported",
-                code="invalid-help-locale",
-            ) from exc
-        spec = self.assistant_lifecycle._resolve(assistant_id)
-        with self._lock(team_id):
-            network = self.assistant_lifecycle._network(team_id)
-            container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
-            self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
-            container.reload()
-            if container.status != "running":
-                raise ApiProblem(HTTPStatus.CONFLICT, "Assistant is not running", code="assistant-not-running")
-            try:
-                raw_result = self.assistant_lifecycle._rpc(
-                    container,
-                    spec,
-                    "GET",
-                    f"/v1/help/{locale}",
-                    assistant_secret_flow.empty_rpc_envelope(),
-                    detect_unsupported_path=True,
-                )
-            except _UnsupportedAssistantRpcPathError:
-                raw_result = self.assistant_lifecycle._rpc(
-                    container,
-                    spec,
-                    "GET",
-                    "/v1/help",
-                    assistant_secret_flow.empty_rpc_envelope(),
-                )
-        try:
-            help_payload = assistant_help.validate_payload(raw_result)
-        except ValueError as exc:
-            raise ApiProblem(
-                HTTPStatus.BAD_GATEWAY,
-                "Assistant Help returned an invalid result",
-                code="invalid-assistant-help",
-            ) from exc
-        return {"assistant": spec.assistant_id, **help_payload}
 
     def invoke(
         self,
