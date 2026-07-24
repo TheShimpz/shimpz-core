@@ -60,6 +60,7 @@ def _socket_bytes(payload: bytes, *, pieces: tuple[int, ...] = ()):
 class PowerRpcFrameTests(unittest.TestCase):
     def setUp(self) -> None:
         self.local = object.__new__(local_app.LocalController)
+        self.local._wire_collaborators()
 
     def test_split_stdout_and_stderr_frames_are_read_exactly(self) -> None:
         payload = _frame(1, b'{"ok":') + _frame(2, b"warning") + _frame(1, b"true}")
@@ -343,6 +344,7 @@ class PowerRpcFrameTests(unittest.TestCase):
                 exec_start=lambda *_args, **_kwargs: stream,
             )
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller.client = SimpleNamespace(api=api)
             controller._fail_stop_power = mock.Mock()
             spec = SimpleNamespace(rpc_command="/app/rpc")

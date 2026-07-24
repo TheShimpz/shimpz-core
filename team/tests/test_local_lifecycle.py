@@ -252,6 +252,7 @@ class LocalLifecycleTests(LocalContractCase):
     def test_new_assistant_is_admitted_before_egress_and_start(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
@@ -294,6 +295,7 @@ class LocalLifecycleTests(LocalContractCase):
 
     def test_local_admission_reviews_hosts_and_accounts(self) -> None:
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         reviewed_contracts: list[local_app.assistant_manifest.ManifestContract] = []
 
         def admit(_container, reviewed):

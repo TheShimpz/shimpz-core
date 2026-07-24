@@ -107,6 +107,7 @@ class LocalContractCase(unittest.TestCase):
     ) -> local_app.LocalController:
         image = "127.0.0.1:5000/shimpz/shimpz-cloudflare@sha256:" + "a" * 64
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.registry = self._registry(
             image,
@@ -216,6 +217,7 @@ class LocalContractCase(unittest.TestCase):
     def _lifecycle_controller(self) -> tuple[local_app.LocalController, SimpleNamespace, list[object]]:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._locks = tuple(threading.RLock() for _ in range(64))
@@ -237,6 +239,7 @@ class LocalContractCase(unittest.TestCase):
             Path(secret_directory.name) / "assistant-accounts" / "key" / "aes256.key",
         )
         controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
+        controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()

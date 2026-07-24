@@ -100,6 +100,7 @@ class _InteractionBatch:
 
 def _local_controller(local_active, config, events: list[str], fail):
     controller = object.__new__(local_app.LocalController)
+    controller._wire_collaborators()
     controller.space_id = "local-space"
     controller.brain_runtime = SimpleNamespace()
     controller.power_state = SimpleNamespace()

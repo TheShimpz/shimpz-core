@@ -138,6 +138,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
     def test_team_account_teardown_prevents_same_id_resurrection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
@@ -168,6 +169,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
     def test_account_inventory_is_exact_and_never_contains_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller._locks = tuple(threading.RLock() for _ in range(64))
             controller.registry = self._registry()
             controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
@@ -300,6 +302,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 )
 
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.account_challenges = challenges
         controller.oauth_service = Service()
         controller._current_account_declaration = lambda *_args: None
@@ -400,6 +403,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller.space_id = "local-space"
             controller.brain_runtime = Runtime()
             controller.power_state = SimpleNamespace()
@@ -475,6 +479,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller.registry = registry
             controller._locks = tuple(threading.RLock() for _ in range(64))
             controller._active_chat_guard = threading.Lock()
@@ -483,6 +488,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
             controller._active_power_containers = {}
             controller._cancelled_chat_tokens = set()
             controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
+            controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
             controller.oauth_pkce = SimpleNamespace(cancel_team=lambda _team: 0)
             controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
                 Path(directory) / "state" / "accounts.json",

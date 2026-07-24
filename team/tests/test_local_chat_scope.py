@@ -107,8 +107,10 @@ class LocalChatScopeTests(LocalContractCase):
                 reload=mock.Mock(),
             )
             controller.client = SimpleNamespace(networks=SimpleNamespace(get=lambda _name: network))
-            controller._network = local_app.LocalController._network.__get__(controller)
-            controller._validate_network = local_app.LocalController._validate_network.__get__(controller)
+            controller._network = local_app.AssistantLifecycle._network.__get__(controller.assistant_lifecycle)
+            controller._validate_network = local_app.AssistantLifecycle._validate_network.__get__(
+                controller.assistant_lifecycle
+            )
 
             setup = controller._chat_setup("team_1", [], "openai", ())
 

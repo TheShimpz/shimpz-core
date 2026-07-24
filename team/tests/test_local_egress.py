@@ -85,6 +85,7 @@ class LocalAssistantEgressTests(unittest.TestCase):
         self.proxy = _Proxy("local-space")
         self.network = _Network(self.proxy)
         self.controller = object.__new__(local_app.LocalController)
+        self.controller._wire_collaborators()
         self.controller.space_id = "local-space"
         self.controller.client = types.SimpleNamespace(containers=_Containers(self.proxy))
         self.spec = types.SimpleNamespace(

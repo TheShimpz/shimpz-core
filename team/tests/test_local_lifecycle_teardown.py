@@ -39,6 +39,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
     def test_manifest_mismatch_removes_stopped_container_without_activating_egress(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
@@ -81,6 +82,7 @@ class LocalLifecycleTeardownTests(LocalContractCase):
     def test_failed_install_removal_still_revokes_egress_and_reports_incomplete_rollback(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()

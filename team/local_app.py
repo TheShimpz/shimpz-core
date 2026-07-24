@@ -13,6 +13,7 @@ import os
 import secrets
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -118,6 +119,47 @@ LOCAL_CHAT_CONTINUATIONS_KEY_PATH = Path(
 )
 
 
+class _ControllerCollaborator:
+    """Bind one explicit local-controller service to its owning resource boundary."""
+
+    def __init__(self, controller: LocalController) -> None:
+        self._controller = controller
+
+    def __getattribute__(self, name: str):
+        if name != "_controller":
+            controller = object.__getattribute__(self, "_controller")
+            if name in controller.__dict__:
+                return controller.__dict__[name]
+        return object.__getattribute__(self, name)
+
+    def __getattr__(self, name: str):
+        return getattr(self._controller, name)
+
+
+class AssistantLifecycle(
+    _ControllerCollaborator,
+    LocalAssistantLifecycleMixin,
+    LocalAssistantResourcesMixin,
+    LocalAssistantRpcMixin,
+    LocalEgressMixin,
+):
+    """Own Assistant admission, resources, RPC, and egress lifecycle."""
+
+
+class ChatTurnService(
+    _ControllerCollaborator,
+    LocalChatApiMixin,
+    LocalChatExecutionMixin,
+    LocalChatPauseMixin,
+    LocalChatPrivateMixin,
+    LocalChatResumeMixin,
+    LocalChatSegmentMixin,
+    LocalChatStateMixin,
+    LocalChatSubmissionMixin,
+):
+    """Own local chat turns, continuations, challenges, and private state."""
+
+
 @dataclass(frozen=True, slots=True)
 class LocalControllerDependencies:
     inference_store: inference_config.InferenceConfigStore | None = None
@@ -134,23 +176,26 @@ class LocalControllerDependencies:
     approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None
     input_challenges: assistant_input_challenges.InputChallengeStore | None = None
     chat_continuations: local_chat_continuation_store.EncryptedContinuationStore | None = None
+    assistant_lifecycle_factory: Callable[[LocalController], AssistantLifecycle] = AssistantLifecycle
+    chat_turn_service_factory: Callable[[LocalController], ChatTurnService] = ChatTurnService
 
 
-class LocalController(
-    LocalAssistantLifecycleMixin,
-    LocalAssistantResourcesMixin,
-    LocalAssistantRpcMixin,
-    LocalChatApiMixin,
-    LocalChatExecutionMixin,
-    LocalChatPauseMixin,
-    LocalChatPrivateMixin,
-    LocalChatResumeMixin,
-    LocalChatSegmentMixin,
-    LocalChatStateMixin,
-    LocalChatSubmissionMixin,
-    LocalEgressMixin,
-    LocalTeamLifecycleMixin,
-):
+class LocalController:
+    _purge_power_generation = LocalTeamLifecycleMixin._purge_power_generation
+    _team_assistant_containers = LocalTeamLifecycleMixin._team_assistant_containers
+    _validate_destroy_containers = LocalTeamLifecycleMixin._validate_destroy_containers
+    _delete_team_conversation = LocalTeamLifecycleMixin._delete_team_conversation
+    _remove_team_assistants = LocalTeamLifecycleMixin._remove_team_assistants
+    _delete_team_persistence = LocalTeamLifecycleMixin._delete_team_persistence
+    _delete_team_private_state = LocalTeamLifecycleMixin._delete_team_private_state
+    _remove_team_network = LocalTeamLifecycleMixin._remove_team_network
+    destroy_team = LocalTeamLifecycleMixin.destroy_team
+    _validate_reset_container = LocalTeamLifecycleMixin._validate_reset_container
+    _reset_inventory = LocalTeamLifecycleMixin._reset_inventory
+    _reset_assistant_identities = LocalTeamLifecycleMixin._reset_assistant_identities
+    _remove_space_resources = LocalTeamLifecycleMixin._remove_space_resources
+    reset_space = LocalTeamLifecycleMixin.reset_space
+
     def __init__(
         self,
         client: docker.DockerClient,
@@ -214,9 +259,28 @@ class LocalController(
         self._active_chat_tokens: dict[str, str] = {}
         self._active_power_containers: dict[str, tuple[str, object]] = {}
         self._cancelled_chat_tokens: set[str] = set()
+        self._wire_collaborators(
+            dependencies.assistant_lifecycle_factory,
+            dependencies.chat_turn_service_factory,
+        )
         daemon_info = self._require_default_seccomp()
         self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
         self._restore_all_chat_continuations()
+
+    def _wire_collaborators(
+        self,
+        assistant_lifecycle_factory: Callable[[LocalController], AssistantLifecycle] = AssistantLifecycle,
+        chat_turn_service_factory: Callable[[LocalController], ChatTurnService] = ChatTurnService,
+    ) -> None:
+        self.assistant_lifecycle = assistant_lifecycle_factory(self)
+        self.chat_turn_service = chat_turn_service_factory(self)
+
+    def __getattr__(self, name: str):
+        for collaborator_name in ("assistant_lifecycle", "chat_turn_service"):
+            collaborator = self.__dict__.get(collaborator_name)
+            if collaborator is not None and hasattr(type(collaborator), name):
+                return getattr(collaborator, name)
+        raise AttributeError(name)
 
     def _require_default_seccomp(self) -> dict:
         try:

@@ -396,19 +396,13 @@ class LocalChatStateMixin:
         team_id: str,
         challenge_id: str | None = None,
     ) -> bool:
-        store = getattr(self, "chat_continuations", None)
-        if store is None:
-            return False
         try:
-            return store.delete(team_id, challenge_id)
+            return self.chat_continuations.delete(team_id, challenge_id)
         except local_chat_continuation_store.ContinuationStoreError as exc:
             self._raise_chat_continuation_problem(exc)
 
     def _clear_chat_continuations(self) -> int:
-        store = getattr(self, "chat_continuations", None)
-        if store is None:
-            return 0
         try:
-            return store.clear()
+            return self.chat_continuations.clear()
         except local_chat_continuation_store.ContinuationStoreError as exc:
             self._raise_chat_continuation_problem(exc)

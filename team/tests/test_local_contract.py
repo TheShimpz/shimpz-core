@@ -298,6 +298,11 @@ class LocalContractTests(LocalContractCase):
 
         self.assertIs(controller.power_state, injected)
         self.assertIs(controller.approval_grants, approval_grants)
+        self.assertIsInstance(controller.assistant_lifecycle, local_app.AssistantLifecycle)
+        self.assertIsInstance(controller.chat_turn_service, local_app.ChatTurnService)
+        self.assertIs(controller.assistant_lifecycle._controller, controller)
+        self.assertIs(controller.chat_turn_service._controller, controller)
+        self.assertEqual(local_app.LocalController.__bases__, (object,))
         self.assertEqual(
             local_app.LOCAL_POWER_JOURNAL_PATH,
             Path("/var/lib/shimpz-local/power-journal/journal.sqlite3"),
@@ -305,6 +310,7 @@ class LocalContractTests(LocalContractCase):
 
     def test_ambiguous_power_rpc_is_fail_stopped_or_permanently_blocked(self) -> None:
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller._blocked_power_workloads = set()
 
         class Stoppable:
@@ -354,6 +360,7 @@ class LocalContractTests(LocalContractCase):
 
     def test_unprovable_power_stop_is_permanently_blocked(self) -> None:
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller._blocked_power_workloads = set()
 
         class Ambiguous:
@@ -404,6 +411,7 @@ class LocalContractTests(LocalContractCase):
     def test_inference_configuration_persists_only_provider_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
+            controller._wire_collaborators()
             controller._locks = tuple(__import__("threading").RLock() for _ in range(64))
             controller.inference_store = inference_config.InferenceConfigStore(Path(directory) / "inference")
             controller._network = lambda _team_id: object()
@@ -582,10 +590,12 @@ class LocalContractTests(LocalContractCase):
     def test_destroy_drains_chat_and_deletes_generation_before_teardown(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
+        controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller.assistant_accounts = SimpleNamespace(
@@ -680,10 +690,12 @@ class LocalContractTests(LocalContractCase):
     def test_reset_removes_orphan_egress_authority_for_owned_teams(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-secrets"))
         controller.approval_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-approvals"))
         controller.input_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-inputs"))
+        controller.chat_continuations = SimpleNamespace(clear=lambda: 0)
         controller._locks = (threading.RLock(),)
         controller._blocked_power_workloads = set()
         controller.registry = {"shimpz-cloudflare": SimpleNamespace()}
@@ -718,10 +730,12 @@ class LocalContractTests(LocalContractCase):
     def test_destroy_brain_failure_is_redacted_and_mutates_nothing(self) -> None:
         events: list[str] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
+        controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()
@@ -770,10 +784,12 @@ class LocalContractTests(LocalContractCase):
     def test_destroy_journal_failure_is_redacted_before_teardown(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
+        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
+        controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller._active_chat_guard = threading.Lock()

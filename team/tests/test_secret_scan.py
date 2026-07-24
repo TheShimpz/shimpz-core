@@ -21,7 +21,7 @@ class SecretScanTests(unittest.TestCase):
     def _decisions(value: object, secrets: dict[str, str]) -> tuple[bool, bool]:
         return (
             hosted_assistants._contains_secret(value, secrets),
-            local_app.LocalController._contains_secret(value, secrets),
+            local_app.ChatTurnService._contains_secret(value, secrets),
         )
 
     def test_literal_secret_in_nested_result_or_key_is_caught(self) -> None:
