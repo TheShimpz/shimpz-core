@@ -76,6 +76,8 @@ class ApprovalGrantStore:
             self._connection.execute("PRAGMA synchronous = FULL")
             if initialize:
                 self._create_schema()
+            else:
+                self._migrate_schema()
             self._validate_schema()
             self.path.chmod(0o600)
         except (OSError, sqlite3.Error, ApprovalGrantError) as exc:
@@ -134,10 +136,13 @@ class ApprovalGrantStore:
             raise ApprovalGrantError("approval grant file failed its ownership contract")
 
     def _create_schema(self) -> None:
-        self._connection.executescript(
-            f"""
-            PRAGMA application_id = {APPLICATION_ID};
-            PRAGMA user_version = {SCHEMA_VERSION};
+        self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        self._create_grants_table()
+
+    def _create_grants_table(self) -> None:
+        self._connection.execute(
+            """
             CREATE TABLE grants (
                 team_id TEXT NOT NULL,
                 assistant_id TEXT NOT NULL,
@@ -145,9 +150,41 @@ class ApprovalGrantStore:
                 image TEXT NOT NULL,
                 ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
                 PRIMARY KEY (team_id, assistant_id, power_id, image, ordinal)
-            ) WITHOUT ROWID;
+            ) WITHOUT ROWID
             """
         )
+
+    def _migrate_schema(self) -> None:
+        application_id = self._connection.execute("PRAGMA application_id").fetchone()[0]
+        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+        columns = tuple(row[1] for row in self._connection.execute("PRAGMA table_info(grants)"))
+        if (
+            application_id != APPLICATION_ID
+            or version != 1
+            or columns
+            != (
+                "team_id",
+                "assistant_id",
+                "power_id",
+                "image",
+            )
+        ):
+            return
+        begun = False
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            begun = True
+            # Version 1 grants were scoped only to a Power, while version 2 binds approval to a
+            # specific call-site ordinal. Revoke them instead of guessing a broader permission.
+            self._connection.execute("DROP TABLE grants")
+            self._create_grants_table()
+            self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._connection.execute("COMMIT")
+        except sqlite3.Error as exc:
+            if begun:
+                with suppress(sqlite3.Error):
+                    self._connection.execute("ROLLBACK")
+            raise ApprovalGrantError("approval grants could not be migrated safely") from exc
 
     def _validate_schema(self) -> None:
         application_id = self._connection.execute("PRAGMA application_id").fetchone()[0]

@@ -14,6 +14,41 @@ IMAGE_V2 = "ghcr.io/theshimpz/shimpz-cloudflare@sha256:" + "b" * 64
 
 
 class ApprovalGrantStoreTests(unittest.TestCase):
+    def test_version_one_grants_are_revoked_during_call_site_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "grants.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                PRAGMA application_id = 1397244231;
+                PRAGMA user_version = 1;
+                CREATE TABLE grants (
+                    team_id TEXT NOT NULL,
+                    assistant_id TEXT NOT NULL,
+                    power_id TEXT NOT NULL,
+                    image TEXT NOT NULL,
+                    PRIMARY KEY (team_id, assistant_id, power_id, image)
+                ) WITHOUT ROWID;
+                """
+            )
+            connection.execute(
+                "INSERT INTO grants VALUES (?, ?, ?, ?)",
+                ("team_1", "shimpz-cloudflare", "protected-action", IMAGE_V1),
+            )
+            connection.commit()
+            connection.close()
+            path.chmod(0o600)
+
+            store = assistant_approval_grants.ApprovalGrantStore(path)
+            self.addCleanup(store.close)
+
+            self.assertEqual(store.list_team("team_1"), ())
+            self.assertEqual(store._connection.execute("PRAGMA user_version").fetchone(), (2,))
+            self.assertEqual(
+                tuple(row[1] for row in store._connection.execute("PRAGMA table_info(grants)")),
+                ("team_id", "assistant_id", "power_id", "image", "ordinal"),
+            )
+
     def test_once_grant_survives_restart_but_is_bound_to_the_exact_release(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state" / "grants.sqlite3"
