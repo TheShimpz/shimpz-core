@@ -192,7 +192,7 @@ class Handler(socketserver.BaseRequestHandler):
     def _tunnel(a: socket.socket, b: socket.socket) -> None:
         """Splice bytes both ways until either side closes or the tunnel goes idle."""
         for s in (a, b):
-            s.settimeout(None)
+            s.settimeout(IDLE_TIMEOUT)
         try:
             while True:
                 readable, _, errored = select.select([a, b], [], [a, b], IDLE_TIMEOUT)

@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 DRIVERS = Path(__file__).resolve().parents[2]
 
@@ -108,6 +109,22 @@ class ProxyHandlerTest(unittest.TestCase):
 
         self.assertTrue(response.startswith(b"HTTP/1.1 407"))
         self.assertIn(b"Proxy-Authenticate: Basic", response)
+
+    def test_brain_tunnel_bounds_blocked_send_and_tears_down(self) -> None:
+        source = mock.Mock()
+        target = mock.Mock()
+        source.recv.return_value = b"payload"
+        target.sendall.side_effect = socket.timeout
+
+        with mock.patch.object(BRAIN_EGRESS.select, "select", return_value=([source], [], [])):
+            BRAIN_EGRESS.Handler._tunnel(source, target)
+
+        source.settimeout.assert_called_once_with(BRAIN_EGRESS.IDLE_TIMEOUT)
+        target.settimeout.assert_called_once_with(BRAIN_EGRESS.IDLE_TIMEOUT)
+        source.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        target.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        source.close.assert_called_once_with()
+        target.close.assert_called_once_with()
 
 
 class ProxyCapacityTest(unittest.TestCase):
