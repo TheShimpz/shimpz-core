@@ -108,6 +108,21 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "unknown RPC failure"):
             power_execution.rpc_failure_status("unknown")
 
+    def test_local_readiness_uses_the_complete_empty_rpc_envelope(self) -> None:
+        container = SimpleNamespace(status="running", reload=lambda: None)
+        spec = SimpleNamespace(health_path="/healthz")
+        self.local.assistant_lifecycle._rpc = mock.Mock(return_value={"status": "ok"})
+
+        self.local.assistant_lifecycle._wait_ready(container, spec)
+
+        self.local.assistant_lifecycle._rpc.assert_called_once_with(
+            container,
+            spec,
+            "GET",
+            "/healthz",
+            {"input": {}, "secrets": {}, "accounts": {}, "answers": []},
+        )
+
     def test_private_generation_helpers_apply_one_power_contract(self) -> None:
         powers = {
             "lookup": SimpleNamespace(secrets=("api-key",), accounts=("cloud",)),

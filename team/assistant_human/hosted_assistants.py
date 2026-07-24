@@ -398,7 +398,7 @@ def _assistant_help(
                     command=contract.rpc_command,
                     method="GET",
                     path=f"/v1/help/{locale}",
-                    payload={},
+                    payload=assistant_secret_flow.empty_rpc_envelope(),
                     token=None,
                     operation="Assistant Help",
                     detect_unsupported_path=True,
@@ -412,7 +412,7 @@ def _assistant_help(
                     command=contract.rpc_command,
                     method="GET",
                     path="/v1/help",
-                    payload={},
+                    payload=assistant_secret_flow.empty_rpc_envelope(),
                     token=None,
                     operation="Assistant Help",
                 )

@@ -24,6 +24,11 @@ class SecretFlowError(RuntimeError):
     """A secret request or submission violated its closed contract."""
 
 
+def empty_rpc_envelope() -> dict[str, object]:
+    """Build the complete empty envelope required by every fixed Assistant RPC."""
+    return {"input": {}, "secrets": {}, "accounts": {}, "answers": []}
+
+
 def encode_private_rpc_envelope(payload: object) -> bytes:
     """Encode one bounded Controller-to-Assistant envelope exactly once."""
     try:

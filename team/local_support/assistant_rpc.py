@@ -133,7 +133,13 @@ def _wait_ready(self, container, spec: AssistantSpec) -> None:
             break
         if container.status == "running":
             try:
-                result = self._rpc(container, spec, "GET", spec.health_path, {})
+                result = self._rpc(
+                    container,
+                    spec,
+                    "GET",
+                    spec.health_path,
+                    assistant_secret_flow.empty_rpc_envelope(),
+                )
             except ApiProblem:
                 pass
             else:

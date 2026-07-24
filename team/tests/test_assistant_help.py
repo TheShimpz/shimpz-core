@@ -95,7 +95,7 @@ class HostedAssistantHelpTests(unittest.TestCase):
                 command="/usr/local/bin/shimpz-cloudflare-rpc",
                 method="GET",
                 path="/v1/help/pt",
-                payload={},
+                payload={"input": {}, "secrets": {}, "accounts": {}, "answers": []},
                 token=None,
                 operation="Assistant Help",
                 detect_unsupported_path=True,
@@ -124,10 +124,10 @@ class HostedAssistantHelpTests(unittest.TestCase):
         lease = object()
         contract = types.SimpleNamespace(rpc_command="/usr/local/bin/shimpz-cloudflare-rpc")
         container = types.SimpleNamespace(id="b" * 64)
-        paths: list[str] = []
+        requests: list[object] = []
 
         def rpc(request):
-            paths.append(request.path)
+            requests.append(request)
             if request.path == "/v1/help/pt":
                 self.assertTrue(request.detect_unsupported_path)
                 raise runtime_state._UnsupportedAssistantRpcPathError(request.path)
@@ -145,12 +145,14 @@ class HostedAssistantHelpTests(unittest.TestCase):
             result = hosted_assistants._assistant_help("team_1", "shimpz-cloudflare", lease, "pt")
 
         self.assertEqual(result["markdown"], "# English fallback")
-        self.assertEqual(paths, ["/v1/help/pt", "/v1/help"])
+        self.assertEqual([request.path for request in requests], ["/v1/help/pt", "/v1/help"])
+        empty_envelope = {"input": {}, "secrets": {}, "accounts": {}, "answers": []}
+        self.assertEqual([request.payload for request in requests], [empty_envelope, empty_envelope])
 
-        paths.clear()
+        requests.clear()
 
         def fail_rpc(request):
-            paths.append(request.path)
+            requests.append(request)
             raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Help failed")
 
         with (
@@ -163,7 +165,7 @@ class HostedAssistantHelpTests(unittest.TestCase):
             self.assertRaises(runtime_state.ApiError),
         ):
             hosted_assistants._assistant_help("team_1", "shimpz-cloudflare", lease, "pt")
-        self.assertEqual(paths, ["/v1/help/pt"])
+        self.assertEqual([request.path for request in requests], ["/v1/help/pt"])
 
     def test_help_route_is_exact_and_disables_caching(self) -> None:
         handler = _RouteHarness()

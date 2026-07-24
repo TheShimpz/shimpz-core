@@ -24,6 +24,7 @@ import assistant_genesis
 import assistant_help
 import assistant_manifest
 import assistant_secret_challenges
+import assistant_secret_flow
 import assistant_secret_store
 import brain_runtime_client
 import brain_runtime_token_store
@@ -830,11 +831,17 @@ class LocalController:
                     spec,
                     "GET",
                     f"/v1/help/{locale}",
-                    {},
+                    assistant_secret_flow.empty_rpc_envelope(),
                     detect_unsupported_path=True,
                 )
             except _UnsupportedAssistantRpcPathError:
-                raw_result = self.assistant_lifecycle._rpc(container, spec, "GET", "/v1/help", {})
+                raw_result = self.assistant_lifecycle._rpc(
+                    container,
+                    spec,
+                    "GET",
+                    "/v1/help",
+                    assistant_secret_flow.empty_rpc_envelope(),
+                )
         try:
             help_payload = assistant_help.validate_payload(raw_result)
         except ValueError as exc:

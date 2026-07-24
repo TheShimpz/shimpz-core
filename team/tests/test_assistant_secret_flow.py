@@ -43,6 +43,17 @@ class _Active:
 
 
 class AssistantSecretFlowTests(unittest.TestCase):
+    def test_empty_rpc_envelope_is_complete_and_fresh(self) -> None:
+        first = assistant_secret_flow.empty_rpc_envelope()
+        second = assistant_secret_flow.empty_rpc_envelope()
+
+        self.assertEqual(
+            first,
+            {"input": {}, "secrets": {}, "accounts": {}, "answers": []},
+        )
+        self.assertIsNot(first, second)
+        self.assertIsNot(first["input"], second["input"])
+
     def _store(self, root: Path) -> assistant_secret_store.AssistantSecretStore:
         return assistant_secret_store.AssistantSecretStore(
             root / "state" / "secrets.json",

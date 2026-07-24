@@ -40,7 +40,8 @@ class LocalAssistantHelpTests(unittest.TestCase):
                 "markdown": "# Example\n\nAsk a simple question.",
             },
         )
-        self.assertEqual(calls, [("GET", "/v1/help/pt", {})])
+        empty_envelope = {"input": {}, "secrets": {}, "accounts": {}, "answers": []}
+        self.assertEqual(calls, [("GET", "/v1/help/pt", empty_envelope)])
         controller.assistant_lifecycle._rpc = lambda *_args, **_kwargs: {"markdown": "x" * (32 * 1024 + 1)}
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.assistant_help("team_1", "example-assistant", "pt")
@@ -70,7 +71,8 @@ class LocalAssistantHelpTests(unittest.TestCase):
         result = controller.assistant_help("team_1", "example-assistant", "pt")
 
         self.assertEqual(result["markdown"], "# English fallback")
-        self.assertEqual(calls, [("GET", "/v1/help/pt", {}), ("GET", "/v1/help", {})])
+        empty_envelope = {"input": {}, "secrets": {}, "accounts": {}, "answers": []}
+        self.assertEqual(calls, [("GET", "/v1/help/pt", empty_envelope), ("GET", "/v1/help", empty_envelope)])
 
         calls.clear()
 
@@ -85,7 +87,7 @@ class LocalAssistantHelpTests(unittest.TestCase):
         controller.assistant_lifecycle._rpc = fail_rpc
         with self.assertRaises(local_app.ApiProblem):
             controller.assistant_help("team_1", "example-assistant", "pt")
-        self.assertEqual(calls, [("GET", "/v1/help/pt", {})])
+        self.assertEqual(calls, [("GET", "/v1/help/pt", empty_envelope)])
 
     def test_help_route_is_exact_and_has_no_request_body(self) -> None:
         controller = SimpleNamespace(
