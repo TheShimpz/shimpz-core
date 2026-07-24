@@ -319,10 +319,6 @@ class _CleanupResult:
         return self.artifacts_removed and self.db_dropped
 
 
-_controller._capacity_reservations: dict[str, _controller._CapacityReservation] = {}
-_controller._capacity_generation = 0
-
-
 def _capacity_key(container) -> str:
     team_id = str(container.labels.get("team.id", ""))
     if container.labels.get("team.app.driver"):

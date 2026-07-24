@@ -12,196 +12,211 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import ipaddress
-import math
-import os
 import secrets
 import sys
 import threading
-import time
-import weakref
 from collections.abc import Callable
 from http import HTTPStatus
-from pathlib import Path
 
-import assistant_account_challenges
+import assistant_account_challenges as assistant_account_challenges
 import assistant_account_flow as assistant_account_flow
-import assistant_genesis
-import assistant_manifest
-import assistant_secret_challenges
+import assistant_genesis as assistant_genesis
+import assistant_manifest as assistant_manifest
+import assistant_secret_challenges as assistant_secret_challenges
 import assistant_secret_flow as assistant_secret_flow
-import assistant_secret_store
+import assistant_secret_store as assistant_secret_store
 import audit as audit
-import brain_runtime_client
+import brain_runtime_client as brain_runtime_client
 import chat_orchestrator as chat_orchestrator
 import chat_turn_engine as chat_turn_engine
 import cleanup_state as cleanup_state
-import docker
-import docker.errors
-import inference_config
-import manifests
+import docker as docker
+import manifests as manifests
 import marketplace as marketplace
-import oauth_account_service
-import oauth_account_store
-import oauth_http_client
-import oauth_pkce_challenges
+import oauth_account_store as oauth_account_store
+import oauth_http_client as oauth_http_client
 import pgdriver_client as pgdriver_client
 import power_execution as power_execution
 import power_journal
 import team_storage
-import token_store
 import validate
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_grants as assistant_approval_grants
-from assistant_human import input_challenges as assistant_input_challenges
 from container_policy import network as _network_policy
+from runtime_state import (
+    ALL_INTERFACES as ALL_INTERFACES,
+)
+from runtime_state import (
+    APP_EGRESS_POLICY_DIR as APP_EGRESS_POLICY_DIR,
+)
+from runtime_state import (
+    APP_EGRESS_POLICY_GID as APP_EGRESS_POLICY_GID,
+)
+from runtime_state import (
+    GLOBAL_MEMORY_BUDGET_BYTES as GLOBAL_MEMORY_BUDGET_BYTES,
+)
+from runtime_state import (
+    HEALTH_DELAY_SECONDS as HEALTH_DELAY_SECONDS,
+)
+from runtime_state import (
+    HEALTH_RETRIES as HEALTH_RETRIES,
+)
+from runtime_state import (
+    HTTP_CONNECTION_TIMEOUT_SECONDS as HTTP_CONNECTION_TIMEOUT_SECONDS,
+)
+from runtime_state import (
+    LISTEN_PORT as LISTEN_PORT,
+)
+from runtime_state import (
+    MAX_APPS_PER_TEAM as MAX_APPS_PER_TEAM,
+)
+from runtime_state import (
+    MAX_ASSISTANT_SECRET_BODY_BYTES as MAX_ASSISTANT_SECRET_BODY_BYTES,
+)
+from runtime_state import (
+    MAX_DRIVER_JSON_BODY_BYTES as MAX_DRIVER_JSON_BODY_BYTES,
+)
+from runtime_state import (
+    MAX_HTTP_CONCURRENCY as MAX_HTTP_CONCURRENCY,
+)
+from runtime_state import (
+    MAX_JSON_BODY_BYTES as MAX_JSON_BODY_BYTES,
+)
+from runtime_state import (
+    MAX_TEAMS as MAX_TEAMS,
+)
+from runtime_state import (
+    MAX_TEAMS_PER_OWNER as MAX_TEAMS_PER_OWNER,
+)
+from runtime_state import (
+    OWNER_MEMORY_BUDGET_BYTES as OWNER_MEMORY_BUDGET_BYTES,
+)
+from runtime_state import (
+    POWER_JOURNAL_PATH as POWER_JOURNAL_PATH,
+)
+from runtime_state import (
+    TEAM_STORAGE_ROOT as TEAM_STORAGE_ROOT,
+)
+from runtime_state import (
+    ApiError as ApiError,
+)
+from runtime_state import (
+    _active_chat_container_ids as _active_chat_container_ids,
+)
+from runtime_state import (
+    _active_chat_guard as _active_chat_guard,
+)
+from runtime_state import (
+    _active_chat_tokens as _active_chat_tokens,
+)
+from runtime_state import (
+    _active_power_container_ids as _active_power_container_ids,
+)
+from runtime_state import (
+    _assistant_account_challenges as _assistant_account_challenges,
+)
+from runtime_state import (
+    _assistant_accounts as _assistant_accounts,
+)
+from runtime_state import (
+    _assistant_allowed_hosts_cache as _assistant_allowed_hosts_cache,
+)
+from runtime_state import (
+    _assistant_approval_challenges as _assistant_approval_challenges,
+)
+from runtime_state import (
+    _assistant_approval_grants as _assistant_approval_grants,
+)
+from runtime_state import (
+    _assistant_genesis_cache as _assistant_genesis_cache,
+)
+from runtime_state import (
+    _assistant_input_challenges as _assistant_input_challenges,
+)
+from runtime_state import (
+    _assistant_machine_contract_cache as _assistant_machine_contract_cache,
+)
+from runtime_state import (
+    _assistant_secret_challenges as _assistant_secret_challenges,
+)
+from runtime_state import (
+    _assistant_secrets as _assistant_secrets,
+)
+from runtime_state import (
+    _blocked_power_workloads as _blocked_power_workloads,
+)
+from runtime_state import (
+    _brain_runtime as _brain_runtime,
+)
+from runtime_state import (
+    _cancelled_chat_tokens as _cancelled_chat_tokens,
+)
+from runtime_state import (
+    _capacity_generation as _capacity_generation,
+)
+from runtime_state import (
+    _capacity_lock as _capacity_lock,
+)
+from runtime_state import (
+    _capacity_reservations as _capacity_reservations,
+)
+from runtime_state import (
+    _chat_locks as _chat_locks,
+)
+from runtime_state import (
+    _chat_locks_guard as _chat_locks_guard,
+)
+from runtime_state import (
+    _docker as _docker,
+)
+from runtime_state import (
+    _file_upload_slots as _file_upload_slots,
+)
+from runtime_state import (
+    _FixedWindowRateLimiter as _FixedWindowRateLimiter,
+)
+from runtime_state import (
+    _inference_store as _inference_store,
+)
+from runtime_state import (
+    _locks as _locks,
+)
+from runtime_state import (
+    _locks_guard as _locks_guard,
+)
+from runtime_state import (
+    _oauth_accounts as _oauth_accounts,
+)
+from runtime_state import (
+    _power_journal_instance as _power_journal_instance,
+)
+from runtime_state import (
+    _power_journal_lock as _power_journal_lock,
+)
+from runtime_state import (
+    _rate_limiters as _rate_limiters,
+)
+from runtime_state import (
+    _storage_instance as _storage_instance,
+)
+from runtime_state import (
+    _storage_lock as _storage_lock,
+)
+from runtime_state import (
+    _token as _token,
+)
+from runtime_state import (
+    _UnsupportedAssistantRpcPathError as _UnsupportedAssistantRpcPathError,
+)
+from runtime_state import (
+    assistant_approval_challenges as assistant_approval_challenges,
+)
+from runtime_state import (
+    assistant_approval_grants as assistant_approval_grants,
+)
+from runtime_state import (
+    assistant_input_challenges as assistant_input_challenges,
+)
 
 network_policy = _network_policy
-
-ALL_INTERFACES = str(ipaddress.IPv4Address(0))
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    value = int(os.environ.get(name, str(default)))
-    if value < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-LISTEN_PORT = int(os.environ.get("SHIMPZ_TEAMDRIVER_PORT", "7077"))
-# The host has 125 GiB and each Team has a 2 GiB hard ceiling: 32 leaves roughly half the host for
-# the platform, installed apps and Docker overhead. Operators may lower it, but public callers never
-# choose either quota.
-MAX_TEAMS = _positive_int_env("SHIMPZ_MAX_TEAMS", 32)
-MAX_TEAMS_PER_OWNER = _positive_int_env("SHIMPZ_MAX_TEAMS_PER_OWNER", 1)
-# Per-team app allowance — an owner can't exhaust the host by installing without bound either.
-MAX_APPS_PER_TEAM = _positive_int_env("SHIMPZ_MAX_APPS_PER_TEAM", 20)
-GLOBAL_MEMORY_BUDGET_BYTES = manifests.hard_memory_bytes(
-    os.environ.get("SHIMPZ_TEAM_GLOBAL_MEM_BUDGET", "64g"),
-    setting="SHIMPZ_TEAM_GLOBAL_MEM_BUDGET",
-)
-OWNER_MEMORY_BUDGET_BYTES = manifests.hard_memory_bytes(
-    os.environ.get("SHIMPZ_TEAM_OWNER_MEM_BUDGET", "8g"),
-    setting="SHIMPZ_TEAM_OWNER_MEM_BUDGET",
-)
-_LARGEST_RESOURCE_LIMIT = max(manifests.MEM_LIMIT_BYTES, manifests.APP_MEM_LIMIT_BYTES)
-if GLOBAL_MEMORY_BUDGET_BYTES < _LARGEST_RESOURCE_LIMIT:
-    raise ValueError("SHIMPZ_TEAM_GLOBAL_MEM_BUDGET is smaller than one Team resource")
-if not _LARGEST_RESOURCE_LIMIT <= OWNER_MEMORY_BUDGET_BYTES <= GLOBAL_MEMORY_BUDGET_BYTES:
-    raise ValueError("SHIMPZ_TEAM_OWNER_MEM_BUDGET must fit one resource and the global memory budget")
-MAX_JSON_BODY_BYTES = max(1024, int(os.environ.get("SHIMPZ_TEAM_MAX_JSON_BODY_BYTES", str(128 * 1024))))
-MAX_DRIVER_JSON_BODY_BYTES = 64 * 1024
-MAX_ASSISTANT_SECRET_BODY_BYTES = 512 * 1024
-CREATE_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_CREATE_RATE_LIMIT", 5)
-CREATE_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_TEAM_CREATE_RATE_WINDOW_SECONDS", 3600)
-INSTALL_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_INSTALL_RATE_LIMIT", 20)
-INSTALL_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_TEAM_INSTALL_RATE_WINDOW_SECONDS", 3600)
-CHAT_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_CHAT_RATE_LIMIT", 30)
-CHAT_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_TEAM_CHAT_RATE_WINDOW_SECONDS", 60)
-FILE_UPLOAD_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_FILE_UPLOAD_RATE_LIMIT", 60)
-FILE_UPLOAD_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_TEAM_FILE_UPLOAD_RATE_WINDOW_SECONDS", 3600)
-MAX_HTTP_CONCURRENCY = _positive_int_env("SHIMPZ_TEAM_MAX_HTTP_CONCURRENCY", 64)
-HTTP_CONNECTION_TIMEOUT_SECONDS = _positive_int_env("SHIMPZ_TEAM_HTTP_CONNECTION_TIMEOUT_SECONDS", 30)
-# Same volume app-egress-proxy reads (<token>.json allowlists) — shared with shimpz-driver by design:
-# ONE proxy serves every token-gated app, team-scoped or not, each confined to its own hosts.
-APP_EGRESS_POLICY_DIR = Path(os.environ.get("SHIMPZ_APP_EGRESS_POLICY_DIR", "/app-egress-policy"))
-APP_EGRESS_POLICY_GID = 10017
-TEAM_STORAGE_ROOT = Path("/var/lib/team-driver/storage")
-POWER_JOURNAL_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_POWER_JOURNAL_PATH",
-        "/var/lib/team-driver/power-journal/journal.sqlite3",
-    )
-)
-ASSISTANT_SECRET_STATE_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_SECRET_STATE_PATH",
-        "/var/lib/team-driver/assistant-secrets/state/secrets.json",
-    )
-)
-ASSISTANT_SECRET_KEY_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_SECRET_KEY_PATH",
-        "/var/lib/team-driver/assistant-secrets/key/aes256.key",
-    )
-)
-ASSISTANT_ACCOUNT_STATE_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_ACCOUNT_STATE_PATH",
-        "/var/lib/team-driver/assistant-accounts/state/accounts.json",
-    )
-)
-ASSISTANT_ACCOUNT_KEY_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_ACCOUNT_KEY_PATH",
-        "/var/lib/team-driver/assistant-accounts/key/aes256.key",
-    )
-)
-ASSISTANT_APPROVAL_GRANTS_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_APPROVAL_GRANTS_PATH",
-        "/var/lib/team-driver/assistant-approvals/grants.sqlite3",
-    )
-)
-HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
-HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
-
-_docker = docker.from_env()
-_token = token_store.ensure_token()
-
-# Per-team lock: create/destroy of the SAME team must serialize; different teams run parallel.
-# Weak maps retain one lock exactly while a holder or waiter has a strong reference. After destroy (or
-# any other terminal operation), the final holder releases its reference and the TEAM_ID disappears without
-# ever allowing an old locked object and a new unlocked object to coexist.
-_locks_guard = threading.Lock()
-_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
-_chat_locks_guard = threading.Lock()
-_chat_locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
-_active_chat_guard = threading.Lock()
-_active_chat_tokens: dict[str, str] = {}
-_active_chat_container_ids: dict[str, str] = {}
-_active_power_container_ids: dict[str, tuple[str, str]] = {}
-_blocked_power_workloads: set[tuple[str, str]] = set()
-_cancelled_chat_tokens: set[str] = set()
-# The capacity lock protects reservation snapshots and mutations. Docker inventory and slow
-# provisioning run after this lock is released; a generation counter detects snapshot churn.
-_capacity_lock = threading.Lock()
-_capacity_generation = 0
-_storage_lock = threading.Lock()
-_storage_instance: team_storage.TeamStorage | None = None
-_power_journal_lock = threading.Lock()
-_power_journal_instance: power_journal.PowerJournal | None = None
-_brain_runtime = brain_runtime_client.BrainRuntimeClient()
-_assistant_genesis_cache = assistant_genesis.GenesisCache()
-_assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
-_assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
-_assistant_secrets = assistant_secret_store.AssistantSecretStore(
-    ASSISTANT_SECRET_STATE_PATH,
-    ASSISTANT_SECRET_KEY_PATH,
-)
-_assistant_secret_challenges = assistant_secret_challenges.SecretChallengeStore()
-_assistant_accounts = oauth_account_store.OAuthAccountStore(
-    ASSISTANT_ACCOUNT_STATE_PATH,
-    ASSISTANT_ACCOUNT_KEY_PATH,
-)
-_assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
-# Hosted interaction challenges are process-local by contract: a restart invalidates them and the
-# client retries the turn; encrypted restart durability belongs only to the local Controller profile.
-_assistant_approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-_assistant_approval_grants = assistant_approval_grants.ApprovalGrantStore(ASSISTANT_APPROVAL_GRANTS_PATH)
-_assistant_input_challenges = assistant_input_challenges.InputChallengeStore()
-_oauth_pkce_challenges = oauth_pkce_challenges.OAuthPKCEChallengeStore()
-_oauth_http = oauth_http_client.OAuthHTTPClient()
-_cloudflare_oauth_client_id = os.environ.get("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_ID")
-_cloudflare_oauth_client_secret = os.environ.get("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_SECRET")
-_oauth_accounts = oauth_account_service.OAuthAccountService(
-    client_id=_cloudflare_oauth_client_id,
-    client_secret=_cloudflare_oauth_client_secret,
-    redirect_uri=oauth_http_client.HOSTED_REDIRECT_URI,
-    challenge=_oauth_pkce_challenges,
-    store=_assistant_accounts,
-    http=_oauth_http,
-)
 
 
 def _validated_team_name(value: object) -> str:
@@ -220,9 +235,6 @@ def _team_name_from_anchor(container) -> str:
         return _validated_team_name((container.labels or {}).get("team.name"))
     except ValueError as exc:
         raise ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract") from exc
-
-
-_inference_store = inference_config.InferenceConfigStore()
 
 
 def _storage() -> team_storage.TeamStorage:
@@ -251,17 +263,6 @@ def _lock_for(team_id: str) -> threading.Lock:
         return lock
 
 
-class ApiError(Exception):
-    def __init__(self, status: HTTPStatus, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
-class _UnsupportedAssistantRpcPathError(RuntimeError):
-    """The fixed Assistant RPC adapter rejected a path it does not implement."""
-
-
 def _brain_thread_id(team_id: str, anchor_id: str) -> str:
     """Bind hosted conversation state to one immutable Team lifecycle."""
     if (
@@ -273,49 +274,6 @@ def _brain_thread_id(team_id: str, anchor_id: str) -> str:
     ):
         raise ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract")
     return f"hosted:{team_id}:{anchor_id}:default"
-
-
-class _FixedWindowRateLimiter:
-    """Thread-safe fixed-window admission with deterministic time injection for contract tests."""
-
-    def __init__(self, limit: int, window_seconds: int) -> None:
-        if limit < 1 or window_seconds < 1:
-            raise ValueError("rate limit and window must be positive")
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self._guard = threading.Lock()
-        self._counts: dict[str, tuple[int, int]] = {}
-        self._last_bucket: int | None = None
-
-    def consume(self, key: str, *, now: float | None = None) -> int:
-        """Consume one event; return zero when allowed or whole retry-after seconds when denied."""
-        current = time.monotonic() if now is None else now
-        bucket = math.floor(current / self.window_seconds)
-        with self._guard:
-            if bucket != self._last_bucket:
-                self._counts = {stored_key: value for stored_key, value in self._counts.items() if value[0] == bucket}
-                self._last_bucket = bucket
-            stored_bucket, count = self._counts.get(key, (bucket, 0))
-            if stored_bucket != bucket:
-                count = 0
-            if count >= self.limit:
-                boundary = (bucket + 1) * self.window_seconds
-                return max(1, math.ceil(boundary - current))
-            self._counts[key] = (bucket, count + 1)
-        return 0
-
-
-_rate_limiters = {
-    "create": _FixedWindowRateLimiter(CREATE_RATE_LIMIT, CREATE_RATE_WINDOW_SECONDS),
-    "install": _FixedWindowRateLimiter(INSTALL_RATE_LIMIT, INSTALL_RATE_WINDOW_SECONDS),
-    "chat": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
-    "stream": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
-    "secret": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
-    "stop": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
-    "file_upload": _FixedWindowRateLimiter(FILE_UPLOAD_RATE_LIMIT, FILE_UPLOAD_RATE_WINDOW_SECONDS),
-}
-
-_file_upload_slots = threading.BoundedSemaphore(2)
 
 
 def _rate_key(principal: tuple[str, str | None]) -> str:
