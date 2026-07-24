@@ -239,10 +239,10 @@ def validate_fqdn(fqdn: str) -> str:
     return fqdn
 
 
-def validate_optional_port(port: object, field: str) -> int | None:
+def validate_optional_port(port: object) -> int | None:
     if port is None:
         return None
-    return validate_port(port) if field != "target" else port
+    return validate_port(port)
 
 
 def validate_egress(egress: object) -> list[str]:
@@ -337,8 +337,8 @@ class RouteRequest:
 
 def validate_route_request(body: dict) -> RouteRequest:
     fqdn = validate_fqdn(body.get("fqdn", ""))
-    api_port = validate_optional_port(body.get("api_port"), "api_port")
-    ws_port = validate_optional_port(body.get("ws_port"), "ws_port")
+    api_port = validate_optional_port(body.get("api_port"))
+    ws_port = validate_optional_port(body.get("ws_port"))
     api_target = _validate_target(body.get("api_target"), "api_target") if api_port is not None else None
     ws_target = _validate_target(body.get("ws_target"), "ws_target") if ws_port is not None else None
     return RouteRequest(
