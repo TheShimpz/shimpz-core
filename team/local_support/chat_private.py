@@ -3,8 +3,6 @@
 from http import HTTPStatus
 from typing import NoReturn
 
-from docker.errors import DockerException
-
 import assistant_account_challenges
 import assistant_account_flow
 import assistant_secret_challenges
@@ -18,7 +16,9 @@ import power_journal
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_flow as assistant_approval_flow
 from assistant_human import approval_grants as assistant_approval_grants
+from docker.errors import DockerException
 from local_registry import AssistantSpec
+
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import required_active_assistant as _required_active_assistant
 from local_support.errors import ApiProblemError as ApiProblem
