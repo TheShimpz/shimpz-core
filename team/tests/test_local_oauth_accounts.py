@@ -113,9 +113,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
-            controller.list_assistants = lambda _team: {
-                "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
-            }
+            controller._assistant_ids = lambda _team: ("shimpz-cloudflare",)
 
             payload = controller.list_assistant_accounts("team_1")
 

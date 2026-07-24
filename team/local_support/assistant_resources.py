@@ -49,6 +49,47 @@ class LocalAssistantResourcesMixin:
             return None
         return container
 
+    def _assistant_ids(self, team_id: str, *, running_only: bool = False) -> tuple[str, ...]:
+        """Enumerate owned, allowlisted Assistant identities without deep container admission."""
+        self._network(team_id)
+        try:
+            containers = self.client.containers.list(**self._assistant_filters(team_id))
+        except DockerException as exc:
+            raise ApiProblem(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Docker is unavailable",
+                code="docker-unavailable",
+            ) from exc
+        seen: set[str] = set()
+        assistant_ids: list[str] = []
+        for container in containers:
+            labels = container.labels
+            assistant_id = labels.get(ASSISTANT_LABEL) if isinstance(labels, dict) else None
+            spec = self.registry.get(assistant_id) if isinstance(assistant_id, str) else None
+            if spec is None:
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "an installed Assistant is no longer allowlisted",
+                    code="assistant-registry-drift",
+                )
+            expected_labels = self._base_labels(team_id, "assistant")
+            expected_labels[ASSISTANT_LABEL] = assistant_id
+            if (
+                container.name != self._container_name(team_id, assistant_id)
+                or not self._labels_include(labels, expected_labels)
+                or not isinstance(container.status, str)
+                or assistant_id in seen
+            ):
+                raise ApiProblem(
+                    HTTPStatus.CONFLICT,
+                    "the installed Assistant failed its isolation profile",
+                    code="assistant-isolation-drift",
+                )
+            seen.add(assistant_id)
+            if not running_only or container.status == "running":
+                assistant_ids.append(assistant_id)
+        return tuple(sorted(assistant_ids))
+
     def _resolve(self, assistant_id: str) -> AssistantSpec:
         spec = self.registry.get(assistant_id)
         if spec is None:

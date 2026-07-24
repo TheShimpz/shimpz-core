@@ -140,8 +140,7 @@ class LocalChatPrivateMixin:
     def list_assistant_secrets(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            installed = self.list_assistants(team_id)["assistants"]
-            specs = [self._resolve(item["assistant"]) for item in installed]
+            specs = [self._resolve(assistant_id) for assistant_id in self._assistant_ids(team_id)]
             try:
                 return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
             except assistant_secret_store.AssistantSecretError as exc:
@@ -158,8 +157,7 @@ class LocalChatPrivateMixin:
     def list_assistant_accounts(self, team_id: str) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         with self._lock(team_id):
-            installed = self.list_assistants(team_id)["assistants"]
-            specs = [self._resolve(item["assistant"]) for item in installed]
+            specs = [self._resolve(assistant_id) for assistant_id in self._assistant_ids(team_id)]
             try:
                 payload = assistant_account_flow.inventory_payload(
                     team_id,
@@ -209,10 +207,9 @@ class LocalChatPrivateMixin:
         account_id: str,
     ) -> object:
         with self._lock(team_id):
-            installed = {item["assistant"]: item["status"] for item in self.list_assistants(team_id)["assistants"]}
             spec = self._resolve(assistant_id)
             declaration = spec.accounts.get(account_id)
-            if installed.get(assistant_id) != "running" or declaration is None:
+            if assistant_id not in self._assistant_ids(team_id, running_only=True) or declaration is None:
                 raise oauth_account_service.OAuthAccountDeclarationError("OAuth account declaration is unavailable")
             return declaration
 

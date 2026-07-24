@@ -399,9 +399,8 @@ class LocalAssistantSecretTests(LocalContractCase):
         raw_secret = TEST_SECRET_VALUES["service-token"]
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object(), configure_secrets=False)
-            controller.list_assistants = lambda _team_id: {
-                "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
-            }
+            controller._assistant_ids = mock.Mock(return_value=("shimpz-cloudflare",))
+            controller.list_assistants = mock.Mock(side_effect=AssertionError("deep listing must not run"))
             controller.assistant_secrets.put_many(
                 "team_1",
                 "shimpz-cloudflare",
@@ -411,6 +410,8 @@ class LocalAssistantSecretTests(LocalContractCase):
             own_inventory = controller.list_assistant_secrets("team_1")
             other_inventory = controller.list_assistant_secrets("team_2")
 
+        self.assertEqual(controller._assistant_ids.call_count, 2)
+        controller.list_assistants.assert_not_called()
         encoded = repr(own_inventory)
         self.assertNotIn(raw_secret, encoded)
         self.assertNotIn("generation", encoded)
@@ -433,6 +434,7 @@ class LocalAssistantSecretTests(LocalContractCase):
     def test_secret_replacement_is_declared_atomic_and_returns_only_refreshed_masks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object(), configure_secrets=True)
+            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             controller.list_assistants = lambda _team_id: {
                 "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
             }
@@ -495,9 +497,7 @@ class LocalAssistantSecretTests(LocalContractCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=True)
-            controller.list_assistants = lambda _team_id: {
-                "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
-            }
+            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             before = controller.assistant_secrets.resolve_many(
                 "team_1",
                 "shimpz-cloudflare",
@@ -557,6 +557,7 @@ class LocalAssistantSecretTests(LocalContractCase):
         replacements = {secret_id: f"rotated-{index}-credential" for index, secret_id in enumerate(TEST_SECRET_VALUES)}
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
+            controller._assistant_ids = lambda _team_id: ("shimpz-cloudflare",)
             controller.list_assistants = lambda _team_id: {
                 "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
             }
