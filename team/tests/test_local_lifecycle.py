@@ -54,7 +54,7 @@ class LocalLifecycleTests(LocalContractCase):
 
     def test_assistant_lifecycle_is_rejected_before_mutation_during_an_active_chat(self) -> None:
         controller, _container, events = self._lifecycle_controller()
-        chat_lock = controller._chat_lock("team_1")
+        chat_lock = controller.chat_turn_service._chat_lock("team_1")
         self.assertTrue(chat_lock.acquire(blocking=False))
         try:
             operations = (

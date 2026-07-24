@@ -132,7 +132,7 @@ def stop_chat(self, team_id: str) -> dict[str, object]:
             self._cancelled_chat_tokens.add(token)
         active = self._active_power_containers.get(team_id)
         if token is not None and active is not None and active[0] == token:
-            self._fail_stop_power(active[1])
+            self.assistant_lifecycle._fail_stop_power(active[1])
             power_stopped = True
     accepted = (
         token is not None

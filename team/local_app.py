@@ -186,6 +186,62 @@ class ChatTurnService:
 
     def __init__(self, state: dict[str, object]) -> None:
         self.__dict__ = state
+        self._active_chat_guard = threading.Lock()
+        self._chat_locks: dict[str, threading.Lock] = {}
+        self._active_chat_tokens: dict[str, str] = {}
+        self._active_power_containers: dict[str, tuple[str, object]] = {}
+        self._cancelled_chat_tokens: set[str] = set()
+
+    def _chat_lock(self, team_id: str) -> threading.Lock:
+        with self._active_chat_guard:
+            return self._chat_locks.setdefault(team_id, threading.Lock())
+
+    def _chat_cancelled(self, token: str) -> bool:
+        with self._active_chat_guard:
+            return token in self._cancelled_chat_tokens
+
+    def _commit_chat_terminal(self, team_id: str, token: str) -> bool:
+        """Commit a reply only when Stop did not win this service-owned turn."""
+        with self._active_chat_guard:
+            if token in self._cancelled_chat_tokens or self._active_chat_tokens.get(team_id) != token:
+                return False
+            self._active_chat_tokens.pop(team_id, None)
+            return True
+
+    def _cancel_chat_for_destroy(self, team_id: str) -> None:
+        """Prevent another Power and synchronously stop one already executing."""
+        with self._active_chat_guard:
+            token = self._active_chat_tokens.get(team_id)
+            if token is not None:
+                self._cancelled_chat_tokens.add(token)
+            active = self._active_power_containers.get(team_id)
+            active_power = active[1] if token is not None and active is not None and active[0] == token else None
+        if active_power is not None:
+            self.assistant_lifecycle._fail_stop_power(active_power)
+
+    @contextmanager
+    def _exclusive_chat_turn(self, team_id: str):
+        lock = self._chat_lock(team_id)
+        if not lock.acquire(blocking=False):
+            raise ApiProblem(
+                HTTPStatus.CONFLICT,
+                "Team already has an active chat turn",
+                code="chat-active",
+            )
+        token = secrets.token_hex(16)
+        with self._active_chat_guard:
+            self._active_chat_tokens[team_id] = token
+        try:
+            yield token
+        finally:
+            with self._active_chat_guard:
+                if self._active_chat_tokens.get(team_id) == token:
+                    self._active_chat_tokens.pop(team_id, None)
+                active = self._active_power_containers.get(team_id)
+                if active is not None and active[0] == token:
+                    self._active_power_containers.pop(team_id, None)
+                self._cancelled_chat_tokens.discard(token)
+            lock.release()
 
     _pending_chat_continuation = local_chat_api._pending_chat_continuation
     _segment_response = local_chat_api._segment_response
@@ -356,11 +412,6 @@ class LocalController:
             )
         )
         self._locks = tuple(threading.RLock() for _ in range(64))
-        self._active_chat_guard = threading.Lock()
-        self._chat_locks: dict[str, threading.Lock] = {}
-        self._active_chat_tokens: dict[str, str] = {}
-        self._active_power_containers: dict[str, tuple[str, object]] = {}
-        self._cancelled_chat_tokens: set[str] = set()
         self._assistant_genesis_cache = assistant_genesis.GenesisCache()
         self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
         self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
@@ -376,11 +427,6 @@ class LocalController:
         state["_raise_storage_problem"] = self._raise_storage_problem
         state["invoke"] = self.invoke
         state["list_assistants"] = self.list_assistants
-        state["_chat_lock"] = self._chat_lock
-        state["_chat_cancelled"] = self._chat_cancelled
-        state["_commit_chat_terminal"] = self._commit_chat_terminal
-        state["_cancel_chat_for_destroy"] = self._cancel_chat_for_destroy
-        state["_exclusive_chat_turn"] = self._exclusive_chat_turn
         self.assistant_lifecycle = AssistantLifecycle(state)
         self.chat_turn_service = ChatTurnService(state)
 
@@ -397,57 +443,6 @@ class LocalController:
     def _lock(self, team_id: str) -> threading.RLock:
         slot = hashlib.sha256(team_id.encode("ascii")).digest()[0] % len(self._locks)
         return self._locks[slot]
-
-    def _chat_lock(self, team_id: str) -> threading.Lock:
-        with self._active_chat_guard:
-            return self._chat_locks.setdefault(team_id, threading.Lock())
-
-    def _chat_cancelled(self, token: str) -> bool:
-        with self._active_chat_guard:
-            return token in self._cancelled_chat_tokens
-
-    def _commit_chat_terminal(self, team_id: str, token: str) -> bool:
-        """Commit a reply only when Stop did not win this Controller-owned turn."""
-        with self._active_chat_guard:
-            if token in self._cancelled_chat_tokens or self._active_chat_tokens.get(team_id) != token:
-                return False
-            self._active_chat_tokens.pop(team_id, None)
-            return True
-
-    def _cancel_chat_for_destroy(self, team_id: str) -> None:
-        """Prevent another Power and synchronously stop one already executing."""
-        with self._active_chat_guard:
-            token = self._active_chat_tokens.get(team_id)
-            if token is not None:
-                self._cancelled_chat_tokens.add(token)
-            active = self._active_power_containers.get(team_id)
-            active_power = active[1] if token is not None and active is not None and active[0] == token else None
-        if active_power is not None:
-            self._fail_stop_power(active_power)
-
-    @contextmanager
-    def _exclusive_chat_turn(self, team_id: str):
-        lock = self._chat_lock(team_id)
-        if not lock.acquire(blocking=False):
-            raise ApiProblem(
-                HTTPStatus.CONFLICT,
-                "Team already has an active chat turn",
-                code="chat-active",
-            )
-        token = secrets.token_hex(16)
-        with self._active_chat_guard:
-            self._active_chat_tokens[team_id] = token
-        try:
-            yield token
-        finally:
-            with self._active_chat_guard:
-                if self._active_chat_tokens.get(team_id) == token:
-                    self._active_chat_tokens.pop(team_id, None)
-                active = self._active_power_containers.get(team_id)
-                if active is not None and active[0] == token:
-                    self._active_power_containers.pop(team_id, None)
-                self._cancelled_chat_tokens.discard(token)
-            lock.release()
 
     def list_teams(self) -> dict[str, list[dict[str, str]]]:
         filters = {

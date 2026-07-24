@@ -786,7 +786,8 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             f"/v1/teams/demo_team/files/{flow.file_id}",
         )
         self.assertTrue(deleted_file["deleted"])
-        _, destroyed = self._api(flow.port, flow.token, "DELETE", "/v1/teams/demo_team")
+        destroy_status, destroyed = self._api(flow.port, flow.token, "DELETE", "/v1/teams/demo_team")
+        self.assertEqual(destroy_status, 200, destroyed)
         self.assertTrue(destroyed["destroyed"])
         self.assertTrue(destroyed["storage_removed"])
         self.assertNotEqual(

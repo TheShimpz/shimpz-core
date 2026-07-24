@@ -31,7 +31,7 @@ def _serialize_against_local_team_chat(
 
     def guarded(controller, team_id: str, *args, **kwargs) -> dict[str, object]:
         team_id = validate_team_id(team_id)
-        lock = controller._chat_lock(team_id)
+        lock = controller.chat_turn_service._chat_lock(team_id)
         if not lock.acquire(blocking=False):
             raise ApiProblem(
                 HTTPStatus.CONFLICT,

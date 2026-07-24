@@ -133,9 +133,9 @@ def destroy_team(self, team_id: str) -> dict[str, object]:
     self.approval_challenges.cancel_team(team_id)
     self.input_challenges.cancel_team(team_id)
     self.chat_turn_service._delete_chat_continuation(team_id)
-    self._cancel_chat_for_destroy(team_id)
+    self.chat_turn_service._cancel_chat_for_destroy(team_id)
 
-    chat_lock = self._chat_lock(team_id)
+    chat_lock = self.chat_turn_service._chat_lock(team_id)
     if not chat_lock.acquire(timeout=30):
         raise ApiProblem(
             HTTPStatus.CONFLICT,
@@ -145,7 +145,7 @@ def destroy_team(self, team_id: str) -> dict[str, object]:
     try:
         with self._lock(team_id):
             self.chat_turn_service._revoke_team_approval_grants(team_id)
-            network = self._network(team_id, required=False)
+            network = self.assistant_lifecycle._network(team_id, required=False)
             containers = self._team_assistant_containers(team_id)
             self._validate_destroy_containers(containers, team_id, network)
             self._delete_team_conversation(team_id, network)
