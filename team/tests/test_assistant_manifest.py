@@ -271,9 +271,13 @@ class AssistantManifestTests(unittest.TestCase):
             "Draft202012Validator",
             wraps=assistant_manifest.Draft202012Validator,
         ) as validator_class:
-            reviewed = assistant_manifest.load_reviewed_catalog()["shimpz-cloudflare"]
+            catalog = assistant_manifest.load_reviewed_catalog()
+            reviewed = catalog["shimpz-cloudflare"]
 
-        self.assertEqual(validator_class.call_count, len(reviewed.powers) * 2)
+        self.assertEqual(
+            validator_class.call_count,
+            sum(len(assistant.powers) for assistant in catalog.values()) * 2,
+        )
         validator = reviewed.power_validators["list-zones"]["input"]
         with (
             mock.patch.object(assistant_manifest, "_machine_schema") as canonicalize,
