@@ -10,8 +10,6 @@ A compromised caller can only ever request what validate.py permits.
 
 from __future__ import annotations
 
-import contextlib
-import secrets
 import sys
 from http import HTTPStatus
 
@@ -271,35 +269,6 @@ def _enforce_rate(operation: str, principal: tuple[str, str | None]) -> None:
         )
 
 
-@contextlib.contextmanager
-def _exclusive_chat_turn(team_id: str, lease: _AuthorizationLease):
-    """Hold one Controller-owned agent turn without creating a process in the Team."""
-    lock = _chat_lock_for(team_id)
-    if not lock.acquire(blocking=False):
-        raise ApiError(HTTPStatus.CONFLICT, f"team {team_id!r} already has an active chat turn")
-    try:
-        container = _require_current_authorization(team_id, lease)
-        container.reload()
-        if container.status != "running":
-            raise ApiError(HTTPStatus.CONFLICT, f"team {team_id!r} is not running (status={container.status})")
-    except BaseException:
-        lock.release()
-        raise
-    token = secrets.token_hex(16)
-    with _active_chat_guard:
-        _active_chat_tokens[team_id] = token
-        _active_chat_container_ids[team_id] = container.id
-    try:
-        yield token, container
-    finally:
-        with _active_chat_guard:
-            _active_chat_tokens.pop(team_id, None)
-            _active_chat_container_ids.pop(team_id, None)
-            _active_power_container_ids.pop(team_id, None)
-            _cancelled_chat_tokens.discard(token)
-        lock.release()
-
-
 # ── docker helpers ───────────────────────────────────────────────────────────
 from http_boundary import controller_binding
 
@@ -469,6 +438,9 @@ from assistant_human.hosted_chat_api import (
 )
 from assistant_human.hosted_chat_api import (
     _disconnect_oauth_account as _disconnect_oauth_account,
+)
+from assistant_human.hosted_chat_api import (
+    _exclusive_chat_turn as _exclusive_chat_turn,
 )
 from assistant_human.hosted_chat_api import (
     _pending_hosted_chat as _pending_hosted_chat,

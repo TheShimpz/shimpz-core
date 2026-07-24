@@ -21,6 +21,7 @@ app = harness.app
 _patched = harness._patched
 hosted_assistants = harness.hosted_assistants
 hosted_apps = harness.hosted_apps
+hosted_chat_api = harness.hosted_chat_api
 hosted_chat_segment = harness.hosted_chat_segment
 runtime_state = harness.runtime_state
 
@@ -193,7 +194,7 @@ class HostedHumanInteractionTests(unittest.TestCase):
                 app._submit_chat_input("team_2", submission, self._lease(team_id="team_2"))
             with self.assertRaises(app.ApiError) as cross_owner:
                 app._submit_chat_input(TEAM_ID, submission, self._lease(owner="account_2"))
-            with _patched(_exclusive_chat_turn=self._exclusive):
+            with mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", self._exclusive):
                 response = app._submit_chat_input(TEAM_ID, submission, self._lease())
 
         self.assertEqual(challenge["status"], "input-required")
@@ -261,7 +262,7 @@ class HostedHumanInteractionTests(unittest.TestCase):
             submission = {"challenge_id": challenge["challenge_id"], "approved": True}
             with self.assertRaises(app.ApiError) as cross_owner:
                 app._submit_chat_approval(TEAM_ID, submission, self._lease(owner="account_2"))
-            with _patched(_exclusive_chat_turn=self._exclusive):
+            with mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", self._exclusive):
                 first = app._submit_chat_approval(TEAM_ID, submission, self._lease())
             second = app._chat_in_turn(
                 TEAM_ID,

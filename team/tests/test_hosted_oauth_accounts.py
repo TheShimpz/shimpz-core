@@ -17,6 +17,8 @@ import hosted_app_fixture as harness
 
 app = harness.app
 _patched = harness._patched
+hosted_chat_api = harness.hosted_chat_api
+hosted_resources = harness.hosted_resources
 runtime_state = harness.runtime_state
 
 TEAM_ID = "team_1"
@@ -343,7 +345,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
                 self.assertEqual(rpc_calls, [])
 
                 self._connect()
-                with _patched(_exclusive_chat_turn=exclusive):
+                with mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive):
                     secret_prompt = app._resume_chat_accounts(
                         TEAM_ID,
                         account_prompt["challenge_id"],
@@ -411,11 +413,17 @@ class HostedOAuthAccountTests(unittest.TestCase):
             "account_1",
             ("account", "account_1"),
         )
-        with _patched(
-            _assistant_account_challenges=challenge_store,
-            _oauth_accounts=fake_service,
-            _require_current_authorization=lambda *_args, **_kwargs: object(),
-            _authorize=lambda *_args, **_kwargs: lease,
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _assistant_account_challenges=challenge_store,
+                _oauth_accounts=fake_service,
+            ),
+            mock.patch.multiple(
+                hosted_resources,
+                _require_current_authorization=lambda *_args, **_kwargs: object(),
+                _authorize=lambda *_args, **_kwargs: lease,
+            ),
         ):
             started = app._start_oauth_account(
                 TEAM_ID,

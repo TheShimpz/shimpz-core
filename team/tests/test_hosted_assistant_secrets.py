@@ -22,6 +22,7 @@ app = harness.app
 _patched = harness._patched
 hosted_apps = harness.hosted_apps
 hosted_assistants = harness.hosted_assistants
+hosted_chat_api = harness.hosted_chat_api
 hosted_chat_segment = harness.hosted_chat_segment
 hosted_resources = harness.hosted_resources
 runtime_state = harness.runtime_state
@@ -252,7 +253,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
             def exclusive(_team_id, _lease):
                 yield "resumed-turn", self.anchor
 
-            with _patched(_exclusive_chat_turn=exclusive):
+            with mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive):
                 result = app._submit_chat_secrets(
                     TEAM_ID,
                     self._submission(challenge),
@@ -384,7 +385,10 @@ class HostedAssistantSecretTests(unittest.TestCase):
             self.secret_store.put_for_assistants = mock.Mock(
                 side_effect=app.assistant_secret_store.AssistantSecretError("storage unavailable")
             )
-            with _patched(_exclusive_chat_turn=exclusive), self.assertRaises(app.ApiError) as caught:
+            with (
+                mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive),
+                self.assertRaises(app.ApiError) as caught,
+            ):
                 app._submit_chat_secrets(
                     TEAM_ID,
                     self._submission(challenge),
@@ -715,10 +719,18 @@ class HostedAssistantSecretTests(unittest.TestCase):
         def exclusive(_team_id, _lease):
             yield "turn-token", self.anchor
 
-        with _patched(
-            _assistant_secret_challenges=types.SimpleNamespace(current=current),
-            _exclusive_chat_turn=exclusive,
-            _chat_in_turn=lambda *_args: self.fail("a pending continuation started another turn"),
+        with (
+            mock.patch.object(
+                runtime_state,
+                "_assistant_secret_challenges",
+                types.SimpleNamespace(current=current),
+            ),
+            mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive),
+            mock.patch.object(
+                hosted_chat_segment,
+                "_chat_in_turn",
+                side_effect=lambda *_args: self.fail("a pending continuation started another turn"),
+            ),
         ):
             result = app._chat(TEAM_ID, "hello", [], (ASSISTANT_ID,), types.SimpleNamespace(owner="account_1"))
 
@@ -750,6 +762,11 @@ class HostedAssistantSecretTests(unittest.TestCase):
             _patched(
                 _assistant_secret_challenges=types.SimpleNamespace(current=current),
                 _exclusive_chat_turn=exclusive,
+            ),
+            mock.patch.object(
+                runtime_state,
+                "_assistant_secret_challenges",
+                types.SimpleNamespace(current=current),
             ),
             mock.patch.object(app, "_enforce_rate"),
         ):
