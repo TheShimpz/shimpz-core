@@ -71,6 +71,12 @@ def _server(server_type, handler_type):
 
 
 class AccountsClientTests(unittest.TestCase):
+    def setUp(self) -> None:
+        accounts_client._reset_state()
+
+    def tearDown(self) -> None:
+        accounts_client._reset_state()
+
     def test_http_verdicts_and_malformed_shapes_never_escape(self) -> None:
         with (
             _server(ThreadingHTTPServer, _AccountsHandler) as port,
@@ -95,6 +101,10 @@ class AccountsClientTests(unittest.TestCase):
         with mock.patch.object(accounts_client, "ACCOUNTS_URL", f"http://127.0.0.1:{port}"):
             self.assertIsNone(accounts_client.verify("token"))
 
+    def test_malformed_accounts_url_fails_closed(self) -> None:
+        with mock.patch.object(accounts_client, "ACCOUNTS_URL", "http://accounts:not-a-port"):
+            self.assertIsNone(accounts_client.verify("token"))
+
     def test_timeout_fails_closed(self) -> None:
         with (
             _server(socketserver.TCPServer, _TimeoutHandler) as port,
@@ -107,6 +117,66 @@ class AccountsClientTests(unittest.TestCase):
         with mock.patch.object(accounts_client.http.client, "HTTPConnection") as connection:
             self.assertIsNone(accounts_client.verify(""))
         connection.assert_not_called()
+
+    def test_successes_are_cached_but_failures_are_not(self) -> None:
+        response = mock.Mock(status=HTTPStatus.OK)
+        response.read.return_value = b'{"account_id":"account_1"}'
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with (
+            mock.patch.object(accounts_client, "ACCOUNTS_URL", "http://cache.test:7079"),
+            mock.patch.object(accounts_client.http.client, "HTTPConnection", return_value=connection),
+        ):
+            self.assertEqual(accounts_client.verify("cache-token"), "account_1")
+            self.assertEqual(accounts_client.verify("cache-token"), "account_1")
+
+        connection.request.assert_called_once()
+
+        denied = mock.Mock(status=HTTPStatus.FORBIDDEN)
+        denied.read.return_value = b"{}"
+        connection.getresponse.return_value = denied
+        with (
+            mock.patch.object(accounts_client, "ACCOUNTS_URL", "http://cache.test:7079"),
+            mock.patch.object(accounts_client.http.client, "HTTPConnection", return_value=connection),
+        ):
+            self.assertIsNone(accounts_client.verify("denied-token"))
+            self.assertIsNone(accounts_client.verify("denied-token"))
+
+        self.assertEqual(connection.request.call_count, 3)
+
+    def test_distinct_verifications_reuse_one_pooled_connection(self) -> None:
+        responses = []
+        for account_id in ("account_1", "account_2"):
+            response = mock.Mock(status=HTTPStatus.OK)
+            response.read.return_value = json.dumps({"account_id": account_id}).encode()
+            responses.append(response)
+        connection = mock.Mock()
+        connection.getresponse.side_effect = responses
+        with (
+            mock.patch.object(accounts_client, "ACCOUNTS_URL", "http://pool.test:7079"),
+            mock.patch.object(
+                accounts_client.http.client,
+                "HTTPConnection",
+                return_value=connection,
+            ) as connection_class,
+        ):
+            self.assertEqual(accounts_client.verify("first-token"), "account_1")
+            self.assertEqual(accounts_client.verify("second-token"), "account_2")
+
+        connection_class.assert_called_once_with("pool.test", 7079, timeout=accounts_client.VERIFY_TIMEOUT_SECONDS)
+        self.assertEqual(connection.request.call_count, 2)
+
+    def test_verification_cache_is_ttl_bounded_lru(self) -> None:
+        first, second, third = (value.encode() for value in ("first", "second", "third"))
+        with mock.patch.object(accounts_client, "VERIFY_CACHE_MAX_ENTRIES", 2):
+            accounts_client._cache_verification(first, "account_1", 0)
+            accounts_client._cache_verification(second, "account_2", 1)
+            self.assertEqual(accounts_client._cached_verification(first, 2), "account_1")
+            accounts_client._cache_verification(third, "account_3", 3)
+
+        self.assertIsNone(accounts_client._cached_verification(second, 4))
+        self.assertEqual(accounts_client._cached_verification(third, 4), "account_3")
+        self.assertIsNone(accounts_client._cached_verification(first, accounts_client.VERIFY_CACHE_TTL_SECONDS))
 
 
 if __name__ == "__main__":
