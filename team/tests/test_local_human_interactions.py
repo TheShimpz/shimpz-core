@@ -287,7 +287,7 @@ class LocalHumanInteractionTests(LocalContractCase):
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
                 before_restart = self._chat_controller(directory, runtime)
-                before_restart._rpc = rpc
+                before_restart.assistant_lifecycle._rpc = rpc
                 first = before_restart.chat_turn_service.chat(
                     "team_1",
                     {"message": "Ask across restart", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
@@ -322,7 +322,7 @@ class LocalHumanInteractionTests(LocalContractCase):
                 self.assertNotIn("Restart count", exposed_strings)
 
                 after_restart = self._chat_controller(directory, runtime)
-                after_restart._rpc = rpc
+                after_restart.assistant_lifecycle._rpc = rpc
                 restored = after_restart.chat_turn_service._pending_chat_continuation("team_1")
                 self.assertIsNotNone(restored)
                 self.assertEqual(restored["challenge_id"], second["challenge_id"])

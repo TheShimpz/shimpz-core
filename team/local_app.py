@@ -119,11 +119,64 @@ LOCAL_CHAT_CONTINUATIONS_KEY_PATH = Path(
 )
 
 
+@dataclass(frozen=True)
+class AssistantLifecycleDependencies:
+    """Explicit external dependencies for Assistant lifecycle operations."""
+
+    client: object | None = None
+    space_id: str | None = None
+    registry: object | None = None
+    cpuset_cpus: str | None = None
+    secret_challenges: object | None = None
+    approval_challenges: object | None = None
+    input_challenges: object | None = None
+    lock_for: object | None = None
+    invoke: object | None = None
+    list_assistants: object | None = None
+
+
+@dataclass(frozen=True)
+class ChatTurnDependencies:
+    """Explicit external dependencies for local chat-turn operations."""
+
+    space_id: str | None = None
+    registry: object | None = None
+    storage: object | None = None
+    inference_store: object | None = None
+    brain_runtime: object | None = None
+    power_state: object | None = None
+    assistant_secrets: object | None = None
+    secret_challenges: object | None = None
+    assistant_accounts: object | None = None
+    account_challenges: object | None = None
+    oauth_pkce: object | None = None
+    oauth_service: object | None = None
+    approval_challenges: object | None = None
+    approval_grants: object | None = None
+    input_challenges: object | None = None
+    chat_continuations: object | None = None
+    lock_for: object | None = None
+    raise_storage_problem: object | None = None
+
+
 class AssistantLifecycle:
     """Own Assistant admission, resources, RPC, and egress lifecycle."""
 
-    def __init__(self, state: dict[str, object]) -> None:
-        self.__dict__ = state
+    def __init__(self, dependencies: AssistantLifecycleDependencies) -> None:
+        self.client = dependencies.client
+        self.space_id = dependencies.space_id
+        self.registry = dependencies.registry
+        self.cpuset_cpus = dependencies.cpuset_cpus
+        self.secret_challenges = dependencies.secret_challenges
+        self.approval_challenges = dependencies.approval_challenges
+        self.input_challenges = dependencies.input_challenges
+        self._lock = dependencies.lock_for
+        self.invoke = dependencies.invoke
+        self.list_assistants = dependencies.list_assistants
+        self._assistant_genesis_cache = assistant_genesis.GenesisCache()
+        self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
+        self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
+        self._blocked_power_workloads: set[str] = set()
 
     _rollback_assistant_install = local_assistant_lifecycle._rollback_assistant_install
     _create_assistant_container = local_assistant_lifecycle._create_assistant_container
@@ -184,8 +237,25 @@ class AssistantLifecycle:
 class ChatTurnService:
     """Own local chat turns, continuations, challenges, and private state."""
 
-    def __init__(self, state: dict[str, object]) -> None:
-        self.__dict__ = state
+    def __init__(self, dependencies: ChatTurnDependencies) -> None:
+        self.space_id = dependencies.space_id
+        self.registry = dependencies.registry
+        self.storage = dependencies.storage
+        self.inference_store = dependencies.inference_store
+        self.brain_runtime = dependencies.brain_runtime
+        self.power_state = dependencies.power_state
+        self.assistant_secrets = dependencies.assistant_secrets
+        self.secret_challenges = dependencies.secret_challenges
+        self.assistant_accounts = dependencies.assistant_accounts
+        self.account_challenges = dependencies.account_challenges
+        self.oauth_pkce = dependencies.oauth_pkce
+        self.oauth_service = dependencies.oauth_service
+        self.approval_challenges = dependencies.approval_challenges
+        self.approval_grants = dependencies.approval_grants
+        self.input_challenges = dependencies.input_challenges
+        self.chat_continuations = dependencies.chat_continuations
+        self._lock = dependencies.lock_for
+        self._raise_storage_problem = dependencies.raise_storage_problem
         self._active_chat_guard = threading.Lock()
         self._chat_locks: dict[str, threading.Lock] = {}
         self._active_chat_tokens: dict[str, str] = {}
@@ -297,8 +367,13 @@ class ChatTurnService:
 
     _chat_file_metadata = local_chat_state._chat_file_metadata
     _chat_setup = local_chat_state._chat_setup
-    _active_assistant_genesis = local_chat_state._active_assistant_genesis
-    _admit_assistant_allowed_hosts = local_chat_state._admit_assistant_allowed_hosts
+
+    def _active_assistant_genesis(self, active):
+        return self.assistant_lifecycle._active_assistant_genesis(active)
+
+    def _admit_assistant_allowed_hosts(self, container, spec):
+        return self.assistant_lifecycle._admit_assistant_allowed_hosts(container, spec)
+
     _active_chat_assistants = local_chat_state._active_chat_assistants
     _raise_secret_problem = staticmethod(local_chat_state._raise_secret_problem)
     _delete_assistant_secret_state = local_chat_state._delete_assistant_secret_state
@@ -412,23 +487,52 @@ class LocalController:
             )
         )
         self._locks = tuple(threading.RLock() for _ in range(64))
-        self._assistant_genesis_cache = assistant_genesis.GenesisCache()
-        self._assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
-        self._assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
-        self._blocked_power_workloads: set[str] = set()
-        self._wire_collaborators()
         daemon_info = self._require_default_seccomp()
         self.cpuset_cpus = half_cpu_set(daemon_info.get("NCPU"))
+        self._wire_collaborators()
         self.chat_turn_service._restore_all_chat_continuations()
 
     def _wire_collaborators(self) -> None:
-        state = self.__dict__
-        state["_lock"] = self._lock
-        state["_raise_storage_problem"] = self._raise_storage_problem
-        state["invoke"] = self.invoke
-        state["list_assistants"] = self.list_assistants
-        self.assistant_lifecycle = AssistantLifecycle(state)
-        self.chat_turn_service = ChatTurnService(state)
+        assistant_lifecycle = AssistantLifecycle(
+            AssistantLifecycleDependencies(
+                client=getattr(self, "client", None),
+                space_id=getattr(self, "space_id", None),
+                registry=getattr(self, "registry", None),
+                cpuset_cpus=getattr(self, "cpuset_cpus", None),
+                secret_challenges=getattr(self, "secret_challenges", None),
+                approval_challenges=getattr(self, "approval_challenges", None),
+                input_challenges=getattr(self, "input_challenges", None),
+                lock_for=self._lock,
+                invoke=self.invoke,
+                list_assistants=self.list_assistants,
+            )
+        )
+        chat_turn_service = ChatTurnService(
+            ChatTurnDependencies(
+                space_id=getattr(self, "space_id", None),
+                registry=getattr(self, "registry", None),
+                storage=getattr(self, "storage", None),
+                inference_store=getattr(self, "inference_store", None),
+                brain_runtime=getattr(self, "brain_runtime", None),
+                power_state=getattr(self, "power_state", None),
+                assistant_secrets=getattr(self, "assistant_secrets", None),
+                secret_challenges=getattr(self, "secret_challenges", None),
+                assistant_accounts=getattr(self, "assistant_accounts", None),
+                account_challenges=getattr(self, "account_challenges", None),
+                oauth_pkce=getattr(self, "oauth_pkce", None),
+                oauth_service=getattr(self, "oauth_service", None),
+                approval_challenges=getattr(self, "approval_challenges", None),
+                approval_grants=getattr(self, "approval_grants", None),
+                input_challenges=getattr(self, "input_challenges", None),
+                chat_continuations=getattr(self, "chat_continuations", None),
+                lock_for=self._lock,
+                raise_storage_problem=self._raise_storage_problem,
+            )
+        )
+        assistant_lifecycle.chat_turn_service = chat_turn_service
+        chat_turn_service.assistant_lifecycle = assistant_lifecycle
+        self.assistant_lifecycle = assistant_lifecycle
+        self.chat_turn_service = chat_turn_service
 
     def _require_default_seccomp(self) -> dict:
         try:
@@ -760,7 +864,7 @@ class LocalController:
             network = self.assistant_lifecycle._network(team_id)
             container = self.assistant_lifecycle._assistant_container(team_id, assistant_id)
             self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
-            if container.id in self._blocked_power_workloads:
+            if container.id in self.assistant_lifecycle._blocked_power_workloads:
                 raise ApiProblem(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "Assistant Power execution is blocked until this Assistant is reinstalled",
@@ -769,8 +873,8 @@ class LocalController:
             container.reload()
             if container.status != "running":
                 raise ApiProblem(HTTPStatus.CONFLICT, "Assistant is not running", code="assistant-not-running")
-            with self._active_chat_guard:
-                active = self._active_power_containers.get(team_id)
+            with self.chat_turn_service._active_chat_guard:
+                active = self.chat_turn_service._active_power_containers.get(team_id)
                 frozen_container = active[1] if active is not None else None
             if frozen_container is not None and frozen_container.id != container.id:
                 raise ApiProblem(

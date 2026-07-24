@@ -39,18 +39,13 @@ class LocalLifecycleTeardownTests(LocalContractCase):
     def test_manifest_mismatch_removes_stopped_container_without_activating_egress(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
-        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
-        controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com",),
         )
-        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
         container = SimpleNamespace(
             id="assistant-generation",
@@ -60,6 +55,8 @@ class LocalLifecycleTeardownTests(LocalContractCase):
             remove=lambda *, force: events.append(("remove", force)),
         )
         controller.client = SimpleNamespace(containers=SimpleNamespace(create=lambda **_kwargs: container))
+        controller._wire_collaborators()
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: "a" * 32
         controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
             local_app.ApiProblem(
@@ -82,19 +79,13 @@ class LocalLifecycleTeardownTests(LocalContractCase):
     def test_failed_install_removal_still_revokes_egress_and_reports_incomplete_rollback(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
-        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
-        controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
-        controller._blocked_power_workloads = set()
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com",),
         )
-        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
 
         class Container:
@@ -118,6 +109,8 @@ class LocalLifecycleTeardownTests(LocalContractCase):
 
         container = Container()
         controller.client = SimpleNamespace(containers=SimpleNamespace(create=lambda **_kwargs: container))
+        controller._wire_collaborators()
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: "a" * 32
         controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: (_ for _ in ()).throw(
             local_app.ApiProblem(

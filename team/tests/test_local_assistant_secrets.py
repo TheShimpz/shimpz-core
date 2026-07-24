@@ -182,6 +182,7 @@ class LocalAssistantSecretTests(LocalContractCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
             controller.invoke = lambda *_args: self.fail("a Power ran before every secret was available")
+            controller.assistant_lifecycle.invoke = controller.invoke
 
             response = controller.chat_turn_service.chat(
                 "team_1",
@@ -230,6 +231,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 {"service-token": "x" * assistant_secret_store.MAX_SECRET_BYTES},
             )
             controller.invoke = lambda *_args: self.fail("an oversized Power envelope executed")
+            controller.assistant_lifecycle.invoke = controller.invoke
 
             with self.assertRaises(local_app.ApiProblem) as caught:
                 controller.chat_turn_service.chat(
@@ -271,6 +273,7 @@ class LocalAssistantSecretTests(LocalContractCase):
                 invocations.append((team_id, power_id, payload))
                 or {"assistant": assistant_id, "power": power_id, "result": DNS_RESULT}
             )
+            controller.assistant_lifecycle.invoke = controller.invoke
             challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Who am I?", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
@@ -375,6 +378,7 @@ class LocalAssistantSecretTests(LocalContractCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime(), configure_secrets=False)
             controller.invoke = lambda *_args: self.fail("a drifted continuation executed a Power")
+            controller.assistant_lifecycle.invoke = controller.invoke
             challenge = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Find OpenAI", "files": [], "assistant_ids": ["shimpz-cloudflare"]},

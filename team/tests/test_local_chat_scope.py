@@ -54,7 +54,7 @@ class LocalChatScopeTests(LocalContractCase):
             frozen_container_id = controller.assistant_lifecycle._assistant_container(
                 first_team, "shimpz-cloudflare"
             ).id
-            controller._active_chat_tokens[first_team] = token
+            controller.chat_turn_service._active_chat_tokens[first_team] = token
             colliding_team = next(
                 f"team_{index}"
                 for index in range(2, 10_000)
@@ -112,6 +112,7 @@ class LocalChatScopeTests(LocalContractCase):
                 reload=mock.Mock(),
             )
             controller.client = SimpleNamespace(networks=SimpleNamespace(get=lambda _name: network))
+            controller.assistant_lifecycle.client = controller.client
             controller.assistant_lifecycle._network = local_app.AssistantLifecycle._network.__get__(
                 controller.assistant_lifecycle
             )
@@ -148,6 +149,7 @@ class LocalChatScopeTests(LocalContractCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, Runtime())
             controller.storage = SimpleNamespace(metadata=metadata, metadata_connection=metadata_connection)
+            controller.chat_turn_service.storage = controller.storage
 
             response = controller.chat_turn_service.chat(
                 "team_1",
@@ -331,7 +333,7 @@ class LocalChatScopeTests(LocalContractCase):
             controller.assistant_lifecycle._rpc = lambda *_args: self.fail(
                 "a replacement Assistant container executed the Power"
             )
-            controller._active_chat_tokens["team_1"] = "turn-token"
+            controller.chat_turn_service._active_chat_tokens["team_1"] = "turn-token"
 
             with self.assertRaises(local_app.ApiProblem) as caught:
                 controller.chat_turn_service._invoke_chat_power(
@@ -349,7 +351,7 @@ class LocalChatScopeTests(LocalContractCase):
         self.assertEqual(lookups, [frozen.id, replacement.id])
         self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
         self.assertEqual(caught.exception.code, "team-context-changed")
-        self.assertEqual(controller._active_power_containers, {})
+        self.assertEqual(controller.chat_turn_service._active_power_containers, {})
 
     def test_chat_never_exposes_or_executes_an_unselected_assistant(self) -> None:
         class Runtime:
@@ -384,6 +386,7 @@ class LocalChatScopeTests(LocalContractCase):
                 ActiveAssistant(account_helper, "account-helper-container"),
             )
             controller.invoke = lambda *_args: self.fail("an unselected Assistant Power executed")
+            controller.assistant_lifecycle.invoke = controller.invoke
 
             with self.assertRaises(local_app.ApiProblem) as caught:
                 controller.chat_turn_service.chat(

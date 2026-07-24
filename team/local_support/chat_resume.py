@@ -118,7 +118,7 @@ def submit_chat_approval(
 
 def stop_chat(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self._network(team_id)
+    self.assistant_lifecycle._network(team_id)
     account_cancelled = self.account_challenges.cancel_team(team_id)
     self.oauth_pkce.cancel_team(team_id)
     challenge_cancelled = self.secret_challenges.cancel_team(team_id)

@@ -100,19 +100,20 @@ class _InteractionBatch:
 
 def _local_controller(local_active, config, events: list[str], fail):
     controller = object.__new__(local_app.LocalController)
-    controller._wire_collaborators()
     controller.space_id = "local-space"
     controller.brain_runtime = SimpleNamespace()
     controller.power_state = SimpleNamespace()
     controller._lock = lambda _team_id: contextlib.nullcontext()
-    controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(id="a" * 64, name="team-network")
-    controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Team"
-    controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network_name: (local_active,)
     controller.storage = SimpleNamespace(
         metadata=lambda _team_id, _files, _connection=None: [],
         metadata_connection=lambda _team_id, _files: contextlib.nullcontext(None),
     )
     controller.inference_store = SimpleNamespace(load=lambda _team_id: config)
+    controller.approval_grants = SimpleNamespace()
+    controller._wire_collaborators()
+    controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(id="a" * 64, name="team-network")
+    controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Team"
+    controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network_name: (local_active,)
     controller.assistant_lifecycle._active_assistant_genesis = lambda _active: "Use the declared Power."
 
     def local_private_inputs(_team_id, _bindings, _requests, requirements) -> bool:
@@ -123,10 +124,9 @@ def _local_controller(local_active, config, events: list[str], fail):
     controller.chat_turn_service._require_power_rpc_envelope = lambda *_args: events.append("preflight")
     controller.chat_turn_service._power_secret_generations = lambda *_args: events.append("secrets") or ()
     controller.chat_turn_service._power_account_generations = lambda *_args: events.append("accounts") or ()
-    controller._chat_cancelled = lambda _token: False
+    controller.chat_turn_service._chat_cancelled = lambda _token: False
     controller.chat_turn_service._validate_chat_context = lambda *_args: None
     controller.chat_turn_service._raise_chat_problem = lambda reason, _exc: fail(reason)
-    controller.approval_grants = SimpleNamespace()
     return controller
 
 

@@ -107,7 +107,6 @@ class LocalContractCase(unittest.TestCase):
     ) -> local_app.LocalController:
         image = "127.0.0.1:5000/shimpz/shimpz-cloudflare@sha256:" + "a" * 64
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.registry = self._registry(
             image,
@@ -175,16 +174,8 @@ class LocalContractCase(unittest.TestCase):
                         expires_in=3600,
                     ),
                 )
-        controller._blocked_power_workloads = set()
         controller._locks = tuple(threading.RLock() for _ in range(64))
-        controller._active_chat_guard = threading.Lock()
-        controller._chat_locks = {}
-        controller._active_chat_tokens = {}
-        controller._active_power_containers = {}
-        controller._cancelled_chat_tokens = set()
-        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
-        controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
+        controller._wire_collaborators()
         controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, spec: tuple(
             sorted(spec.allowed_hosts)
         )
@@ -194,6 +185,9 @@ class LocalContractCase(unittest.TestCase):
         controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Marketing"
         controller.assistant_lifecycle._assistant_container = lambda _team_id, _assistant: container
         controller.assistant_lifecycle._validate_container = lambda *_args: None
+        controller.assistant_lifecycle.list_assistants = lambda _team_id: {
+            "assistants": [{"assistant": "shimpz-cloudflare", "status": "running"}]
+        }
         controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
             ActiveAssistant(controller.registry["shimpz-cloudflare"], container.id, container),
         )
@@ -221,16 +215,9 @@ class LocalContractCase(unittest.TestCase):
     def _lifecycle_controller(self) -> tuple[local_app.LocalController, SimpleNamespace, list[object]]:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
         controller._locks = tuple(threading.RLock() for _ in range(64))
-        controller._active_chat_guard = threading.Lock()
-        controller._chat_locks = {}
-        controller._blocked_power_workloads = set()
-        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
-        controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
         secret_directory = tempfile.TemporaryDirectory()
         self.addCleanup(secret_directory.cleanup)
         controller.assistant_secrets = assistant_secret_store.AssistantSecretStore(
@@ -251,10 +238,6 @@ class LocalContractCase(unittest.TestCase):
             Path(secret_directory.name) / "assistant-approvals" / "grants.sqlite3"
         )
         self.addCleanup(controller.approval_grants.close)
-        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, spec: tuple(
-            sorted(spec.allowed_hosts)
-        )
-        controller.assistant_lifecycle._read_admitted_egress_policy = lambda *_args: None
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
@@ -263,6 +246,11 @@ class LocalContractCase(unittest.TestCase):
             accounts={},
         )
         controller.registry = {spec.assistant_id: spec}
+        controller._wire_collaborators()
+        controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, spec: tuple(
+            sorted(spec.allowed_hosts)
+        )
+        controller.assistant_lifecycle._read_admitted_egress_policy = lambda *_args: None
         network_name = controller.assistant_lifecycle._network_name("team_1")
         network = SimpleNamespace(name=network_name)
         controller.assistant_lifecycle._network = lambda _team_id: network
@@ -313,4 +301,5 @@ class LocalContractCase(unittest.TestCase):
         container.remove = lambda *, force: events.append(("remove", force))
         controller.assistant_lifecycle._assistant_container = lambda *_args, **_kwargs: container
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_kwargs: [container]))
+        controller.assistant_lifecycle.client = controller.client
         return controller, container, events

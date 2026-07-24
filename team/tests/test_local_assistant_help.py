@@ -14,10 +14,10 @@ class LocalAssistantHelpTests(unittest.TestCase):
     @staticmethod
     def _controller(markdown: str) -> tuple[local_app.LocalController, list[tuple[str, str, object]]]:
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         spec = SimpleNamespace(assistant_id="example-assistant")
         controller.registry = {"example-assistant": spec}
         controller._locks = tuple(threading.RLock() for _ in range(64))
+        controller._wire_collaborators()
         controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(name="team-network")
         container = SimpleNamespace(status="running", reload=lambda: None)
         controller.assistant_lifecycle._assistant_container = lambda _team_id, _assistant_id: container

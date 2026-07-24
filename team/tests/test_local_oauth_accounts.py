@@ -64,6 +64,7 @@ class LocalOAuthArtifactCurrencyTests(LocalContractCase):
                 )
 
         controller.oauth_service = Service()
+        controller.chat_turn_service.oauth_service = controller.oauth_service
         callback = {
             "state": "s" * 43,
             "claim": "a" * 64,
@@ -138,7 +139,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
     def test_team_account_teardown_prevents_same_id_resurrection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
@@ -156,6 +156,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                     expires_in=3600,
                 ),
             )
+            controller._wire_collaborators()
 
             controller.chat_turn_service._delete_team_account_state("team_1")
             recreated = controller.assistant_accounts.metadata(
@@ -169,13 +170,13 @@ class LocalOAuthAccountTests(unittest.TestCase):
     def test_account_inventory_is_exact_and_never_contains_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller._locks = tuple(threading.RLock() for _ in range(64))
             controller.registry = self._registry()
             controller.assistant_accounts = oauth_account_store.OAuthAccountStore(
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
+            controller._wire_collaborators()
             controller.assistant_lifecycle._assistant_ids = lambda _team: ("shimpz-cloudflare",)
 
             payload = controller.chat_turn_service.list_assistant_accounts("team_1")
@@ -306,9 +307,9 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 )
 
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.account_challenges = challenges
         controller.oauth_service = Service()
+        controller._wire_collaborators()
         controller.chat_turn_service._current_account_declaration = lambda *_args: None
 
         started = controller.chat_turn_service.start_assistant_account_authorization(
@@ -407,7 +408,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller.space_id = "local-space"
             controller.brain_runtime = Runtime()
             controller.power_state = SimpleNamespace()
@@ -424,6 +424,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 )
             )
             controller.approval_grants = SimpleNamespace()
+            controller._wire_collaborators()
             active = ActiveAssistant(spec, "b" * 64)
             setup = (
                 "Team One",
@@ -434,7 +435,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
             )
             controller.chat_turn_service._chat_setup = lambda *_args: setup
             controller.assistant_lifecycle._active_assistant_genesis = lambda _active: "Use reviewed Powers only."
-            controller._chat_cancelled = lambda _token: False
+            controller.chat_turn_service._chat_cancelled = lambda _token: False
             controller.chat_turn_service._invoke_chat_power = lambda *_args: (_ for _ in ()).throw(
                 AssertionError("Power must not execute before OAuth consent")
             )
@@ -483,14 +484,8 @@ class LocalOAuthAccountTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller.registry = registry
             controller._locks = tuple(threading.RLock() for _ in range(64))
-            controller._active_chat_guard = threading.Lock()
-            controller._chat_locks = {}
-            controller._active_chat_tokens = {}
-            controller._active_power_containers = {}
-            controller._cancelled_chat_tokens = set()
             controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
             controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
             controller.oauth_pkce = SimpleNamespace(cancel_team=lambda _team: 0)
@@ -498,6 +493,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
+            controller._wire_collaborators()
             config = inference_config.InferenceConfig("openai", "gpt-5-nano")
             active = ActiveAssistant(spec, "b" * 64)
             setup = ("Team One", "c" * 64, (active,), [], config)

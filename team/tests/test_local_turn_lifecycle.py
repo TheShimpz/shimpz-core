@@ -45,7 +45,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
     def test_destroy_drains_chat_and_deletes_generation_before_teardown(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
@@ -56,11 +55,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.assistant_accounts = SimpleNamespace(
             delete_team=lambda team_id: events.append(("accounts-delete", team_id))
         )
-        controller._active_chat_guard = threading.Lock()
-        controller._active_chat_tokens = {"team_1": "turn-token"}
-        controller._cancelled_chat_tokens = set()
-        controller._active_power_containers = {"team_1": ("turn-token", object())}
-        controller._blocked_power_workloads = set()
 
         class ChatLock:
             def acquire(self, *, timeout: int) -> bool:
@@ -94,16 +88,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
             events.append("containers-read")
             return [container]
 
-        controller.assistant_lifecycle._fail_stop_power = lambda _container: events.append("power-stopped")
-        controller._chat_lock = lambda _team_id: ChatLock()
         controller._lock = lambda _team_id: LifecycleLock()
-        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: (
-            events.append("network-read") or network
-        )
-        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
-        controller.assistant_lifecycle._validate_container_security = lambda *_args: events.append(
-            "container-validated"
-        )
         controller.registry = {"shimpz-cloudflare": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=list_containers))
         controller.brain_runtime = SimpleNamespace(
@@ -112,6 +97,18 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.power_state = SimpleNamespace(purge=lambda generation: events.append(("power-purge", generation)))
         controller.storage = SimpleNamespace(destroy=lambda _team_id: events.append("storage-destroy") or True)
         controller.inference_store = SimpleNamespace(delete=lambda _team_id: events.append("inference-delete"))
+        controller._wire_collaborators()
+        controller.chat_turn_service._active_chat_tokens = {"team_1": "turn-token"}
+        controller.chat_turn_service._active_power_containers = {"team_1": ("turn-token", object())}
+        controller.chat_turn_service._chat_lock = lambda _team_id: ChatLock()
+        controller.assistant_lifecycle._fail_stop_power = lambda _container: events.append("power-stopped")
+        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: (
+            events.append("network-read") or network
+        )
+        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
+        controller.assistant_lifecycle._validate_container_security = lambda *_args: events.append(
+            "container-validated"
+        )
 
         result = controller.destroy_team("team_1")
 
@@ -149,14 +146,12 @@ class LocalTurnLifecycleTests(LocalContractCase):
     def test_reset_removes_orphan_egress_authority_for_owned_teams(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-secrets"))
         controller.approval_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-approvals"))
         controller.input_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-inputs"))
         controller.chat_continuations = SimpleNamespace(clear=lambda: 0)
         controller._locks = (threading.RLock(),)
-        controller._blocked_power_workloads = set()
         controller.registry = {"shimpz-cloudflare": SimpleNamespace()}
         network = SimpleNamespace(
             attrs={"Labels": {local_app.TEAM_LABEL: "team_1"}},
@@ -166,6 +161,11 @@ class LocalTurnLifecycleTests(LocalContractCase):
             containers=SimpleNamespace(list=lambda **_kwargs: []),
             networks=SimpleNamespace(list=lambda **_kwargs: [network]),
         )
+        controller.storage = SimpleNamespace(destroy_all=lambda: events.append("destroy-storage") or True)
+        controller.inference_store = SimpleNamespace(
+            delete=lambda team_id: events.append(("delete-inference", team_id))
+        )
+        controller._wire_collaborators()
         controller.assistant_lifecycle._validate_network = lambda _network, team_id, **_kwargs: events.append(
             ("validate-network", team_id)
         )
@@ -178,11 +178,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.assistant_lifecycle._disconnect_egress_proxy_if_attached = lambda _network: events.append(
             "disconnect-proxy"
         )
-        controller.storage = SimpleNamespace(destroy_all=lambda: events.append("destroy-storage") or True)
-        controller.inference_store = SimpleNamespace(
-            delete=lambda team_id: events.append(("delete-inference", team_id))
-        )
-
         result = controller.reset_space()
 
         self.assertEqual(result["assistants_removed"], 0)
@@ -193,7 +188,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
     def test_destroy_brain_failure_is_redacted_and_mutates_nothing(self) -> None:
         events: list[str] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
@@ -201,11 +195,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
-        controller._active_chat_guard = threading.Lock()
-        controller._active_chat_tokens = {}
-        controller._cancelled_chat_tokens = set()
-        controller._active_power_containers = {}
-        controller._blocked_power_workloads = set()
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,
@@ -217,11 +206,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
             labels={local_app.ASSISTANT_LABEL: "shimpz-cloudflare"},
             remove=lambda *, force: events.append("container-remove"),
         )
-        controller._chat_lock = lambda _team_id: lock
         controller._lock = lambda _team_id: threading.RLock()
-        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: network
-        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
-        controller.assistant_lifecycle._validate_container_security = lambda *_args: None
         controller.registry = {"shimpz-cloudflare": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_filters: [container]))
 
@@ -234,6 +219,11 @@ class LocalTurnLifecycleTests(LocalContractCase):
         )
         controller.storage = SimpleNamespace(destroy=lambda _team_id: events.append("storage-destroy"))
         controller.inference_store = SimpleNamespace(delete=lambda _team_id: events.append("inference-delete"))
+        controller._wire_collaborators()
+        controller.chat_turn_service._chat_lock = lambda _team_id: lock
+        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: network
+        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
+        controller.assistant_lifecycle._validate_container_security = lambda *_args: None
 
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.destroy_team("team_1")
@@ -247,7 +237,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
     def test_destroy_journal_failure_is_redacted_before_teardown(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
@@ -255,11 +244,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
-        controller._active_chat_guard = threading.Lock()
-        controller._active_chat_tokens = {}
-        controller._cancelled_chat_tokens = set()
-        controller._active_power_containers = {}
-        controller._blocked_power_workloads = set()
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,
@@ -271,11 +255,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
             labels={local_app.ASSISTANT_LABEL: "shimpz-cloudflare"},
             remove=lambda *, force: events.append(("container-remove", force)),
         )
-        controller._chat_lock = lambda _team_id: lock
         controller._lock = lambda _team_id: threading.RLock()
-        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: network
-        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
-        controller.assistant_lifecycle._validate_container_security = lambda *_args: None
         controller.registry = {"shimpz-cloudflare": SimpleNamespace(allowed_hosts=())}
         controller.client = SimpleNamespace(containers=SimpleNamespace(list=lambda **_filters: [container]))
         controller.brain_runtime = SimpleNamespace(
@@ -289,6 +269,11 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.power_state = SimpleNamespace(purge=fail_purge)
         controller.storage = SimpleNamespace(destroy=lambda _team_id: events.append("storage-destroy"))
         controller.inference_store = SimpleNamespace(delete=lambda _team_id: events.append("inference-delete"))
+        controller._wire_collaborators()
+        controller.chat_turn_service._chat_lock = lambda _team_id: lock
+        controller.assistant_lifecycle._network = lambda _team_id, *, required=False: network
+        controller.assistant_lifecycle._assistant_filters = lambda _team_id: {}
+        controller.assistant_lifecycle._validate_container_security = lambda *_args: None
 
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.destroy_team("team_1")
@@ -352,6 +337,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
                 invoked.append((team_id, assistant, payload))
                 or {"assistant": assistant, "power": power, "result": LOOKUP_RESULT}
             )
+            controller.assistant_lifecycle.invoke = controller.invoke
             response = controller.chat_turn_service.chat(
                 "team_1",
                 {"message": "Greet me", "files": [], "assistant_ids": ["shimpz-cloudflare"]},
@@ -390,6 +376,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
             controller.invoke = lambda _team_id, assistant, power, payload: (
                 invocations.append(payload) or {"assistant": assistant, "power": power, "result": LOOKUP_RESULT}
             )
+            controller.assistant_lifecycle.invoke = controller.invoke
             with self.assertRaises(local_app.ApiProblem) as first:
                 controller.chat_turn_service.chat(
                     "team_1",
@@ -441,6 +428,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
                 )
 
             controller.invoke = fail_rpc
+            controller.assistant_lifecycle.invoke = controller.invoke
             with self.assertRaises(local_app.ApiProblem) as first:
                 controller.chat_turn_service.chat(
                     "team_1",

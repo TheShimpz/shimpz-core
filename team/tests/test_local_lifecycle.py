@@ -263,19 +263,13 @@ class LocalLifecycleTests(LocalContractCase):
     def test_new_assistant_is_admitted_before_egress_and_start(self) -> None:
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
-        controller._wire_collaborators()
         controller.space_id = "local-space"
         controller.cpuset_cpus = "0"
-        controller._assistant_genesis_cache = local_app.assistant_genesis.GenesisCache()
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
-        controller._assistant_machine_contract_cache = local_app.assistant_manifest.MachineContractCache()
-        controller._blocked_power_workloads = set()
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
             allowed_hosts=("api.open-meteo.com", "geocoding-api.open-meteo.com"),
         )
-        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         image = SimpleNamespace(id="sha256:" + "d" * 64)
         container = SimpleNamespace(
             id="assistant-generation",
@@ -289,6 +283,8 @@ class LocalLifecycleTests(LocalContractCase):
                 create=lambda **_kwargs: events.append("create") or container,
             )
         )
+        controller._wire_collaborators()
+        network = SimpleNamespace(name=controller.assistant_lifecycle._network_name("team_1"))
         controller.assistant_lifecycle._egress_token = lambda *_args, **_kwargs: events.append("token") or "a" * 32
         controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda _container, _spec: (
             events.append("admit") or tuple(sorted(_spec.allowed_hosts))
@@ -313,8 +309,8 @@ class LocalLifecycleTests(LocalContractCase):
             reviewed_contracts.append(reviewed)
             return reviewed
 
-        controller._assistant_allowed_hosts_cache = SimpleNamespace(get=admit)
-        controller._assistant_machine_contract_cache = SimpleNamespace(
+        controller.assistant_lifecycle._assistant_allowed_hosts_cache = SimpleNamespace(get=admit)
+        controller.assistant_lifecycle._assistant_machine_contract_cache = SimpleNamespace(
             get=lambda _container, _accounts, reviewed: reviewed
         )
         spec = self._registry(CURRENT_ASSISTANT_IMAGE)["shimpz-cloudflare"]
@@ -338,7 +334,9 @@ class LocalLifecycleTests(LocalContractCase):
             replace(exact, accounts=(replace(account, provider="other"),)),
             replace(exact, accounts=(replace(account, scopes=("tweet.read",)),)),
         )
-        controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
+        controller.assistant_lifecycle._assistant_allowed_hosts_cache = (
+            local_app.assistant_manifest.ManifestContractCache()
+        )
         with mock.patch.object(
             local_app.assistant_manifest,
             "read_container_manifest_contract",
@@ -351,7 +349,9 @@ class LocalLifecycleTests(LocalContractCase):
                 exact.allowed_hosts,
             )
         for index, declared in enumerate(drifted):
-            controller._assistant_allowed_hosts_cache = local_app.assistant_manifest.ManifestContractCache()
+            controller.assistant_lifecycle._assistant_allowed_hosts_cache = (
+                local_app.assistant_manifest.ManifestContractCache()
+            )
             with (
                 self.subTest(declared=declared),
                 mock.patch.object(

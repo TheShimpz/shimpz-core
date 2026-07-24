@@ -85,7 +85,6 @@ class LocalAssistantEgressTests(unittest.TestCase):
         self.proxy = _Proxy("local-space")
         self.network = _Network(self.proxy)
         self.controller = object.__new__(local_app.LocalController)
-        self.controller._wire_collaborators()
         self.controller.space_id = "local-space"
         self.controller.client = types.SimpleNamespace(containers=_Containers(self.proxy))
         self.spec = types.SimpleNamespace(
@@ -93,6 +92,7 @@ class LocalAssistantEgressTests(unittest.TestCase):
             allowed_hosts=("api.open-meteo.com", "geocoding-api.open-meteo.com"),
         )
         self.controller.registry = {self.spec.assistant_id: self.spec}
+        self.controller._wire_collaborators()
         self.patches = (
             mock.patch.object(local_egress, "APP_EGRESS_POLICY_DIR", self.policy_root),
             mock.patch.object(local_egress, "APP_EGRESS_POLICY_GID", os.getgid()),

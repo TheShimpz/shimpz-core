@@ -297,8 +297,19 @@ class LocalContractTests(LocalContractCase):
         self.assertEqual(local_app.AssistantLifecycle.__bases__, (object,))
         self.assertEqual(local_app.ChatTurnService.__bases__, (object,))
         self.assertFalse(hasattr(local_app.LocalController, "__getattr__"))
-        self.assertIs(controller.assistant_lifecycle.__dict__, controller.__dict__)
-        self.assertIs(controller.chat_turn_service.__dict__, controller.__dict__)
+        self.assertIsNot(controller.assistant_lifecycle.__dict__, controller.__dict__)
+        self.assertIsNot(controller.chat_turn_service.__dict__, controller.__dict__)
+        self.assertIsNot(controller.assistant_lifecycle.__dict__, controller.chat_turn_service.__dict__)
+        self.assertIs(controller.assistant_lifecycle.chat_turn_service, controller.chat_turn_service)
+        self.assertIs(controller.chat_turn_service.assistant_lifecycle, controller.assistant_lifecycle)
+        explicit_registry = object()
+        explicit_storage = object()
+        standalone_lifecycle = local_app.AssistantLifecycle(
+            local_app.AssistantLifecycleDependencies(registry=explicit_registry)
+        )
+        standalone_chat = local_app.ChatTurnService(local_app.ChatTurnDependencies(storage=explicit_storage))
+        self.assertIs(standalone_lifecycle.registry, explicit_registry)
+        self.assertIs(standalone_chat.storage, explicit_storage)
         for module in (
             local_app.local_assistant_lifecycle,
             local_app.local_assistant_resources,
@@ -323,7 +334,6 @@ class LocalContractTests(LocalContractCase):
     def test_ambiguous_power_rpc_is_fail_stopped_or_permanently_blocked(self) -> None:
         controller = object.__new__(local_app.LocalController)
         controller._wire_collaborators()
-        controller._blocked_power_workloads = set()
 
         class Stoppable:
             id = "stoppable"
@@ -345,7 +355,7 @@ class LocalContractTests(LocalContractCase):
         stopped = Stoppable()
         controller.assistant_lifecycle._fail_stop_power(stopped)
         self.assertEqual(stopped.status, "exited")
-        self.assertNotIn(stopped.id, controller._blocked_power_workloads)
+        self.assertNotIn(stopped.id, controller.assistant_lifecycle._blocked_power_workloads)
 
         class Paused:
             id = "paused"
@@ -368,12 +378,11 @@ class LocalContractTests(LocalContractCase):
         paused = Paused()
         controller.assistant_lifecycle._fail_stop_power(paused)
         self.assertTrue(paused.killed)
-        self.assertNotIn(paused.id, controller._blocked_power_workloads)
+        self.assertNotIn(paused.id, controller.assistant_lifecycle._blocked_power_workloads)
 
     def test_unprovable_power_stop_is_permanently_blocked(self) -> None:
         controller = object.__new__(local_app.LocalController)
         controller._wire_collaborators()
-        controller._blocked_power_workloads = set()
 
         class Ambiguous:
             id = "ambiguous"
@@ -391,7 +400,7 @@ class LocalContractTests(LocalContractCase):
         with self.assertRaises(local_app.ApiProblem) as caught:
             controller.assistant_lifecycle._fail_stop_power(ambiguous)
         self.assertEqual(caught.exception.code, "assistant-power-blocked")
-        self.assertIn(ambiguous.id, controller._blocked_power_workloads)
+        self.assertIn(ambiguous.id, controller.assistant_lifecycle._blocked_power_workloads)
 
         class Malformed:
             id = "malformed"
@@ -411,7 +420,7 @@ class LocalContractTests(LocalContractCase):
         malformed = Malformed()
         with self.assertRaises(local_app.ApiProblem):
             controller.assistant_lifecycle._fail_stop_power(malformed)
-        self.assertIn(malformed.id, controller._blocked_power_workloads)
+        self.assertIn(malformed.id, controller.assistant_lifecycle._blocked_power_workloads)
 
     def test_large_upload_admission_is_single_slot(self) -> None:
         self.assertTrue(local_http._FILE_UPLOAD_SLOTS.acquire(blocking=False))
@@ -423,9 +432,9 @@ class LocalContractTests(LocalContractCase):
     def test_inference_configuration_persists_only_provider_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller._locks = tuple(__import__("threading").RLock() for _ in range(64))
             controller.inference_store = inference_config.InferenceConfigStore(Path(directory) / "inference")
+            controller._wire_collaborators()
             controller.assistant_lifecycle._network = lambda _team_id: object()
 
             configured = controller.configure_inference(

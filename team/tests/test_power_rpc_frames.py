@@ -349,8 +349,8 @@ class PowerRpcFrameTests(unittest.TestCase):
                 exec_start=lambda *_args, **_kwargs: stream,
             )
             controller = object.__new__(local_app.LocalController)
-            controller._wire_collaborators()
             controller.client = SimpleNamespace(api=api)
+            controller._wire_collaborators()
             controller.assistant_lifecycle._fail_stop_power = mock.Mock()
             spec = SimpleNamespace(rpc_command="/app/rpc")
             with (
