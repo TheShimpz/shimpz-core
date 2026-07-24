@@ -17,7 +17,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,6 +84,12 @@ class OAuthAccountMetadata:
     account: OAuthAccountIdentity | None
     expires_at: int | None
     generation: int
+
+
+class _AccountFlight:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.users = 0
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -510,6 +516,23 @@ class OAuthAccountStore:
             raise OAuthAccountStoreError("OAuth account clock is invalid")
         self._clock = clock
         self._lock = threading.RLock()
+        self._account_flights: dict[tuple[str, str, str], _AccountFlight] = {}
+
+    @contextmanager
+    def _account_flight(self, team: str, assistant: str, account: str):
+        key = (team, assistant, account)
+        with self._lock:
+            flight = self._account_flights.setdefault(key, _AccountFlight())
+            flight.users += 1
+        flight.lock.acquire()
+        try:
+            yield
+        finally:
+            flight.lock.release()
+            with self._lock:
+                flight.users -= 1
+                if flight.users == 0 and self._account_flights.get(key) is flight:
+                    self._account_flights.pop(key)
 
     def _now(self) -> int:
         now = self._clock()
@@ -649,6 +672,27 @@ class OAuthAccountStore:
             raise OAuthAccountStoreError("OAuth account envelope authentication failed") from exc
         return self._decrypted(plaintext, provider, scopes, expires_at, status, generation)
 
+    def _declared_grant(
+        self,
+        team: str,
+        assistant: str,
+        account: str,
+        provider: str,
+        scopes: tuple[str, ...],
+    ) -> _TokenGrant:
+        state = self._read_state()
+        records = self._records(state, team, assistant, create=False)
+        if account not in records:
+            raise OAuthAccountMissingError("OAuth account is not configured")
+        record = _validate_record(records[account])
+        stored_provider, stored_scopes, _, _, _ = _record_metadata(record)
+        if stored_provider != provider or stored_scopes != scopes:
+            raise OAuthAccountReauthorizationError("OAuth account declaration changed; reauthorization is required")
+        grant = self._resolve_record(team, assistant, account, record)
+        if grant.status == "reauthorization-required":
+            raise OAuthAccountReauthorizationError("OAuth account requires reauthorization")
+        return grant
+
     def put(
         self,
         team_id: object,
@@ -722,32 +766,40 @@ class OAuthAccountStore:
         canonical_provider, expected_scopes = _intent(provider, scopes)
         if not callable(refresh_callback):
             raise OAuthAccountValidationError("OAuth refresh callback is invalid")
-        with self._lock:
-            state = self._read_state()
-            records = self._records(state, team, assistant, create=False)
-            if account not in records:
-                raise OAuthAccountMissingError("OAuth account is not configured")
-            grant = self._resolve_record(team, assistant, account, records[account])
-            stored_provider, stored_scopes, _, _, _ = _record_metadata(_validate_record(records[account]))
-            if stored_provider != canonical_provider or stored_scopes != expected_scopes:
-                raise OAuthAccountReauthorizationError("OAuth account declaration changed; reauthorization is required")
-            if grant.status == "reauthorization-required":
-                raise OAuthAccountReauthorizationError("OAuth account requires reauthorization")
+        with self._account_flight(team, assistant, account):
+            with self._lock:
+                grant = self._declared_grant(
+                    team,
+                    assistant,
+                    account,
+                    canonical_provider,
+                    expected_scopes,
+                )
             if grant.expires_at > self._now() + REFRESH_WINDOW_SECONDS:
                 return grant.access_token
             if grant.refresh_token is None:
                 raise OAuthAccountReauthorizationError("OAuth account requires reauthorization")
             refreshed = refresh_callback(grant.refresh_token, grant.broker_lease)
             canonical = _token_set(refreshed, expected_scopes, self._now(), grant.account)
-            self.put(
-                team,
-                assistant,
-                account,
-                canonical_provider,
-                expected_scopes,
-                refreshed,
-                grant.account,
-            )
+            with self._lock:
+                current = self._declared_grant(
+                    team,
+                    assistant,
+                    account,
+                    canonical_provider,
+                    expected_scopes,
+                )
+                if current.generation != grant.generation:
+                    raise OAuthAccountReauthorizationError("OAuth account changed during refresh")
+                self.put(
+                    team,
+                    assistant,
+                    account,
+                    canonical_provider,
+                    expected_scopes,
+                    refreshed,
+                    grant.account,
+                )
             return canonical.access_token
 
     def metadata(
@@ -878,27 +930,37 @@ class OAuthAccountStore:
         account = _component_id(account_id, "account id")
         if not callable(revoke_callback):
             raise OAuthAccountValidationError("OAuth revocation callback is invalid")
-        with self._lock:
-            state = self._read_state()
-            teams = state["teams"]
-            if not isinstance(teams, dict) or not isinstance(teams.get(team), dict):
-                return False
-            assistants = teams[team]
-            records = self._records(state, team, assistant, create=False)
-            raw_record = records.get(account)
-            if raw_record is None:
-                return False
-            record = _validate_record(raw_record)
-            provider, _, _, _, _ = _record_metadata(record)
-            grant = self._resolve_record(team, assistant, account, record)
+        with self._account_flight(team, assistant, account):
+            with self._lock:
+                state = self._read_state()
+                teams = state["teams"]
+                if not isinstance(teams, dict) or not isinstance(teams.get(team), dict):
+                    return False
+                records = self._records(state, team, assistant, create=False)
+                raw_record = records.get(account)
+                if raw_record is None:
+                    return False
+                record = _validate_record(raw_record)
+                provider, _, _, _, generation = _record_metadata(record)
+                grant = self._resolve_record(team, assistant, account, record)
             revoke_callback(provider, grant.access_token, grant.refresh_token, grant.broker_lease)
-            records.pop(account)
-            if not records:
-                assistants.pop(assistant, None)
-            if not assistants:
-                teams.pop(team, None)
-            self._write_state(state)
-            return True
+            with self._lock:
+                state = self._read_state()
+                teams = state["teams"]
+                if not isinstance(teams, dict) or not isinstance(teams.get(team), dict):
+                    raise OAuthAccountStoreError("OAuth account changed during revocation")
+                assistants = teams[team]
+                records = self._records(state, team, assistant, create=False)
+                current = records.get(account)
+                if current is None or _record_metadata(_validate_record(current))[4] != generation:
+                    raise OAuthAccountStoreError("OAuth account changed during revocation")
+                records.pop(account)
+                if not records:
+                    assistants.pop(assistant, None)
+                if not assistants:
+                    teams.pop(team, None)
+                self._write_state(state)
+                return True
 
     def delete_assistant(self, team_id: object, assistant_id: object) -> bool:
         team = _team_id(team_id)

@@ -171,6 +171,111 @@ class OAuthAccountStoreTests(unittest.TestCase):
             self.assertEqual(metadata.generation, 2)
             self.assertEqual(metadata.account, oauth_account_store.OAuthAccountIdentity(**ACCOUNT))
 
+    def test_hanging_refresh_does_not_block_another_account(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            now = [1_000]
+            store = self._store(Path(directory), clock=lambda: now[0])
+            store.put(
+                "team_1",
+                "shimpz-cloudflare",
+                "cloudflare",
+                "cloudflare",
+                SCOPES,
+                tokens(expires_in=30),
+                ACCOUNT,
+            )
+            other_access = "other-access-token-private-material-123456789"
+            store.put(
+                "team_1",
+                "shimpz-cloudflare",
+                "secondary",
+                "cloudflare",
+                SCOPES,
+                tokens(access=other_access),
+                ACCOUNT,
+            )
+            now[0] = 1_031
+            entered = threading.Event()
+            release = threading.Event()
+
+            def refresh(_token: str, _lease: str | None) -> OAuthTokenSet:
+                entered.set()
+                self.assertTrue(release.wait(2))
+                return tokens(access="refreshed-access-token-123456789")
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                refreshing = pool.submit(
+                    store.resolve,
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    "cloudflare",
+                    SCOPES,
+                    refresh,
+                )
+                self.assertTrue(entered.wait(1))
+                other = pool.submit(
+                    store.resolve,
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "secondary",
+                    "cloudflare",
+                    SCOPES,
+                    lambda *_args: self.fail("unexpired secondary account must not refresh"),
+                )
+                try:
+                    self.assertEqual(other.result(timeout=0.5), other_access)
+                finally:
+                    release.set()
+                self.assertEqual(refreshing.result(timeout=2), "refreshed-access-token-123456789")
+            self.assertEqual(store._account_flights, {})
+
+    def test_hanging_revocation_does_not_block_another_account(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(Path(directory))
+            store.put("team_1", "shimpz-cloudflare", "cloudflare", "cloudflare", SCOPES, tokens(), ACCOUNT)
+            other_access = "other-access-token-private-material-123456789"
+            store.put(
+                "team_1",
+                "shimpz-cloudflare",
+                "secondary",
+                "cloudflare",
+                SCOPES,
+                tokens(access=other_access),
+                ACCOUNT,
+            )
+            entered = threading.Event()
+            release = threading.Event()
+
+            def revoke(*_tokens) -> None:
+                entered.set()
+                self.assertTrue(release.wait(2))
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                revoking = pool.submit(
+                    store.revoke_then_delete,
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    revoke,
+                )
+                self.assertTrue(entered.wait(1))
+                other = pool.submit(
+                    store.resolve,
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "secondary",
+                    "cloudflare",
+                    SCOPES,
+                    lambda *_args: self.fail("unexpired secondary account must not refresh"),
+                )
+                try:
+                    self.assertEqual(other.result(timeout=0.5), other_access)
+                finally:
+                    release.set()
+                self.assertTrue(revoking.result(timeout=2))
+            self.assertEqual(store._account_flights, {})
+
     def test_missing_refresh_and_declaration_drift_require_reauthorization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             now = [1_000]
