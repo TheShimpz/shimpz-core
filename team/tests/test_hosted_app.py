@@ -35,6 +35,21 @@ class _RouteHarness:
 
 
 class HostedHttpBoundaryTests(unittest.TestCase):
+    def test_every_hosted_operation_has_one_dispatch_handler(self) -> None:
+        strict_http = app.hosted_http.strict_http
+        hosted_operations = {
+            route.operation
+            for route in strict_http.CONTROLLER_ROUTES
+            if strict_http.HOSTED_CONTROLLER in route.profiles
+        }
+        dispatch_groups = (
+            set(app.hosted_http._GLOBAL_ROUTES),
+            set(app.hosted_http._PREAUTHORIZED_ROUTES),
+            set(app.hosted_http._AUTHORIZED_ROUTES),
+        )
+        self.assertEqual(set().union(*dispatch_groups), hosted_operations)
+        self.assertEqual(sum(map(len, dispatch_groups)), len(hosted_operations))
+
     @staticmethod
     def _handler(body: bytes, *headers: tuple[str, str]) -> app.Handler:
         handler = object.__new__(app.Handler)

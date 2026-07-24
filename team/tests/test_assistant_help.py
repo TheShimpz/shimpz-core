@@ -161,12 +161,14 @@ class HostedAssistantHelpTests(unittest.TestCase):
             "_assistant_help",
             return_value={"assistant": "shimpz-cloudflare", "markdown": "# Help"},
         ) as assistant_help:
-            app.Handler._route_assistants(
+            app.Handler._route_assistant_help(
                 handler,
-                "GET",
-                ["v1", "teams", "team_1", "assistants", "shimpz-cloudflare", "help", "ja"],
-                "team_1",
-                lease,
+                types.SimpleNamespace(
+                    params={"assistant_id": "shimpz-cloudflare", "locale": "ja"},
+                    team_id="team_1",
+                    lease=lease,
+                    query={},
+                ),
             )
 
         assistant_help.assert_called_once_with("team_1", "shimpz-cloudflare", lease, "ja")
@@ -193,12 +195,14 @@ class HostedAssistantHelpTests(unittest.TestCase):
             "_assistant_help",
             return_value={"assistant": "shimpz-cloudflare", "markdown": "# Help"},
         ) as assistant_help:
-            app.Handler._route_assistants(
+            app.Handler._route_assistant_help(
                 handler,
-                "GET",
-                ["v1", "teams", "team_1", "assistants", "shimpz-cloudflare", "help"],
-                "team_1",
-                lease,
+                types.SimpleNamespace(
+                    params={"assistant_id": "shimpz-cloudflare"},
+                    team_id="team_1",
+                    lease=lease,
+                    query={},
+                ),
             )
         assistant_help.assert_called_once_with("team_1", "shimpz-cloudflare", lease, "en")
 

@@ -403,13 +403,14 @@ class HostedAssistantSecretTests(unittest.TestCase):
             _patched(_chat=lambda *_args: challenge),
             mock.patch.object(app, "_enforce_rate"),
         ):
-            app.Handler._route_chat(
+            app.Handler._route_chat_turn(
                 handler,
-                "POST",
-                ["v1", "teams", TEAM_ID, "chat"],
-                TEAM_ID,
-                ("account", "account_1"),
-                object(),
+                types.SimpleNamespace(
+                    team_id=TEAM_ID,
+                    principal=("account", "account_1"),
+                    lease=object(),
+                ),
+                stream=False,
             )
         self.assertEqual(handler.sent, [(HTTPStatus.PRECONDITION_REQUIRED, challenge, True)])
 
@@ -538,17 +539,14 @@ class HostedAssistantSecretTests(unittest.TestCase):
             mock.patch.object(app, "_replace_assistant_secrets", return_value=response) as replace_secrets,
             mock.patch.object(app.audit, "log"),
         ):
-            app.Handler._route_assistant_secrets(
+            lease = object()
+            app.Handler._route_assistant_secret_replace(
                 handler,
-                "PUT",
-                ["v1", "teams", TEAM_ID, "assistant-secrets"],
-                TEAM_ID,
-                object(),
-                principal,
+                types.SimpleNamespace(team_id=TEAM_ID, principal=principal, lease=lease),
             )
 
         enforce.assert_called_once_with("secret", principal)
-        replace_secrets.assert_called_once_with(TEAM_ID, body, mock.ANY)
+        replace_secrets.assert_called_once_with(TEAM_ID, body, lease)
         self.assertEqual(handler.sent, [(HTTPStatus.OK, response, True)])
 
     def test_idempotent_install_prunes_obsolete_secrets_after_admission(self) -> None:
@@ -710,13 +708,14 @@ class HostedAssistantSecretTests(unittest.TestCase):
             ),
             mock.patch.object(app, "_enforce_rate"),
         ):
-            app.Handler._route_chat(
+            app.Handler._route_chat_turn(
                 handler,
-                "POST",
-                ["v1", "teams", TEAM_ID, "chat", "stream"],
-                TEAM_ID,
-                ("account", "account_1"),
-                types.SimpleNamespace(owner="account_1"),
+                types.SimpleNamespace(
+                    team_id=TEAM_ID,
+                    principal=("account", "account_1"),
+                    lease=types.SimpleNamespace(owner="account_1"),
+                ),
+                stream=True,
             )
 
         self.assertEqual(
