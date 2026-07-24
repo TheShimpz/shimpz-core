@@ -16,9 +16,9 @@ import marketplace
 import oauth_account_store
 import pgdriver_client
 import power_journal
-import runtime_state
 import team_storage
 from assistant_human import hosted_assistants
+from http_boundary import runtime_state
 
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy

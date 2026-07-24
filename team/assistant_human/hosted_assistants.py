@@ -25,10 +25,10 @@ import oauth_account_store
 import oauth_http_client
 import power_execution
 import power_journal
-import runtime_state
 import team_storage
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
+from http_boundary import runtime_state
 
 # ── Controller-owned Assistant chat ─────────────────────────────────────────────────────────────
 CHAT_OUTPUT_CAP = 60000

@@ -14,8 +14,8 @@ import inference_config
 import manifests
 import marketplace
 import marketplace_image
-import runtime_state
 import validate
+from http_boundary import runtime_state
 
 from container_policy import network as network_policy
 

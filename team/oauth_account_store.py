@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 import oauth_providers
-import private_state
+from assistant_human import private_state
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 

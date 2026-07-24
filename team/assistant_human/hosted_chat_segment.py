@@ -21,9 +21,9 @@ import marketplace
 import oauth_account_store
 import power_execution
 import power_journal
-import runtime_state
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
+from http_boundary import runtime_state
 
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_flow as assistant_approval_flow

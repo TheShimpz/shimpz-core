@@ -18,7 +18,7 @@ import manifests
 import marketplace
 import oauth_account_store
 import pgdriver_client
-import runtime_state
+from http_boundary import runtime_state
 
 from container_policy import hosted_resources
 from container_policy import network as network_policy

@@ -132,7 +132,7 @@ with mock.patch.dict(
 ):
     spec.loader.exec_module(app)
 
-runtime_state = sys.modules["runtime_state"]
+runtime_state = sys.modules["http_boundary.runtime_state"]
 hosted_resources = sys.modules["container_policy.hosted_resources"]
 hosted_apps = sys.modules["container_policy.hosted_apps"]
 hosted_lifecycle = sys.modules["container_policy.hosted_lifecycle"]

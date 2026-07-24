@@ -16,8 +16,8 @@ import chat_turn_engine
 import docker.errors
 import marketplace
 import oauth_account_service
-import runtime_state
 from container_policy import hosted_resources
+from http_boundary import runtime_state
 
 from assistant_human import approval_challenges as assistant_approval_challenges
 from assistant_human import approval_flow as assistant_approval_flow

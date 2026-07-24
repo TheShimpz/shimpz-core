@@ -1,0 +1,754 @@
+from __future__ import annotations
+
+import contextlib
+import json
+import tempfile
+import types
+import unittest
+from http import HTTPStatus
+from io import BytesIO
+from pathlib import Path
+from unittest import mock
+
+from hosted_app_fixture import (
+    ANCHOR_ID,
+    app,
+    hosted_apps,
+    hosted_assistants,
+    hosted_chat_api,
+    hosted_chat_segment,
+    hosted_lifecycle,
+    hosted_resources,
+    runtime_state,
+)
+
+assistant_account_challenges = runtime_state.assistant_account_challenges
+assistant_manifest = hosted_apps.assistant_manifest
+assistant_secret_challenges = runtime_state.assistant_secret_challenges
+brain_runtime_client = runtime_state.brain_runtime_client
+chat_orchestrator = hosted_chat_segment.chat_orchestrator
+manifests = hosted_apps.manifests
+marketplace = hosted_apps.marketplace
+network_policy = hosted_resources.network_policy
+oauth_account_store = runtime_state.oauth_account_store
+oauth_http_client = runtime_state.oauth_http_client
+power_journal = runtime_state.power_journal
+hosted_egress_policy = hosted_apps.egress_policy
+
+
+class HostedChatLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        """Keep pending private-input state isolated from every hosted test."""
+        original_accounts = runtime_state._assistant_account_challenges
+        original_secrets = runtime_state._assistant_secret_challenges
+        runtime_state._assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
+        runtime_state._assistant_secret_challenges = assistant_secret_challenges.SecretChallengeStore()
+        self.addCleanup(setattr, runtime_state, "_assistant_account_challenges", original_accounts)
+        self.addCleanup(setattr, runtime_state, "_assistant_secret_challenges", original_secrets)
+
+    def _journal_chat_environment(self, journal, runtime, rpc):
+        contract = marketplace.APPS["shimpz-cloudflare"].assistant
+        assert contract is not None
+        assistant = hosted_assistants._ActiveAssistant(
+            "shimpz-cloudflare",
+            contract,
+            types.SimpleNamespace(id="b" * 64),
+        )
+        anchor = types.SimpleNamespace(
+            id=ANCHOR_ID,
+            labels={"team.name": "Marketing", "team.owner": "account_1"},
+        )
+        config = types.SimpleNamespace(provider="openai", model="gpt-test")
+        secret_store = types.SimpleNamespace(
+            metadata=lambda _team_id, _assistant_id, secret_ids: tuple(
+                types.SimpleNamespace(id=secret_id, configured=True, generation=1) for secret_id in secret_ids
+            ),
+            resolve_many=lambda _team_id, _assistant_id, secret_ids: dict.fromkeys(
+                secret_ids,
+                "configured-test-secret",
+            ),
+        )
+        account_store = oauth_account_store.OAuthAccountStore(
+            journal.path.parent / "oauth-state" / "accounts.json",
+            journal.path.parent / "oauth-key" / "aes256.key",
+        )
+        for account_id, declaration in contract.accounts.items():
+            account_store.put(
+                "team_1",
+                "shimpz-cloudflare",
+                account_id,
+                declaration.provider,
+                declaration.scopes,
+                oauth_http_client.OAuthTokenSet(
+                    f"synthetic-hosted-access-token-{account_id}",
+                    f"synthetic-hosted-refresh-token-{account_id}",
+                    declaration.scopes,
+                    3600,
+                ),
+            )
+        environment = contextlib.ExitStack()
+        environment.enter_context(
+            mock.patch.multiple(
+                hosted_assistants,
+                _active_team_assistants=lambda _team_id: (assistant,),
+                _chat_file_metadata=lambda _team_id, _files: [],
+                _installed_assistant=lambda _team_id, assistant_id, *_args: (
+                    assistant_id,
+                    contract,
+                    assistant.container,
+                ),
+                _invoke_assistant_power=rpc,
+                _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                _require_model_credential_current=lambda *_args: None,
+            )
+        )
+        environment.enter_context(
+            mock.patch.multiple(
+                runtime_state,
+                _brain_runtime=runtime,
+                _commit_chat_terminal=lambda _team_id, _token: True,
+                _inference_store=types.SimpleNamespace(load=lambda _team_id: config),
+                _power_execution_journal=lambda: journal,
+                _assistant_secrets=secret_store,
+                _assistant_accounts=account_store,
+            )
+        )
+        environment.enter_context(
+            mock.patch.object(
+                hosted_apps,
+                "_require_assistant_genesis",
+                return_value="Use only the declared Cloudflare Powers.",
+            )
+        )
+        environment.enter_context(mock.patch.object(hosted_chat_segment, "_current_team_anchor", return_value=anchor))
+        return anchor, environment
+
+    def test_hosted_thread_identity_is_generation_scoped_and_closed(self) -> None:
+        first = hosted_resources._brain_thread_id("team_1", ANCHOR_ID)
+        second = hosted_resources._brain_thread_id("team_1", "b" * 64)
+
+        self.assertEqual(first, f"hosted:team_1:{ANCHOR_ID}:default")
+        self.assertNotEqual(first, second)
+        for team_id, anchor_id in (("bad team", ANCHOR_ID), ("team_1", "not-a-container")):
+            with (
+                self.subTest(team_id=team_id, anchor_id=anchor_id),
+                self.assertRaises(runtime_state.ApiError) as caught,
+            ):
+                hosted_resources._brain_thread_id(team_id, anchor_id)
+            self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+
+    def test_team_name_contract_rejects_padding_controls_and_oversize_values(self) -> None:
+        self.assertEqual(hosted_resources._validated_team_name("Marketing"), "Marketing")
+        for invalid in ("", " Marketing", "Marketing ", "Marketing\n", "x" * 81, None):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                hosted_resources._validated_team_name(invalid)
+
+    def test_hosted_lifecycle_rejects_an_active_chat_before_any_mutation(self) -> None:
+        spec = marketplace.APPS["shimpz-cloudflare"]
+        lease = types.SimpleNamespace(owner="account_1")
+        operations = (
+            lambda: hosted_apps._install_app("team_1", "shimpz-cloudflare", spec, "account_1", lease),
+            lambda: hosted_apps._uninstall_app("team_1", "shimpz-cloudflare", lease),
+            lambda: hosted_lifecycle._lifecycle("team_1", "restart", lease),
+        )
+        chat_lock = runtime_state._chat_lock_for("team_1")
+        self.assertTrue(chat_lock.acquire(blocking=False))
+        try:
+            with mock.patch.object(
+                runtime_state,
+                "_lock_for",
+                side_effect=lambda _team_id: self.fail("lifecycle mutation acquired its inner lock"),
+            ):
+                for operation in operations:
+                    with self.subTest(operation=operation), self.assertRaises(runtime_state.ApiError) as caught:
+                        operation()
+                    self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+        finally:
+            chat_lock.release()
+
+    def test_hosted_stream_emits_the_exact_v2_done_shape(self) -> None:
+        class StreamHarness:
+            def __init__(self) -> None:
+                self.status = None
+                self.headers: list[tuple[str, str]] = []
+                self.wfile = BytesIO()
+
+            def send_response(self, status) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                self.headers.append((name, value))
+
+            def end_headers(self) -> None:
+                pass
+
+        @contextlib.contextmanager
+        def exclusive_turn(_team_id, _lease):
+            yield "turn-token", types.SimpleNamespace(id=ANCHOR_ID)
+
+        stream = StreamHarness()
+        with (
+            mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive_turn),
+            mock.patch.object(
+                hosted_chat_segment,
+                "_chat_in_turn",
+                return_value={
+                    "team_id": "team_1",
+                    "team_name": "Marketing",
+                    "reply": "Campaign ready.",
+                },
+            ),
+        ):
+            app.Handler._stream_chat(
+                stream,
+                "team_1",
+                "Prepare the campaign",
+                [],
+                ("shimpz-cloudflare",),
+                types.SimpleNamespace(owner="account_1"),
+            )
+
+        size_line, chunked = stream.wfile.getvalue().split(b"\r\n", 1)
+        size = int(size_line, 16)
+        encoded_event = chunked[:size]
+        self.assertEqual(stream.status, HTTPStatus.OK)
+        self.assertIn(("Content-Type", "application/x-ndjson"), stream.headers)
+        self.assertIn(("Cache-Control", "no-store"), stream.headers)
+        self.assertEqual(chunked[size:], b"\r\n0\r\n\r\n")
+        self.assertEqual(
+            json.loads(encoded_event),
+            {
+                "type": "done",
+                "team_id": "team_1",
+                "team_name": "Marketing",
+                "reply": "Campaign ready.",
+            },
+        )
+
+    def test_hosted_chat_scope_is_explicit_bounded_and_selects_only_requested_assistants(self) -> None:
+        contract = types.SimpleNamespace(powers={})
+        places = hosted_assistants._ActiveAssistant("places", contract, types.SimpleNamespace(id="places-container"))
+        weather = hosted_assistants._ActiveAssistant(
+            "weather",
+            contract,
+            types.SimpleNamespace(id="weather-container"),
+        )
+
+        self.assertEqual(hosted_assistants._chat_assistant_ids([]), ())
+        self.assertEqual(hosted_assistants._chat_assistant_ids(["weather", "places"]), ("places", "weather"))
+        self.assertEqual(
+            hosted_assistants._select_team_assistants((places, weather), ("weather",)),
+            (weather,),
+        )
+
+        for invalid in (
+            ["weather", "weather"],
+            ["bad_assistant"],
+            [f"helper-{index}" for index in range(hosted_assistants.MAX_CHAT_ASSISTANTS + 1)],
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(runtime_state.ApiError) as caught:
+                hosted_assistants._chat_assistant_ids(invalid)
+            self.assertEqual(caught.exception.status, HTTPStatus.UNPROCESSABLE_ENTITY)
+
+        with self.assertRaises(runtime_state.ApiError) as unavailable:
+            hosted_assistants._select_team_assistants((places,), ("weather",))
+        self.assertEqual(unavailable.exception.status, HTTPStatus.CONFLICT)
+        self.assertEqual(unavailable.exception.message, "a selected Assistant is unavailable")
+
+    def test_hosted_empty_scope_reaches_the_brain_without_assistant_tools(self) -> None:
+        class Runtime:
+            context = None
+
+            def start(self, context, _message):
+                self.context = context
+                return brain_runtime_client.RuntimeTurn("completed", "Brain only.", ())
+
+            def resume(self, _context, _results):
+                raise AssertionError("a Brain-only reply must not resume")
+
+        runtime = Runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+            self.addCleanup(journal.close)
+            anchor, environment = self._journal_chat_environment(journal, runtime, mock.Mock())
+            with environment:
+                result = hosted_chat_segment._chat_in_turn(
+                    "team_1",
+                    "Hello",
+                    [],
+                    (),
+                    "turn-token",
+                    anchor,
+                    "account_1",
+                )
+
+        self.assertEqual(runtime.context.assistants, ())
+        self.assertEqual(result["reply"], "Brain only.")
+
+    def test_revoked_generation_during_turn_cannot_commit_reply(self) -> None:
+        checks: list[tuple[str, str, int]] = []
+        commit = mock.Mock(return_value=True)
+        contract = types.SimpleNamespace(powers={})
+        assistant_container = types.SimpleNamespace(id="assistant-container")
+        anchor = types.SimpleNamespace(
+            id=ANCHOR_ID,
+            labels={"team.name": "Marketing", "team.owner": "account_1"},
+        )
+        store = types.SimpleNamespace(load=lambda _team_id: types.SimpleNamespace(provider="openai", model="gpt-5.5"))
+
+        def require_current(owner: str, provider: str, generation: int) -> None:
+            checks.append((owner, provider, generation))
+            if len(checks) == 2:
+                raise runtime_state.ApiError(
+                    HTTPStatus.CONFLICT,
+                    "model credential changed or was revoked; retry",
+                )
+
+        with (
+            mock.patch.multiple(
+                hosted_assistants,
+                _active_team_assistants=lambda _team_id: (
+                    hosted_assistants._ActiveAssistant(
+                        "hello-pulse",
+                        contract,
+                        assistant_container,
+                    ),
+                ),
+                _chat_file_metadata=lambda _team_id, _files: [],
+                _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                _require_model_credential_current=require_current,
+            ),
+            mock.patch.object(
+                hosted_apps,
+                "_require_assistant_genesis",
+                return_value="Use only declared Powers.",
+            ),
+            mock.patch.multiple(
+                runtime_state,
+                _inference_store=store,
+                _brain_runtime=object(),
+                _commit_chat_terminal=commit,
+            ),
+            mock.patch.object(hosted_chat_segment, "_current_team_anchor", return_value=anchor),
+            mock.patch.object(
+                hosted_chat_segment.chat_orchestrator,
+                "run_until_pause",
+                return_value=chat_orchestrator.ChatOutcome(reply="late reply", powers=()),
+            ),
+            self.assertRaises(runtime_state.ApiError) as caught,
+        ):
+            hosted_chat_segment._chat_in_turn(
+                "team_1",
+                "hello",
+                [],
+                ("hello-pulse",),
+                "turn-token",
+                anchor,
+                "account_1",
+            )
+
+        self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+        self.assertEqual(checks, [("account_1", "openai", 7), ("account_1", "openai", 7)])
+        commit.assert_not_called()
+
+    def test_hosted_team_context_contains_and_routes_two_active_assistants(self) -> None:
+        place_power = types.SimpleNamespace(summary="Find a place.", input_schema={"type": "object"})
+        weather_power = types.SimpleNamespace(
+            summary="Read current weather.",
+            input_schema={"type": "object"},
+        )
+        place_contract = types.SimpleNamespace(powers={"search": place_power})
+        weather_contract = types.SimpleNamespace(powers={"current": weather_power})
+        place_container = types.SimpleNamespace(
+            id="places-container",
+            attrs={"Config": {"Image": "example.invalid/places@sha256:" + "1" * 64}},
+        )
+        weather_container = types.SimpleNamespace(
+            id="weather-container",
+            attrs={"Config": {"Image": "example.invalid/weather@sha256:" + "2" * 64}},
+        )
+        anchor = types.SimpleNamespace(
+            id=ANCHOR_ID,
+            labels={"team.name": "Marketing", "team.owner": "account_1"},
+        )
+        store = types.SimpleNamespace(load=lambda _team_id: types.SimpleNamespace(provider="openai", model="gpt-test"))
+        invoked: list[tuple[str, str, object]] = []
+
+        def run(_runtime, context, _prompt, strategy):
+            self.assertEqual([assistant.id for assistant in context.assistants], ["places", "weather"])
+            self.assertEqual(
+                [assistant.genesis for assistant in context.assistants],
+                ["Compose Powers for places-container.", "Compose Powers for weather-container."],
+            )
+            self.assertEqual(context.thread_id, hosted_resources._brain_thread_id("team_1", ANCHOR_ID))
+            self.assertTrue(callable(strategy.validate_power))
+            requests = (
+                brain_runtime_client.PowerRequest("place-1", "places", "search", {"name": "Berlin"}),
+                brain_runtime_client.PowerRequest(
+                    "weather-1",
+                    "weather",
+                    "current",
+                    {"latitude": 52.52, "longitude": 13.41},
+                ),
+            )
+            strategy.prepare_batch(requests)
+            for request in requests:
+                strategy.invoke_power(request)
+            strategy.batch_delivered(requests)
+            return chat_orchestrator.ChatOutcome(
+                reply="Berlin weather is ready.",
+                powers=(
+                    chat_orchestrator.InvokedPower("places", "search"),
+                    chat_orchestrator.InvokedPower("weather", "current"),
+                ),
+            )
+
+        def invoke(request):
+            self.assertEqual(request.answers, ())
+            invoked.append((request.assistant_id, request.power, request.payload))
+            return {"result": {"ok": True}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+            self.addCleanup(journal.close)
+            with (
+                mock.patch.multiple(
+                    hosted_assistants,
+                    _active_team_assistants=lambda _team_id: (
+                        hosted_assistants._ActiveAssistant("places", place_contract, place_container),
+                        hosted_assistants._ActiveAssistant("weather", weather_contract, weather_container),
+                    ),
+                    _chat_file_metadata=lambda _team_id, _files: [],
+                    _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                    _require_model_credential_current=lambda *_args: None,
+                    _invoke_assistant_power=invoke,
+                ),
+                mock.patch.object(
+                    hosted_apps,
+                    "_require_assistant_genesis",
+                    side_effect=lambda container: f"Compose Powers for {container.id}.",
+                ),
+                mock.patch.multiple(
+                    runtime_state,
+                    _inference_store=store,
+                    _brain_runtime=object(),
+                    _power_execution_journal=lambda: journal,
+                    _commit_chat_terminal=lambda _team_id, _token: True,
+                ),
+                mock.patch.object(hosted_chat_segment, "_current_team_anchor", return_value=anchor),
+                mock.patch.object(hosted_chat_segment.chat_orchestrator, "run_until_pause", side_effect=run),
+            ):
+                result = hosted_chat_segment._chat_in_turn(
+                    "team_1",
+                    "Find Berlin weather",
+                    [],
+                    ("places", "weather"),
+                    "turn-token",
+                    anchor,
+                    "account_1",
+                )
+
+        self.assertEqual([item[:2] for item in invoked], [("places", "search"), ("weather", "current")])
+        self.assertEqual(result, {"team_id": "team_1", "team_name": "Marketing", "reply": "Berlin weather is ready."})
+
+    def test_completed_power_is_cached_until_a_successful_brain_resume(self) -> None:
+        request = brain_runtime_client.PowerRequest(
+            "power-1",
+            "shimpz-cloudflare",
+            "list-zones",
+            {"page": 1, "per_page": 25},
+        )
+
+        class Runtime:
+            def __init__(self) -> None:
+                self.resume_calls = 0
+                self.results: list[dict[str, object]] = []
+
+            def start(self, _context, _message):
+                return brain_runtime_client.RuntimeTurn("power-required", "", (request,))
+
+            def resume(self, _context, results):
+                self.resume_calls += 1
+                self.results.append(results)
+                if self.resume_calls == 1:
+                    raise brain_runtime_client.BrainRuntimeError("private-provider-response")
+                return brain_runtime_client.RuntimeTurn("completed", "Cached reply", ())
+
+        runtime = Runtime()
+        power_result = {"zones": [], "page": 1, "per_page": 25, "total_pages": 0}
+        rpc = mock.Mock(return_value={"result": power_result})
+        with tempfile.TemporaryDirectory() as directory:
+            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+            self.addCleanup(journal.close)
+            anchor, environment = self._journal_chat_environment(journal, runtime, rpc)
+            with mock.patch.object(journal, "delivered", wraps=journal.delivered) as delivered, environment:
+                with self.assertRaises(runtime_state.ApiError) as failed:
+                    hosted_chat_segment._chat_in_turn(
+                        "team_1",
+                        "Greet me",
+                        [],
+                        ("shimpz-cloudflare",),
+                        "first-turn",
+                        anchor,
+                        "account_1",
+                    )
+                self.assertEqual(failed.exception.status, HTTPStatus.BAD_GATEWAY)
+                self.assertNotIn("private-provider-response", str(failed.exception))
+                delivered.assert_not_called()
+
+                result = hosted_chat_segment._chat_in_turn(
+                    "team_1",
+                    "Greet me",
+                    [],
+                    ("shimpz-cloudflare",),
+                    "retry-turn",
+                    anchor,
+                    "account_1",
+                )
+
+        self.assertEqual(rpc.call_count, 1)
+        self.assertEqual(
+            runtime.results,
+            [
+                {"power-1": power_result},
+                {"power-1": power_result},
+            ],
+        )
+        delivered.assert_called_once()
+        self.assertEqual(result["reply"], "Cached reply")
+
+    def test_uncertain_power_fails_closed_before_a_second_rpc(self) -> None:
+        normalized = brain_runtime_client.PowerRequest(
+            "power-1",
+            "shimpz-cloudflare",
+            "list-zones",
+            {"page": 1, "per_page": 25},
+        )
+        thread_id = hosted_resources._brain_thread_id("team_1", ANCHOR_ID)
+
+        class Runtime:
+            @staticmethod
+            def start(_context, _message):
+                raw = brain_runtime_client.PowerRequest(
+                    "power-1",
+                    "shimpz-cloudflare",
+                    "list-zones",
+                    {"page": 1, "per_page": 25},
+                )
+                return brain_runtime_client.RuntimeTurn("power-required", "", (raw,))
+
+            @staticmethod
+            def resume(_context, _results):
+                raise AssertionError("an uncertain Power must not reach Brain resume")
+
+        runtime = Runtime()
+        rpc = mock.Mock(side_effect=AssertionError("an uncertain Power must not execute"))
+        with tempfile.TemporaryDirectory() as directory:
+            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+            self.addCleanup(journal.close)
+            operation = hosted_assistants._power_operation(
+                normalized,
+                "b" * 64,
+                account_generations=(("cloudflare", 1),),
+            )
+            batch = journal.prepare_batch(ANCHOR_ID, thread_id, (operation,))
+            journal.begin(batch, operation)
+            anchor, environment = self._journal_chat_environment(journal, runtime, rpc)
+
+            with environment, self.assertRaises(runtime_state.ApiError) as failed:
+                hosted_chat_segment._chat_in_turn(
+                    "team_1",
+                    "Greet me",
+                    [],
+                    ("shimpz-cloudflare",),
+                    "retry-turn",
+                    anchor,
+                    "account_1",
+                )
+
+        self.assertEqual(failed.exception.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(failed.exception.message, "Team Power execution state is unavailable")
+        self.assertNotIn("uncertain", str(failed.exception).lower())
+        rpc.assert_not_called()
+
+    def test_power_journal_uses_the_injected_path_lazily(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private" / "journal.sqlite3"
+            with mock.patch.multiple(runtime_state, POWER_JOURNAL_PATH=path, _power_journal_instance=None):
+                self.assertFalse(path.exists())
+                journal = runtime_state._power_execution_journal()
+                self.addCleanup(journal.close)
+                self.assertTrue(path.exists())
+                self.assertIs(runtime_state._power_execution_journal(), journal)
+
+    def test_destroy_deletes_generation_after_chat_drain_before_teardown(self) -> None:
+        events: list[object] = []
+        expected_thread = hosted_resources._brain_thread_id("team_1", ANCHOR_ID)
+        lease = hosted_resources._AuthorizationLease(
+            team_id="team_1",
+            container_id=ANCHOR_ID,
+            owner="account_1",
+            principal=("account", "account_1"),
+            cleanup_nonce="retry-nonce",
+        )
+
+        class ChatLock:
+            def acquire(self, *, timeout: int) -> bool:
+                self.assert_timeout = timeout
+                events.append("chat-drained")
+                return True
+
+            def release(self) -> None:
+                events.append("chat-released")
+
+        chat_lock = ChatLock()
+
+        def delete_thread(thread_id: str) -> None:
+            events.append(("thread-deleted", thread_id))
+
+        def teardown(team_id: str, *, owner: str, brain_id: str):
+            events.append(("teardown", team_id, owner, brain_id))
+            return hosted_resources._CleanupResult(True, True)
+
+        journal = types.SimpleNamespace(purge=lambda generation: events.append(("journal-purged", generation)))
+
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: chat_lock,
+                _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
+                _power_execution_journal=lambda: journal,
+                _clear_team_id_runtime_state=lambda _team_id: events.append("runtime-cleared"),
+            ),
+            mock.patch.object(
+                hosted_resources,
+                "_require_cleanup_authorization",
+                side_effect=lambda _team_id, _lease: events.append("authorized"),
+            ),
+            mock.patch.object(hosted_lifecycle, "_teardown", side_effect=teardown),
+        ):
+            result = hosted_lifecycle._destroy("team_1", lease)
+
+        self.assertEqual(
+            events,
+            [
+                "authorized",
+                "chat-drained",
+                ("thread-deleted", expected_thread),
+                ("journal-purged", ANCHOR_ID),
+                ("teardown", "team_1", "account_1", ANCHOR_ID),
+                "runtime-cleared",
+                "chat-released",
+            ],
+        )
+        self.assertEqual(result, {"team_id": "team_1", "destroyed": True, "db_dropped": True})
+
+    def test_destroy_retries_thread_delete_without_teardown_after_redacted_failure(self) -> None:
+        delete_calls: list[str] = []
+        teardown = mock.Mock(return_value=hosted_resources._CleanupResult(True, True))
+        clear = mock.Mock()
+        lease = hosted_resources._AuthorizationLease(
+            team_id="team_1",
+            container_id=ANCHOR_ID,
+            owner="account_1",
+            principal=("account", "account_1"),
+            cleanup_nonce="retry-nonce",
+        )
+
+        class ChatLock:
+            @staticmethod
+            def acquire(*, timeout: int) -> bool:
+                return timeout == 30
+
+            @staticmethod
+            def release() -> None:
+                return None
+
+        def delete_thread(thread_id: str) -> None:
+            delete_calls.append(thread_id)
+            if len(delete_calls) == 1:
+                raise brain_runtime_client.BrainRuntimeError("persisted-private-data")
+
+        purge_calls: list[str] = []
+        journal = types.SimpleNamespace(purge=lambda generation: purge_calls.append(generation))
+
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: ChatLock(),
+                _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
+                _power_execution_journal=lambda: journal,
+                _clear_team_id_runtime_state=clear,
+            ),
+            mock.patch.object(hosted_resources, "_require_cleanup_authorization", return_value=object()),
+            mock.patch.object(hosted_lifecycle, "_teardown", teardown),
+        ):
+            with self.assertRaises(runtime_state.ApiError) as caught:
+                hosted_lifecycle._destroy("team_1", lease)
+            self.assertEqual(caught.exception.status, HTTPStatus.SERVICE_UNAVAILABLE)
+            self.assertEqual(caught.exception.message, "Team conversation state could not be deleted")
+            self.assertNotIn("persisted-private-data", str(caught.exception))
+            teardown.assert_not_called()
+            clear.assert_not_called()
+
+            result = hosted_lifecycle._destroy("team_1", lease)
+
+        expected_thread = hosted_resources._brain_thread_id("team_1", ANCHOR_ID)
+        self.assertEqual(delete_calls, [expected_thread, expected_thread])
+        self.assertEqual(purge_calls, [ANCHOR_ID])
+        teardown.assert_called_once_with("team_1", owner="account_1", brain_id=ANCHOR_ID)
+        clear.assert_called_once_with("team_1")
+        self.assertTrue(result["destroyed"])
+
+    def test_destroy_journal_failure_is_redacted_before_teardown(self) -> None:
+        teardown = mock.Mock(return_value=hosted_resources._CleanupResult(True, True))
+        clear = mock.Mock()
+        lease = hosted_resources._AuthorizationLease(
+            team_id="team_1",
+            container_id=ANCHOR_ID,
+            owner="account_1",
+            principal=("account", "account_1"),
+            cleanup_nonce="retry-nonce",
+        )
+
+        class ChatLock:
+            released = False
+
+            @staticmethod
+            def acquire(*, timeout: int) -> bool:
+                return timeout == 30
+
+            @classmethod
+            def release(cls) -> None:
+                cls.released = True
+
+        def fail_purge(_generation: str) -> None:
+            raise power_journal.PowerJournalError("private-journal-state")
+
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: ChatLock(),
+                _brain_runtime=types.SimpleNamespace(delete_thread=lambda _thread: None),
+                _power_execution_journal=lambda: types.SimpleNamespace(purge=fail_purge),
+                _clear_team_id_runtime_state=clear,
+            ),
+            mock.patch.object(hosted_resources, "_require_cleanup_authorization", return_value=object()),
+            mock.patch.object(hosted_lifecycle, "_teardown", teardown),
+            self.assertRaises(runtime_state.ApiError) as failed,
+        ):
+            hosted_lifecycle._destroy("team_1", lease)
+
+        self.assertEqual(failed.exception.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(failed.exception.message, "Team Power execution state could not be deleted")
+        self.assertNotIn("private-journal-state", str(failed.exception))
+        teardown.assert_not_called()
+        clear.assert_not_called()
+        self.assertTrue(ChatLock.released)
+
+
+if __name__ == "__main__":
+    unittest.main()
