@@ -311,6 +311,7 @@ class _CleanupResult:
 
 
 _controller._capacity_reservations: dict[str, _controller._CapacityReservation] = {}
+_controller._capacity_generation = 0
 
 
 def _capacity_key(container) -> str:
@@ -368,6 +369,46 @@ def _physical_teams(*, exclude_keys: frozenset[str]) -> list:
     return [container for container in teams if _controller._capacity_key(container) not in exclude_keys]
 
 
+def _validate_capacity(
+    reservation: _CapacityReservation,
+    physical: list,
+    usage: _MemoryUsage,
+    existing: tuple[_CapacityReservation, ...],
+) -> None:
+    if reservation.team_slot:
+        team_reservations = [item for item in existing if item.team_slot]
+        current = len(physical) + len(team_reservations)
+        if current >= _controller.MAX_TEAMS:
+            raise _controller.ApiError(
+                HTTPStatus.TOO_MANY_REQUESTS, f"team limit reached ({current}/{_controller.MAX_TEAMS})"
+            )
+        owner_count = sum(container.labels.get("team.owner", "") == reservation.owner for container in physical) + sum(
+            item.owner == reservation.owner for item in team_reservations
+        )
+        if owner_count >= _controller.MAX_TEAMS_PER_OWNER:
+            raise _controller.ApiError(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                f"team limit reached for this owner ({owner_count}/{_controller.MAX_TEAMS_PER_OWNER})",
+            )
+    reserved_total = sum(item.memory_bytes for item in existing)
+    committed_total = usage.total + reserved_total
+    if committed_total + reservation.memory_bytes > _controller.GLOBAL_MEMORY_BUDGET_BYTES:
+        detail = (
+            "global Team memory budget reached "
+            f"({committed_total}/{_controller.GLOBAL_MEMORY_BUDGET_BYTES} bytes committed)"
+        )
+        raise _controller.ApiError(HTTPStatus.TOO_MANY_REQUESTS, detail)
+    owner_used = usage.by_owner.get(reservation.owner, 0) + sum(
+        item.memory_bytes for item in existing if item.owner == reservation.owner
+    )
+    if owner_used + reservation.memory_bytes > _controller.OWNER_MEMORY_BUDGET_BYTES:
+        detail = (
+            "Team memory budget reached for this owner "
+            f"({owner_used}/{_controller.OWNER_MEMORY_BUDGET_BYTES} bytes committed)"
+        )
+        raise _controller.ApiError(HTTPStatus.TOO_MANY_REQUESTS, detail)
+
+
 @contextlib.contextmanager
 def _reserve_capacity(
     key: str,
@@ -389,57 +430,31 @@ def _reserve_capacity(
         memory_bytes=requested,
         team_slot=team_slot,
     )
-    with _controller._capacity_lock:
-        if key in _controller._capacity_reservations:
-            raise _controller.ApiError(HTTPStatus.CONFLICT, "Team resource admission is already in progress")
-        reserved_keys = frozenset(_controller._capacity_reservations)
-        if team_slot:
-            physical = _controller._physical_teams(exclude_keys=reserved_keys)
-            team_reservations = [item for item in _controller._capacity_reservations.values() if item.team_slot]
-            current = len(physical) + len(team_reservations)
-            if current >= _controller.MAX_TEAMS:
-                raise _controller.ApiError(
-                    HTTPStatus.TOO_MANY_REQUESTS, f"team limit reached ({current}/{_controller.MAX_TEAMS})"
-                )
-            owner_count = sum(container.labels.get("team.owner", "") == owner for container in physical) + sum(
-                item.owner == owner for item in team_reservations
-            )
-            if owner_count >= _controller.MAX_TEAMS_PER_OWNER:
-                raise _controller.ApiError(
-                    HTTPStatus.TOO_MANY_REQUESTS,
-                    f"team limit reached for this owner ({owner_count}/{_controller.MAX_TEAMS_PER_OWNER})",
-                )
+    while True:
+        with _controller._capacity_lock:
+            if key in _controller._capacity_reservations:
+                raise _controller.ApiError(HTTPStatus.CONFLICT, "Team resource admission is already in progress")
+            generation = _controller._capacity_generation
+            existing = tuple(_controller._capacity_reservations.values())
+            reserved_keys = frozenset(_controller._capacity_reservations)
+        physical = _controller._physical_teams(exclude_keys=reserved_keys) if team_slot else []
         usage = _controller._memory_usage(exclude_keys=reserved_keys)
-        reserved_total = sum(item.memory_bytes for item in _controller._capacity_reservations.values())
-        committed_total = usage.total + reserved_total
-        if committed_total + requested > _controller.GLOBAL_MEMORY_BUDGET_BYTES:
-            detail = (
-                "global Team memory budget reached "
-                f"({committed_total}/{_controller.GLOBAL_MEMORY_BUDGET_BYTES} bytes committed)"
-            )
-            raise _controller.ApiError(
-                HTTPStatus.TOO_MANY_REQUESTS,
-                detail,
-            )
-        owner_used = usage.by_owner.get(owner, 0) + sum(
-            item.memory_bytes for item in _controller._capacity_reservations.values() if item.owner == owner
-        )
-        if owner_used + requested > _controller.OWNER_MEMORY_BUDGET_BYTES:
-            detail = (
-                "Team memory budget reached for this owner "
-                f"({owner_used}/{_controller.OWNER_MEMORY_BUDGET_BYTES} bytes committed)"
-            )
-            raise _controller.ApiError(
-                HTTPStatus.TOO_MANY_REQUESTS,
-                detail,
-            )
-        _controller._capacity_reservations[key] = reservation
+        with _controller._capacity_lock:
+            if key in _controller._capacity_reservations:
+                raise _controller.ApiError(HTTPStatus.CONFLICT, "Team resource admission is already in progress")
+            if generation != _controller._capacity_generation:
+                continue
+            _validate_capacity(reservation, physical, usage, existing)
+            _controller._capacity_reservations[key] = reservation
+            _controller._capacity_generation += 1
+            break
     try:
         yield
     finally:
         with _controller._capacity_lock:
             if _controller._capacity_reservations.get(key) == reservation:
                 _controller._capacity_reservations.pop(key, None)
+                _controller._capacity_generation += 1
 
 
 def _network_container_metadata(network) -> dict[str, dict]:

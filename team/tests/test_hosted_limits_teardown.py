@@ -65,6 +65,25 @@ class HostedLimitAndTeardownTests(unittest.TestCase):
         self.assertEqual(duplicate.exception.status, HTTPStatus.CONFLICT)
         self.assertEqual(app._capacity_reservations, {})
 
+    def test_capacity_inventory_runs_outside_reservation_lock(self) -> None:
+        lock_observations: list[tuple[str, bool]] = []
+
+        def physical_teams(**_kwargs):
+            lock_observations.append(("teams", app._capacity_lock.locked()))
+            return []
+
+        def memory_usage(**_kwargs):
+            lock_observations.append(("memory", app._capacity_lock.locked()))
+            return app._MemoryUsage(total=0, by_owner={})
+
+        with (
+            _patched(_physical_teams=physical_teams, _memory_usage=memory_usage),
+            app._reserve_capacity("team:one", "account_1", 10, team_slot=True),
+        ):
+            self.assertIn("team:one", app._capacity_reservations)
+
+        self.assertEqual(lock_observations, [("teams", False), ("memory", False)])
+
     def test_teardown_advances_and_removes_real_durable_cleanup_record(self) -> None:
         events: list[object] = []
         brain = SimpleNamespace(id="a" * 64)

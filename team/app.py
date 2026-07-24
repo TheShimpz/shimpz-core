@@ -163,9 +163,10 @@ _active_chat_container_ids: dict[str, str] = {}
 _active_power_container_ids: dict[str, tuple[str, str]] = {}
 _blocked_power_workloads: set[tuple[str, str]] = set()
 _cancelled_chat_tokens: set[str] = set()
-# The capacity lock protects only inventory + reservation mutations. Slow provisioning is represented
-# by `_capacity_reservations` and runs after this lock is released.
+# The capacity lock protects reservation snapshots and mutations. Docker inventory and slow
+# provisioning run after this lock is released; a generation counter detects snapshot churn.
 _capacity_lock = threading.Lock()
+_capacity_generation = 0
 _storage_lock = threading.Lock()
 _storage_instance: team_storage.TeamStorage | None = None
 _power_journal_lock = threading.Lock()
