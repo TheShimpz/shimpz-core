@@ -604,7 +604,6 @@ class MachineContractCache:
             or any(not character.isalnum() and character not in {"-", "_", "."} for character in container_id)
         ):
             raise ManifestError("Assistant container identity is invalid")
-        canonical_reviewed = canonical_machine_contract(reviewed, declared_accounts)
         with self._lock:
             declared = self._entries.get(container_id)
             if declared is None:
@@ -614,7 +613,7 @@ class MachineContractCache:
                     self._entries.popitem(last=False)
             else:
                 self._entries.move_to_end(container_id)
-        if declared != canonical_reviewed:
+        if declared != reviewed:
             raise ManifestError("Assistant machine contract does not match controller review")
         return declared
 

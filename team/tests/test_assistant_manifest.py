@@ -5,6 +5,7 @@ import json
 import tarfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import assistant_manifest
 
@@ -308,10 +309,16 @@ class AssistantManifestTests(unittest.TestCase):
             cache.get(container, reviewed.accounts, reviewed.machine_contract),
             reviewed.machine_contract,
         )
-        self.assertEqual(
-            cache.get(container, reviewed.accounts, reviewed.machine_contract),
-            reviewed.machine_contract,
-        )
+        with mock.patch.object(
+            assistant_manifest,
+            "canonical_machine_contract",
+            wraps=assistant_manifest.canonical_machine_contract,
+        ) as canonicalize:
+            self.assertEqual(
+                cache.get(container, reviewed.accounts, reviewed.machine_contract),
+                reviewed.machine_contract,
+            )
+        canonicalize.assert_not_called()
         self.assertEqual(container.reads, 1)
 
         drifted = json.loads(raw)
