@@ -34,9 +34,8 @@ import oauth_account_store as oauth_account_store
 import oauth_http_client as oauth_http_client
 import pgdriver_client as pgdriver_client
 import power_execution as power_execution
-import power_journal
-import team_storage
-import validate
+import power_journal as power_journal
+import team_storage as team_storage
 from container_policy import network as _network_policy
 from runtime_state import (
     ALL_INTERFACES as ALL_INTERFACES,
@@ -165,6 +164,12 @@ from runtime_state import (
     _chat_locks_guard as _chat_locks_guard,
 )
 from runtime_state import (
+    _clear_team_id_runtime_state as _clear_team_id_runtime_state,
+)
+from runtime_state import (
+    _commit_chat_terminal as _commit_chat_terminal,
+)
+from runtime_state import (
     _docker as _docker,
 )
 from runtime_state import (
@@ -189,6 +194,9 @@ from runtime_state import (
     _oauth_accounts as _oauth_accounts,
 )
 from runtime_state import (
+    _power_execution_journal as _power_execution_journal,
+)
+from runtime_state import (
     _power_journal_instance as _power_journal_instance,
 )
 from runtime_state import (
@@ -201,6 +209,9 @@ from runtime_state import (
     _serialize_against_team_chat as _serialize_against_team_chat,
 )
 from runtime_state import (
+    _storage as _storage,
+)
+from runtime_state import (
     _storage_instance as _storage_instance,
 )
 from runtime_state import (
@@ -208,6 +219,9 @@ from runtime_state import (
 )
 from runtime_state import (
     _token as _token,
+)
+from runtime_state import (
+    _token_cancelled as _token_cancelled,
 )
 from runtime_state import (
     _UnsupportedAssistantRpcPathError as _UnsupportedAssistantRpcPathError,
@@ -225,54 +239,6 @@ from runtime_state import (
 network_policy = _network_policy
 
 
-def _validated_team_name(value: object) -> str:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 80
-        or value.strip() != value
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValueError("Team name must contain 1 to 80 trimmed characters")
-    return value
-
-
-def _team_name_from_anchor(container) -> str:
-    try:
-        return _validated_team_name((container.labels or {}).get("team.name"))
-    except ValueError as exc:
-        raise ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract") from exc
-
-
-def _storage() -> team_storage.TeamStorage:
-    global _storage_instance
-    with _storage_lock:
-        if _storage_instance is None:
-            _storage_instance = team_storage.TeamStorage(TEAM_STORAGE_ROOT)
-        return _storage_instance
-
-
-def _power_execution_journal() -> power_journal.PowerJournal:
-    """Open the private journal only when a Power batch or generation needs it."""
-    global _power_journal_instance
-    with _power_journal_lock:
-        if _power_journal_instance is None:
-            _power_journal_instance = power_journal.PowerJournal(POWER_JOURNAL_PATH)
-        return _power_journal_instance
-
-
-def _brain_thread_id(team_id: str, anchor_id: str) -> str:
-    """Bind hosted conversation state to one immutable Team lifecycle."""
-    if (
-        not isinstance(team_id, str)
-        or validate.TEAM_ID_RE.fullmatch(team_id) is None
-        or not isinstance(anchor_id, str)
-        or not 12 <= len(anchor_id) <= 64
-        or any(character not in "0123456789abcdef" for character in anchor_id)
-    ):
-        raise ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract")
-    return f"hosted:{team_id}:{anchor_id}:default"
-
-
 def _rate_key(principal: tuple[str, str | None]) -> str:
     kind, account_id = principal
     return f"{kind}:{account_id or 'operator'}"
@@ -285,35 +251,6 @@ def _enforce_rate(operation: str, principal: tuple[str, str | None]) -> None:
             HTTPStatus.TOO_MANY_REQUESTS,
             f"{operation} rate limit exceeded; retry in {retry_after}s",
         )
-
-
-def _clear_team_id_runtime_state(team_id: str) -> None:
-    """Forget terminal in-memory state without deleting a lock that another request references."""
-    with _active_chat_guard:
-        token = _active_chat_tokens.pop(team_id, None)
-        _active_chat_container_ids.pop(team_id, None)
-        _active_power_container_ids.pop(team_id, None)
-        for blocked in tuple(_blocked_power_workloads):
-            if blocked[0] == team_id:
-                _blocked_power_workloads.discard(blocked)
-        if token is not None:
-            _cancelled_chat_tokens.discard(token)
-
-
-def _token_cancelled(token: str) -> bool:
-    with _active_chat_guard:
-        return token in _cancelled_chat_tokens
-
-
-def _commit_chat_terminal(team_id: str, token: str) -> bool:
-    """Linearization point: False means a user Stop acquired the token first."""
-    with _active_chat_guard:
-        if token in _cancelled_chat_tokens:
-            return False
-        if _active_chat_tokens.get(team_id) == token:
-            _active_chat_tokens.pop(team_id, None)
-            _active_chat_container_ids.pop(team_id, None)
-        return True
 
 
 @contextlib.contextmanager
@@ -768,6 +705,9 @@ from container_policy.hosted_resources import (
     _authorize_destroy as _authorize_destroy,
 )
 from container_policy.hosted_resources import (
+    _brain_thread_id as _brain_thread_id,
+)
+from container_policy.hosted_resources import (
     _capacity_key as _capacity_key,
 )
 from container_policy.hosted_resources import (
@@ -843,6 +783,9 @@ from container_policy.hosted_resources import (
     _start_team_with_isolation as _start_team_with_isolation,
 )
 from container_policy.hosted_resources import (
+    _team_name_from_anchor as _team_name_from_anchor,
+)
+from container_policy.hosted_resources import (
     _team_not_running as _team_not_running,
 )
 from container_policy.hosted_resources import (
@@ -859,6 +802,9 @@ from container_policy.hosted_resources import (
 )
 from container_policy.hosted_resources import (
     _trusted_workload_image as _trusted_workload_image,
+)
+from container_policy.hosted_resources import (
+    _validated_team_name as _validated_team_name,
 )
 from container_policy.hosted_resources import (
     _wire_network_deps as _wire_network_deps,

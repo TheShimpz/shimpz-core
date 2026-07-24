@@ -650,9 +650,9 @@ class HostedAssistantSecretTests(unittest.TestCase):
             ),
             object(),
         )
-        with _patched(
-            _assistant_secrets=self.secret_store,
-            _assistant_secret_challenges=self.challenge_store,
+        with (
+            mock.patch.object(runtime_state, "_assistant_secrets", self.secret_store),
+            mock.patch.object(runtime_state, "_assistant_secret_challenges", self.challenge_store),
         ):
             complete = app._teardown_assistant_secrets(TEAM_ID)
 

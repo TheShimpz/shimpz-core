@@ -15,8 +15,40 @@ import manifests
 import marketplace
 import marketplace_image
 import runtime_state
+import validate
 
 from container_policy import network as network_policy
+
+
+def _validated_team_name(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 80
+        or value.strip() != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("Team name must contain 1 to 80 trimmed characters")
+    return value
+
+
+def _team_name_from_anchor(container) -> str:
+    try:
+        return _validated_team_name((container.labels or {}).get("team.name"))
+    except ValueError as exc:
+        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract") from exc
+
+
+def _brain_thread_id(team_id: str, anchor_id: str) -> str:
+    """Bind hosted conversation state to one immutable Team lifecycle."""
+    if (
+        not isinstance(team_id, str)
+        or validate.TEAM_ID_RE.fullmatch(team_id) is None
+        or not isinstance(anchor_id, str)
+        or not 12 <= len(anchor_id) <= 64
+        or any(character not in "0123456789abcdef" for character in anchor_id)
+    ):
+        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team identity failed its persisted contract")
+    return f"hosted:{team_id}:{anchor_id}:default"
 
 
 def _get_container(name: str):

@@ -225,6 +225,23 @@ _rate_limiters = {
 _file_upload_slots = threading.BoundedSemaphore(2)
 
 
+def _storage() -> team_storage.TeamStorage:
+    global _storage_instance
+    with _storage_lock:
+        if _storage_instance is None:
+            _storage_instance = team_storage.TeamStorage(TEAM_STORAGE_ROOT)
+        return _storage_instance
+
+
+def _power_execution_journal() -> power_journal.PowerJournal:
+    """Open the private journal only when a Power batch or generation needs it."""
+    global _power_journal_instance
+    with _power_journal_lock:
+        if _power_journal_instance is None:
+            _power_journal_instance = power_journal.PowerJournal(POWER_JOURNAL_PATH)
+        return _power_journal_instance
+
+
 def _lock_for(team_id: str) -> threading.Lock:
     with _locks_guard:
         lock = _locks.get(team_id)
@@ -257,3 +274,32 @@ def _serialize_against_team_chat(operation: Callable[..., dict]) -> Callable[...
             lock.release()
 
     return guarded
+
+
+def _clear_team_id_runtime_state(team_id: str) -> None:
+    """Forget terminal in-memory state without deleting a lock that another request references."""
+    with _active_chat_guard:
+        token = _active_chat_tokens.pop(team_id, None)
+        _active_chat_container_ids.pop(team_id, None)
+        _active_power_container_ids.pop(team_id, None)
+        for blocked in tuple(_blocked_power_workloads):
+            if blocked[0] == team_id:
+                _blocked_power_workloads.discard(blocked)
+        if token is not None:
+            _cancelled_chat_tokens.discard(token)
+
+
+def _token_cancelled(token: str) -> bool:
+    with _active_chat_guard:
+        return token in _cancelled_chat_tokens
+
+
+def _commit_chat_terminal(team_id: str, token: str) -> bool:
+    """Linearization point: False means a user Stop acquired the token first."""
+    with _active_chat_guard:
+        if token in _cancelled_chat_tokens:
+            return False
+        if _active_chat_tokens.get(team_id) == token:
+            _active_chat_tokens.pop(team_id, None)
+            _active_chat_container_ids.pop(team_id, None)
+        return True

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from hosted_app_fixture import _patched, app, hosted_resources, runtime_state
+from hosted_app_fixture import app, hosted_lifecycle, hosted_resources, runtime_state
 
 
 class HostedLimitAndTeardownTests(unittest.TestCase):
@@ -95,7 +95,8 @@ class HostedLimitAndTeardownTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             mock.patch.object(app.cleanup_state, "STATE_DIR", Path(directory)),
-            _patched(
+            mock.patch.multiple(
+                hosted_lifecycle,
                 _owned_teardown_brain=lambda *_args: (True, brain),
                 _stop_teardown_brain=phase("stop"),
                 _teardown_apps=phase("apps"),
@@ -137,7 +138,8 @@ class HostedLimitAndTeardownTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             mock.patch.object(app.cleanup_state, "STATE_DIR", Path(directory)),
-            _patched(
+            mock.patch.multiple(
+                hosted_lifecycle,
                 _owned_teardown_brain=lambda *_args: (True, brain),
                 _stop_teardown_brain=lambda _brain: True,
                 _teardown_apps=lambda _team_id: False,

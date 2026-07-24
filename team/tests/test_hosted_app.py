@@ -19,6 +19,7 @@ from hosted_app_fixture import (
     app,
     hosted_apps,
     hosted_assistants,
+    hosted_lifecycle,
     hosted_resources,
     runtime_state,
 )
@@ -855,7 +856,7 @@ class HostedCredentialLeaseTests(unittest.TestCase):
     def test_power_journal_uses_the_injected_path_lazily(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "private" / "journal.sqlite3"
-            with _patched(POWER_JOURNAL_PATH=path, _power_journal_instance=None):
+            with mock.patch.multiple(runtime_state, POWER_JOURNAL_PATH=path, _power_journal_instance=None):
                 self.assertFalse(path.exists())
                 journal = app._power_execution_journal()
                 self.addCleanup(journal.close)
@@ -893,14 +894,21 @@ class HostedCredentialLeaseTests(unittest.TestCase):
 
         journal = types.SimpleNamespace(purge=lambda generation: events.append(("journal-purged", generation)))
 
-        with _patched(
-            _lock_for=lambda _team_id: contextlib.nullcontext(),
-            _require_cleanup_authorization=lambda _team_id, _lease: events.append("authorized"),
-            _chat_lock_for=lambda _team_id: chat_lock,
-            _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
-            _power_execution_journal=lambda: journal,
-            _teardown=teardown,
-            _clear_team_id_runtime_state=lambda _team_id: events.append("runtime-cleared"),
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: chat_lock,
+                _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
+                _power_execution_journal=lambda: journal,
+                _clear_team_id_runtime_state=lambda _team_id: events.append("runtime-cleared"),
+            ),
+            mock.patch.object(
+                hosted_resources,
+                "_require_cleanup_authorization",
+                side_effect=lambda _team_id, _lease: events.append("authorized"),
+            ),
+            mock.patch.object(hosted_lifecycle, "_teardown", side_effect=teardown),
         ):
             result = app._destroy("team_1", lease)
 
@@ -947,14 +955,17 @@ class HostedCredentialLeaseTests(unittest.TestCase):
         purge_calls: list[str] = []
         journal = types.SimpleNamespace(purge=lambda generation: purge_calls.append(generation))
 
-        with _patched(
-            _lock_for=lambda _team_id: contextlib.nullcontext(),
-            _require_cleanup_authorization=lambda _team_id, _lease: object(),
-            _chat_lock_for=lambda _team_id: ChatLock(),
-            _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
-            _power_execution_journal=lambda: journal,
-            _teardown=teardown,
-            _clear_team_id_runtime_state=clear,
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: ChatLock(),
+                _brain_runtime=types.SimpleNamespace(delete_thread=delete_thread),
+                _power_execution_journal=lambda: journal,
+                _clear_team_id_runtime_state=clear,
+            ),
+            mock.patch.object(hosted_resources, "_require_cleanup_authorization", return_value=object()),
+            mock.patch.object(hosted_lifecycle, "_teardown", teardown),
         ):
             with self.assertRaises(app.ApiError) as caught:
                 app._destroy("team_1", lease)
@@ -999,15 +1010,16 @@ class HostedCredentialLeaseTests(unittest.TestCase):
             raise app.power_journal.PowerJournalError("private-journal-state")
 
         with (
-            _patched(
+            mock.patch.multiple(
+                runtime_state,
                 _lock_for=lambda _team_id: contextlib.nullcontext(),
-                _require_cleanup_authorization=lambda _team_id, _lease: object(),
                 _chat_lock_for=lambda _team_id: ChatLock(),
                 _brain_runtime=types.SimpleNamespace(delete_thread=lambda _thread: None),
                 _power_execution_journal=lambda: types.SimpleNamespace(purge=fail_purge),
-                _teardown=teardown,
                 _clear_team_id_runtime_state=clear,
             ),
+            mock.patch.object(hosted_resources, "_require_cleanup_authorization", return_value=object()),
+            mock.patch.object(hosted_lifecycle, "_teardown", teardown),
             self.assertRaises(app.ApiError) as failed,
         ):
             app._destroy("team_1", lease)

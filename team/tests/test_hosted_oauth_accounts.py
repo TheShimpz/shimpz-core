@@ -426,9 +426,9 @@ class HostedOAuthAccountTests(unittest.TestCase):
             ),
             object(),
         )
-        with _patched(
-            _assistant_accounts=self.store,
-            _assistant_account_challenges=challenges,
+        with (
+            mock.patch.object(runtime_state, "_assistant_accounts", self.store),
+            mock.patch.object(runtime_state, "_assistant_account_challenges", challenges),
         ):
             self.assertTrue(app._teardown_assistant_accounts(TEAM_ID))
 
