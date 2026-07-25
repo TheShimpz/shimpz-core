@@ -23,11 +23,14 @@ def manifest(
 ) -> bytes:
     hosts = ", ".join(f'"{host}"' for host in allowed_hosts)
     return (
+        "spec = 1\n"
+        'version = "0.1.0"\n'
         f'name = "{name}"\n'
         f'summary = "{summary}"\n'
         f"creators = {creators}\n"
         f'github = "{github}"\n'
         f"allowed_hosts = [{hosts}]\n"
+        'genesis = "Use the available Powers."\n'
         f"{accounts}"
     ).encode()
 
@@ -85,7 +88,7 @@ class ContractContainer:
 
 
 class AssistantManifestTests(unittest.TestCase):
-    def test_reads_the_sdk_baked_v3_manifest_path(self) -> None:
+    def test_reads_the_sdk_baked_v1_manifest_path(self) -> None:
         self.assertEqual(assistant_manifest.MANIFEST_PATH, "/opt/shimpz/shimpz.toml")
 
     def test_reference_fixture_matches_the_reviewed_cloudflare_security_intent(self) -> None:
@@ -124,7 +127,7 @@ class AssistantManifestTests(unittest.TestCase):
         self.assertEqual(contract.allowed_hosts, ())
         self.assertEqual(contract.accounts, ())
 
-    def test_v2_manifest_fields_fail_closed(self) -> None:
+    def test_legacy_manifest_fields_fail_closed(self) -> None:
         obsolete = (
             b"schema_version = 2\n",
             b'[powers.lookup]\nsummary = "Lookup."\n',
@@ -151,6 +154,9 @@ class AssistantManifestTests(unittest.TestCase):
     def test_public_metadata_is_required_and_bounded(self) -> None:
         invalid = (
             b'name = "Only a name"\n',
+            manifest().replace(b"spec = 1", b"spec = 4"),
+            manifest().replace(b'version = "0.1.0"', b'version = "v1"'),
+            manifest().replace(b'genesis = "Use the available Powers."', b'genesis = ""'),
             manifest(name=" Leading"),
             manifest(summary="line\nbreak"),
             manifest(creators="[]"),

@@ -30,8 +30,10 @@ MAX_ALLOWED_HOSTS = 32
 MAX_ACCOUNTS = 16
 MAX_IDENTIFIER_LENGTH = 80
 MAX_SECRET_ID_LENGTH = 64
+MAX_GENESIS_LENGTH = 65_536
 DEFAULT_CACHE_ENTRIES = 256
 _ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_VERSION_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 _CREATOR_RE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 _GITHUB_RE = re.compile(r"https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}\Z")
 _SECRET_VALUE_RE = re.compile(
@@ -135,6 +137,17 @@ def _public_text(value: object, *, kind: str, maximum: int) -> str:
         raise ManifestError(f"Assistant {kind} is invalid")
     if _SECRET_VALUE_RE.search(value) or _JWT_RE.fullmatch(value.strip()):
         raise ManifestError(f"Assistant {kind} resembles credential material")
+    return value
+
+
+def _genesis(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > MAX_GENESIS_LENGTH
+        or any(not character.isprintable() and character not in {"\n", "\t"} for character in value)
+    ):
+        raise ManifestError("Assistant genesis is invalid")
     return value
 
 
@@ -411,7 +424,16 @@ def _manifest_table(raw: bytes) -> dict[str, object]:
         raise ManifestError("Assistant manifest is invalid TOML") from exc
     if not isinstance(manifest, dict):
         raise ManifestError("Assistant manifest is invalid")
-    required = {"name", "summary", "creators", "github", "allowed_hosts"}
+    required = {
+        "spec",
+        "version",
+        "name",
+        "summary",
+        "creators",
+        "github",
+        "allowed_hosts",
+        "genesis",
+    }
     if not required <= set(manifest) or set(manifest) - (required | {"accounts"}):
         raise ManifestError("Assistant manifest contains an unsupported top-level field")
     _reject_credential_material(manifest)
@@ -421,8 +443,14 @@ def _manifest_table(raw: bytes) -> dict[str, object]:
 def parse_manifest_contract(raw: bytes) -> ManifestContract:
     """Parse the bounded public security contract from one UTF-8 TOML manifest."""
     manifest = _manifest_table(raw)
+    if manifest["spec"] != 1:
+        raise ManifestError("Assistant spec is unsupported")
+    version = manifest["version"]
+    if not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None:
+        raise ManifestError("Assistant version is invalid")
     _public_text(manifest["name"], kind="name", maximum=80)
     _public_text(manifest["summary"], kind="summary", maximum=160)
+    _genesis(manifest["genesis"])
     creators = manifest["creators"]
     if (
         not isinstance(creators, list)
