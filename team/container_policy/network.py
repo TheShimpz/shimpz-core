@@ -59,31 +59,39 @@ def _normalized_capabilities(values: object) -> set[str]:
     return {str(value).upper().removeprefix("CAP_") for value in values}
 
 
-def _memory_bytes(value: str, setting: str) -> int:
+def hard_memory_bytes(value: str | int | float, *, setting: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
     match = re.fullmatch(
         r"(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<unit>[kmgtp]?)(?:i?b)?",
-        value.strip(),
+        str(value).strip(),
         re.IGNORECASE,
     )
     if match is None:
-        raise ValueError(f"{setting} must be a positive Docker memory size")
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
     try:
         parsed = Decimal(match.group("number")) * Decimal(1024 ** "bkmgtp".index(match.group("unit").lower() or "b"))
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"{setting} must be a positive Docker memory size") from exc
+        raise ValueError(f"{setting} must be a valid positive Docker memory size") from exc
     if parsed <= 0 or parsed != parsed.to_integral_value():
-        raise ValueError(f"{setting} must be a positive Docker memory size")
+        raise ValueError(f"{setting} must be a valid positive Docker memory size")
     return int(parsed)
 
 
-BRAIN_MEMORY_BYTES = _memory_bytes(os.environ.get("SHIMPZ_TEAM_MEM_LIMIT", "64m"), "SHIMPZ_TEAM_MEM_LIMIT")
-BRAIN_MEMORY_RESERVATION_BYTES = _memory_bytes(
+BRAIN_MEMORY_BYTES = hard_memory_bytes(
+    os.environ.get("SHIMPZ_TEAM_MEM_LIMIT", "64m"),
+    setting="SHIMPZ_TEAM_MEM_LIMIT",
+)
+BRAIN_MEMORY_RESERVATION_BYTES = hard_memory_bytes(
     os.environ.get("SHIMPZ_TEAM_MEM_RESERVATION", "16m"),
-    "SHIMPZ_TEAM_MEM_RESERVATION",
+    setting="SHIMPZ_TEAM_MEM_RESERVATION",
 )
 BRAIN_NANO_CPUS = int(os.environ.get("SHIMPZ_TEAM_NANO_CPUS", str(100_000_000)))
 BRAIN_PIDS_LIMIT = int(os.environ.get("SHIMPZ_TEAM_PIDS_LIMIT", "128"))
-APP_MEMORY_BYTES = _memory_bytes(os.environ.get("SHIMPZ_TEAM_APP_MEM_LIMIT", "1g"), "SHIMPZ_TEAM_APP_MEM_LIMIT")
+APP_MEMORY_BYTES = hard_memory_bytes(
+    os.environ.get("SHIMPZ_TEAM_APP_MEM_LIMIT", "1g"),
+    setting="SHIMPZ_TEAM_APP_MEM_LIMIT",
+)
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_TEAM_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_TEAM_APP_PIDS_LIMIT", "256"))
 TEAM_LOG_MAX_SIZE = "5m"
@@ -507,7 +515,7 @@ def _tmpfs_valid(host_config: Mapping, *, size: int) -> bool:
             return False
         parsed[key] = value
     try:
-        actual_size = _memory_bytes(parsed.get("size", ""), "tmpfs size")
+        actual_size = hard_memory_bytes(parsed.get("size", ""), setting="tmpfs size")
     except ValueError:
         return False
     # Docker's default tmpfs mode is 01777; Engine inspect may omit that default or preserve an

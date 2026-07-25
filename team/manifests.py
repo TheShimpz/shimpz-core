@@ -15,7 +15,6 @@ import ipaddress
 import os
 import re
 import tarfile
-from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
 
 import docker
@@ -85,27 +84,8 @@ NANO_CPUS = int(os.environ.get("SHIMPZ_TEAM_NANO_CPUS", str(100_000_000)))
 PIDS_LIMIT = int(os.environ.get("SHIMPZ_TEAM_PIDS_LIMIT", "128"))
 
 
-def hard_memory_bytes(value: str | int | float, *, setting: str) -> int:
-    """Parse one Docker hard-memory setting once and reject an absent/unbounded value."""
-    if isinstance(value, bool):
-        raise ValueError(f"{setting} must be a valid positive Docker memory size")
-    match = re.fullmatch(
-        r"(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<unit>[kmgtp]?)(?:i?b)?",
-        str(value).strip(),
-        re.IGNORECASE,
-    )
-    if match is None:
-        raise ValueError(f"{setting} must be a valid positive Docker memory size")
-    try:
-        parsed = Decimal(match.group("number")) * Decimal(1024 ** "bkmgtp".index(match.group("unit").lower() or "b"))
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"{setting} must be a valid positive Docker memory size") from exc
-    if parsed <= 0 or parsed != parsed.to_integral_value():
-        raise ValueError(f"{setting} must be a valid positive Docker memory size")
-    return int(parsed)
-
-
-MEM_LIMIT_BYTES = hard_memory_bytes(MEM_LIMIT, setting="SHIMPZ_TEAM_MEM_LIMIT")
+hard_memory_bytes = network_policy.hard_memory_bytes
+MEM_LIMIT_BYTES = network_policy.BRAIN_MEMORY_BYTES
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
@@ -131,7 +111,7 @@ def model_for_brain(brain: str, value: object = None) -> str:
 APP_MEM_LIMIT = os.environ.get("SHIMPZ_TEAM_APP_MEM_LIMIT", "1g")
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_TEAM_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_TEAM_APP_PIDS_LIMIT", "256"))
-APP_MEM_LIMIT_BYTES = hard_memory_bytes(APP_MEM_LIMIT, setting="SHIMPZ_TEAM_APP_MEM_LIMIT")
+APP_MEM_LIMIT_BYTES = network_policy.APP_MEMORY_BYTES
 # The MANY-tenant egress proxy (per-app token-gated) is connected into a Team's core network only
 # when an installed App declares egress.
 APP_EGRESS_CONTAINER = network_policy.APP_EGRESS_CONTAINER
@@ -139,14 +119,14 @@ APP_EGRESS_CONTAINER = network_policy.APP_EGRESS_CONTAINER
 # Vector reads Docker's json-file logs and derives the team from the line's own label (no Docker API).
 # Keep the required json-file driver, but never inherit its unbounded default: a hostile workload can
 # otherwise fill the host filesystem without exceeding its cgroup memory/PID admission envelope.
-TEAM_LOG_MAX_SIZE = "5m"
-TEAM_LOG_MAX_FILE = "2"
+TEAM_LOG_MAX_SIZE = network_policy.TEAM_LOG_MAX_SIZE
+TEAM_LOG_MAX_FILE = network_policy.TEAM_LOG_MAX_FILE
 TEAM_LOG_CONFIG = docker.types.LogConfig(
     type=docker.types.LogConfig.types.JSON,
     config={
         "labels": "team.id",
-        "max-size": TEAM_LOG_MAX_SIZE,
-        "max-file": TEAM_LOG_MAX_FILE,
+        "max-size": network_policy.TEAM_LOG_MAX_SIZE,
+        "max-file": network_policy.TEAM_LOG_MAX_FILE,
     },
 )
 
