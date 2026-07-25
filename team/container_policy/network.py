@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from decimal import Decimal, InvalidOperation
 
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")
@@ -562,7 +562,7 @@ def _log_config_valid(host_config: Mapping) -> bool:
     }
 
 
-def _resource_and_namespace_posture_valid(host_config: Mapping, role: str) -> bool:
+def _resource_and_namespace_posture_reason(host_config: Mapping, role: str) -> str | None:
     if role == "brain":
         expected = (
             BRAIN_MEMORY_BYTES,
@@ -579,38 +579,32 @@ def _resource_and_namespace_posture_valid(host_config: Mapping, role: str) -> bo
     memory_reservation = host_config.get("MemoryReservation")
     if memory_reservation is None:
         memory_reservation = 0
-    return (
-        (
-            host_config.get("Memory"),
-            memory_reservation,
-            host_config.get("NanoCpus"),
-            host_config.get("PidsLimit"),
-        )
-        == expected
-        and host_config.get("MemorySwap") == expected[0]
-        and _tmpfs_valid(host_config, size=tmpfs_size)
-        and _ulimits_valid(host_config, nofile=nofile)
-        and _restart_policy_valid(host_config)
-        and _log_config_valid(host_config)
-        and not bool(host_config.get("PortBindings"))
-        and not bool(host_config.get("PublishAllPorts"))
-        and not bool(host_config.get("Devices"))
-        and not bool(host_config.get("DeviceRequests"))
-        and not bool(host_config.get("Binds"))
-        # Current Engine inspect normalizes the explicitly requested IPC/cgroup namespace modes to
-        # concrete strings. Missing/null values are therefore lack of proof, not safe defaults. UTS
-        # keeps Engine's empty spelling for its private default (and some API versions expose the
-        # equivalent explicit spelling).
-        and host_config.get("PidMode") == ""
-        and host_config.get("IpcMode") == "private"
-        and host_config.get("UTSMode") in {"", "private"}
-        and host_config.get("CgroupnsMode") == "private"
-        # Empty means "use the daemon's configured mapping". `host` would explicitly disable an
-        # externally configured userns-remap policy, so it is never accepted. The mandatory runsc
-        # Sentry user namespace is runtime-internal and must be proved from the host as documented in
-        # GVISOR.md; Docker's HostConfig cannot attest to that namespace.
-        and host_config.get("UsernsMode") == ""
+    checks: tuple[tuple[str, Callable[[], bool]], ...] = (
+        ("memory", lambda: host_config.get("Memory") == expected[0]),
+        ("memory-reservation", lambda: memory_reservation == expected[1]),
+        ("nano-cpus", lambda: host_config.get("NanoCpus") == expected[2]),
+        ("pids-limit", lambda: host_config.get("PidsLimit") == expected[3]),
+        ("memory-swap", lambda: host_config.get("MemorySwap") == expected[0]),
+        ("tmpfs", lambda: _tmpfs_valid(host_config, size=tmpfs_size)),
+        ("ulimits", lambda: _ulimits_valid(host_config, nofile=nofile)),
+        ("restart-policy", lambda: _restart_policy_valid(host_config)),
+        ("log-config", lambda: _log_config_valid(host_config)),
+        ("port-bindings", lambda: not bool(host_config.get("PortBindings"))),
+        ("publish-all-ports", lambda: not bool(host_config.get("PublishAllPorts"))),
+        ("devices", lambda: not bool(host_config.get("Devices"))),
+        ("device-requests", lambda: not bool(host_config.get("DeviceRequests"))),
+        ("binds", lambda: not bool(host_config.get("Binds"))),
+        ("pid-mode", lambda: host_config.get("PidMode") == ""),
+        ("ipc-mode", lambda: host_config.get("IpcMode") == "private"),
+        ("uts-mode", lambda: host_config.get("UTSMode") in {"", "private"}),
+        ("cgroupns-mode", lambda: host_config.get("CgroupnsMode") == "private"),
+        ("userns-mode", lambda: host_config.get("UsernsMode") == ""),
     )
+    return next((reason for reason, valid in checks if not valid()), None)
+
+
+def _resource_and_namespace_posture_valid(host_config: Mapping, role: str) -> bool:
+    return _resource_and_namespace_posture_reason(host_config, role) is None
 
 
 def workload_security_valid(
