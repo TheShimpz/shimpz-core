@@ -10,12 +10,14 @@ here, rebuilt like any other. Packaging follows the reviewed Assistant manifest 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-import assistant_manifest
+import assistant_registry
+from assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
 from container_policy import network as network_policy
+
+__all__ = ("AccountSpec", "PowerSpec", "validate_power_input", "validate_power_output")
 
 # Also bounds derived names: the per-app DB project "team_<sha10>_<app>" stays within pg-driver's
 # 58-char cap at this id length (see manifests.team_app_db_project).
@@ -25,28 +27,12 @@ RESERVED_APP_IDS = network_policy.RESERVED_SERVICE_ALIASES
 SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE = (
     "ghcr.io/theshimpz/shimpz-space@sha256:39d19e65fc0e3f36b0fccd8dc5eb1c60ee84ead7c3e9e84558fe428af038ef18"
 )
-_REVIEWED_ASSISTANTS = assistant_manifest.load_reviewed_catalog()
+_REVIEWED_ASSISTANTS = assistant_registry.REVIEWED_ASSISTANTS
 _CLOUDFLARE = _REVIEWED_ASSISTANTS["shimpz-cloudflare"]
 
 
 class MarketplaceError(Exception):
     """The requested app id is malformed or not in this Space's registry — nothing was touched."""
-
-
-@dataclass(frozen=True, slots=True)
-class PowerSpec:
-    method: str
-    path: str
-    summary: str
-    input_schema: Mapping[str, Any]
-    output_schema: Mapping[str, Any]
-    accounts: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class AccountSpec:
-    provider: str
-    scopes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +83,7 @@ APPS: dict[str, AppSpec] = {
                 power_id: PowerSpec(
                     method=power["method"],
                     path=power["path"],
-                    summary=power_id.replace("-", " ").capitalize(),
+                    summary=assistant_registry.power_summary(power_id),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],
                     accounts=tuple(power["accounts"]),
@@ -123,7 +109,11 @@ def health_response_ok(status: object) -> bool:
 
 def is_digest_image(image: object) -> bool:
     """True only for a complete registry/repository OCI sha256 reference."""
-    return isinstance(image, str) and DIGEST_IMAGE_RE.fullmatch(image) is not None
+    return (
+        isinstance(image, str)
+        and DIGEST_IMAGE_RE.fullmatch(image) is not None
+        and assistant_registry.digest_is_bound(image)
+    )
 
 
 def validate_app_id(app_id: object) -> str:
@@ -141,19 +131,3 @@ def resolve(app_id: object) -> tuple[str, AppSpec]:
     if spec is None:
         raise MarketplaceError(f"app {aid!r} is not deployable from this Space's registry")
     return aid, spec
-
-
-def validate_power_input(assistant_id: str, power: str, payload: object) -> dict[str, object]:
-    try:
-        validator = _REVIEWED_ASSISTANTS[assistant_id].power_validators[power]["input"]
-    except KeyError as exc:
-        raise ValueError("the Power has no declared input contract") from exc
-    return assistant_manifest.validate_schema_payload(validator, payload)
-
-
-def validate_power_output(assistant_id: str, power: str, payload: object) -> dict[str, object]:
-    try:
-        validator = _REVIEWED_ASSISTANTS[assistant_id].power_validators[power]["output"]
-    except KeyError as exc:
-        raise ValueError("the Power has no declared output contract") from exc
-    return assistant_manifest.validate_schema_payload(validator, payload)

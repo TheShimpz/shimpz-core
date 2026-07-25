@@ -11,35 +11,21 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import assistant_manifest
+import assistant_registry
+from assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
+
+__all__ = ("AccountSpec", "PowerSpec", "validate_power_input", "validate_power_output")
 
 REGISTRY_PATH = Path("/etc/shimpz/local-assistants.json")
 _DIGEST_REF = re.compile(
     r"(?:[a-z0-9.-]+(?::[0-9]{1,5})?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}"
 )
-_ZERO_DIGEST = "0" * 64
-_REVIEWED_ASSISTANTS = assistant_manifest.load_reviewed_catalog()
+_REVIEWED_ASSISTANTS = assistant_registry.REVIEWED_ASSISTANTS
 
 
 class RegistryError(RuntimeError):
     """The baked registry is missing or is not safe to execute."""
-
-
-@dataclass(frozen=True, slots=True)
-class PowerSpec:
-    method: str
-    path: str
-    summary: str
-    input_schema: dict[str, object]
-    output_schema: dict[str, object]
-    accounts: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class AccountSpec:
-    provider: str
-    scopes: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +44,7 @@ def is_digest_ref(value: object) -> bool:
     return (
         isinstance(value, str)
         and _DIGEST_REF.fullmatch(value) is not None
-        and not value.endswith(f"sha256:{_ZERO_DIGEST}")
+        and assistant_registry.digest_is_bound(value)
     )
 
 
@@ -100,7 +86,7 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
                 power_id: PowerSpec(
                     method=power["method"],
                     path=power["path"],
-                    summary=power_id.replace("-", " ").capitalize(),
+                    summary=assistant_registry.power_summary(power_id),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],
                     accounts=tuple(power["accounts"]),
@@ -116,19 +102,3 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
         )
         registry[spec.assistant_id] = spec
     return registry
-
-
-def validate_power_input(assistant_id: str, power: str, payload: object) -> dict[str, object]:
-    try:
-        validator = _REVIEWED_ASSISTANTS[assistant_id].power_validators[power]["input"]
-    except KeyError as exc:
-        raise ValueError("the Power has no declared input contract") from exc
-    return assistant_manifest.validate_schema_payload(validator, payload)
-
-
-def validate_power_output(assistant_id: str, power: str, payload: object) -> dict[str, object]:
-    try:
-        validator = _REVIEWED_ASSISTANTS[assistant_id].power_validators[power]["output"]
-    except KeyError as exc:
-        raise ValueError("the Power has no declared output contract") from exc
-    return assistant_manifest.validate_schema_payload(validator, payload)
