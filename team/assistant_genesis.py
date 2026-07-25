@@ -1,107 +1,26 @@
-"""Bounded, immutable Assistant Genesis admission and controller-side pre-cache."""
+"""Bounded cache for Assistant guidance stored in `shimpz.toml`."""
 
 from __future__ import annotations
 
-import io
-import tarfile
 import threading
 from collections import OrderedDict
-from contextlib import ExitStack
 
-GENESIS_PATH = "/opt/shimpz-assistant/GENESIS.md"
-MAX_GENESIS_BYTES = 128 * 1024
-MAX_ARCHIVE_BYTES = MAX_GENESIS_BYTES + (32 * 1024)
+import assistant_manifest
+
+GENESIS_PATH = assistant_manifest.MANIFEST_PATH
 DEFAULT_CACHE_ENTRIES = 256
 
 
 class GenesisError(RuntimeError):
-    """An immutable Assistant package did not expose a safe Genesis contract."""
-
-
-def canonical_genesis(raw: bytes) -> str:
-    """Decode and canonicalize one bounded Markdown document for a model prompt."""
-    if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_GENESIS_BYTES:
-        raise GenesisError("Assistant Genesis has an invalid size")
-    try:
-        value = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise GenesisError("Assistant Genesis is not UTF-8") from exc
-    value = value.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if (
-        not value
-        or len(value.encode("utf-8")) > MAX_GENESIS_BYTES
-        or any(not character.isprintable() and character not in {"\n", "\t"} for character in value)
-    ):
-        raise GenesisError("Assistant Genesis contains invalid text")
-    return value
-
-
-def _bounded_archive(chunks) -> bytes:
-    archive = bytearray()
-    try:
-        with ExitStack() as cleanup:
-            close = getattr(chunks, "close", None)
-            if callable(close):
-                cleanup.callback(close)
-            for chunk in chunks:
-                if not isinstance(chunk, bytes):
-                    raise GenesisError("Assistant Genesis archive is invalid")
-                archive.extend(chunk)
-                if len(archive) > MAX_ARCHIVE_BYTES:
-                    raise GenesisError("Assistant Genesis archive is too large")
-    except GenesisError:
-        raise
-    except Exception as exc:
-        raise GenesisError("Assistant Genesis archive is unavailable") from exc
-    return bytes(archive)
+    """An immutable Assistant manifest did not expose safe model guidance."""
 
 
 def read_container_genesis(container) -> str:
-    """Read the fixed regular file from a read-only, digest-bound Assistant root."""
+    """Read `genesis` from the fixed, read-only Spec v1 manifest."""
     try:
-        chunks, metadata = container.get_archive(GENESIS_PATH)
-    except Exception as exc:
-        raise GenesisError("Assistant Genesis is unavailable") from exc
-    if not isinstance(metadata, dict):
-        raise GenesisError("Assistant Genesis metadata is invalid")
-    size = metadata.get("size")
-    mode = metadata.get("mode")
-    name = metadata.get("name")
-    if (
-        name != "GENESIS.md"
-        or not isinstance(size, int)
-        or isinstance(size, bool)
-        or not 1 <= size <= MAX_GENESIS_BYTES
-        or not isinstance(mode, int)
-        or isinstance(mode, bool)
-        or mode != 0o444
-    ):
-        raise GenesisError("Assistant Genesis metadata is invalid")
-
-    archive = _bounded_archive(chunks)
-
-    try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
-            members = bundle.getmembers()
-            if (
-                len(members) != 1
-                or members[0].name not in {"GENESIS.md", "./GENESIS.md"}
-                or not members[0].isreg()
-                or members[0].size != size
-                or members[0].mode & 0o777 != 0o444
-            ):
-                raise GenesisError("Assistant Genesis archive is invalid")
-            extracted = bundle.extractfile(members[0])
-            if extracted is None:
-                raise GenesisError("Assistant Genesis archive is invalid")
-            raw = extracted.read(MAX_GENESIS_BYTES + 1)
-    except GenesisError:
-        raise
-    except (tarfile.TarError, OSError, EOFError) as exc:
-        raise GenesisError("Assistant Genesis archive is invalid") from exc
-    if len(raw) != size:
-        raise GenesisError("Assistant Genesis archive is invalid")
-    return canonical_genesis(raw)
+        return assistant_manifest.read_container_manifest_genesis(container)
+    except assistant_manifest.ManifestError as exc:
+        raise GenesisError("Assistant Genesis is invalid") from exc
 
 
 class GenesisCache:

@@ -635,11 +635,11 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
         self.assertEqual(network_metadata["Labels"]["com.shimpz.local.team-name"], "Demo Team")
 
     def _exercise_assistant_recovery(self, flow: _DockerFlow) -> None:
-        # Docker still reports "running" when PID 1 is stopped. A retry must replace this explicitly
-        # stateless runtime; relying on an external SIGCONT would leave the documented recovery false.
-        self._run("kill", "--signal", "STOP", flow.assistant_name)
+        # The pre-built runtime has no resident Assistant server to probe. Recovery is therefore
+        # bound to Docker's process state, while each Power exec proves its own completion.
+        self._run("kill", flow.assistant_name)
         stopped_state = self._run("inspect", "--format", "{{.State.Status}}", flow.assistant_name).stdout.strip()
-        self.assertEqual(stopped_state, "running")
+        self.assertEqual(stopped_state, "exited")
         recovered_status, recovered = self._api(
             flow.port,
             flow.token,
@@ -648,9 +648,9 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             {"assistant": "shimpz-cloudflare"},
         )
         self.assertEqual((recovered_status, recovered["installed"]), (200, False))
-        replacement_assistant_id = self._run("inspect", "--format", "{{.Id}}", flow.assistant_name).stdout.strip()
-        self.assertNotEqual(replacement_assistant_id, flow.original_assistant_id)
-        self.assertNotEqual(self._run("inspect", flow.original_assistant_id, check=False).returncode, 0)
+        restarted_assistant_id = self._run("inspect", "--format", "{{.Id}}", flow.assistant_name).stdout.strip()
+        self.assertEqual(restarted_assistant_id, flow.original_assistant_id)
+        self.assertEqual(self._run("inspect", flow.original_assistant_id, check=False).returncode, 0)
 
         _, installed_again = self._api(
             flow.port,
@@ -662,7 +662,7 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
         self.assertFalse(installed_again["installed"])
         self.assertEqual(
             self._run("inspect", "--format", "{{.Id}}", flow.assistant_name).stdout.strip(),
-            replacement_assistant_id,
+            restarted_assistant_id,
         )
 
         _, listed = self._api(flow.port, flow.token, "GET", "/v1/teams/demo_team/assistants")

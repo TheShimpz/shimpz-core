@@ -478,6 +478,12 @@ def parse_manifest_contract(raw: bytes) -> ManifestContract:
     )
 
 
+def parse_manifest_genesis(raw: bytes) -> str:
+    """Read the canonical model guidance from one complete Spec v1 manifest."""
+    manifest = _manifest_table(raw)
+    return _genesis(manifest["genesis"]).strip()
+
+
 def _bounded_archive(chunks: Iterable[bytes], maximum: int = MAX_ARCHIVE_BYTES) -> bytes:
     archive = bytearray()
     try:
@@ -557,6 +563,11 @@ def _read_container_manifest_bytes(container) -> bytes:
 def read_container_manifest_contract(container) -> ManifestContract:
     """Read the fixed regular manifest contract from a digest-bound root."""
     return parse_manifest_contract(_read_container_manifest_bytes(container))
+
+
+def read_container_manifest_genesis(container) -> str:
+    """Read model guidance from the same fixed manifest admitted for security intent."""
+    return parse_manifest_genesis(_read_container_manifest_bytes(container))
 
 
 def read_container_machine_contract(
