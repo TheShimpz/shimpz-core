@@ -1,0 +1,667 @@
+{
+  "version": 1,
+  "fixtures": {
+    "team_list_delegation": {
+      "schema": "delegation-claims.schema.json",
+      "value": {
+        "iss": "https://developers.shimpz.com",
+        "aud": "https://developers.shimpz.com/team-controller",
+        "account_id": "creator_1",
+        "action": "teams:list",
+        "jti": "delegation_1",
+        "iat": 1000,
+        "exp": 1060,
+        "request_id": "request_1",
+        "idempotency_key": "idempotency_1"
+      }
+    },
+    "assistant_install_delegation": {
+      "schema": "delegation-claims.schema.json",
+      "value": {
+        "iss": "https://developers.shimpz.com",
+        "aud": "https://developers.shimpz.com/team-controller",
+        "account_id": "creator_1",
+        "action": "assistant:install",
+        "team_id": "team_1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "jti": "delegation_2",
+        "iat": 1000,
+        "exp": 1060,
+        "request_id": "request_2",
+        "idempotency_key": "idempotency_2"
+      }
+    },
+    "team_list_response": {
+      "schema": "team-list-response.schema.json",
+      "value": {
+        "version": 1,
+        "teams": [
+          {
+            "id": "team_1",
+            "name": "First Team"
+          },
+          {
+            "id": "team_2",
+            "name": "Second Team"
+          }
+        ]
+      }
+    },
+    "resolve_response": {
+      "schema": "resolve-response.schema.json",
+      "value": {
+        "version": 1,
+        "assistant_id": "hello-world",
+        "name": "Hello World",
+        "assistant_version": "0.1.0",
+        "creators": [
+          "@creator"
+        ],
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image_reference": "ghcr.io/theshimpz/shimpz-assistants@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oci_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ],
+        "runtime": {
+          "kind": "assistant-direct-v1",
+          "db": false,
+          "user": "10001:10001",
+          "interpreter": "/opt/shimpz/runtime/bin/python3.14",
+          "entrypoint": [
+            "/opt/shimpz/runtime/bin/python3.14",
+            "-c",
+            "import signal; signal.pause()"
+          ],
+          "power_executable": {
+            "path": "/usr/local/bin/shimpz-power",
+            "mode": 365
+          },
+          "manifest": {
+            "path": "/opt/shimpz/shimpz.toml",
+            "mode": 292
+          },
+          "machine_contract": {
+            "path": "/opt/shimpz/shimpz.contract.json",
+            "mode": 292
+          },
+          "read_only_root": true,
+          "tmpfs_bytes": 67108864,
+          "capabilities": [],
+          "no_new_privileges": true
+        },
+        "manifest_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "machine_contract_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "machine_contract": {
+          "version": 1,
+          "powers": [
+            {
+              "id": "hello",
+              "input_schema": {
+                "type": "object"
+              },
+              "output_schema": {
+                "type": "object"
+              },
+              "accounts": [
+                "cloudflare"
+              ]
+            }
+          ]
+        },
+        "allowed_hosts": [
+          "api.cloudflare.com"
+        ],
+        "accounts": [
+          {
+            "id": "cloudflare",
+            "provider": "cloudflare",
+            "scopes": [
+              "zone.read"
+            ]
+          }
+        ],
+        "review_state": "pending",
+        "blocked": false,
+        "sbom_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "scan_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "trust": {
+          "signature_reference": "ghcr.io/theshimpz/shimpz-assistant-trust@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "provenance_reference": "ghcr.io/theshimpz/shimpz-assistant-trust@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "signer_identity": "arn:aws:kms:us-east-1:123456789012:key/example"
+        }
+      }
+    },
+    "controller_install_request": {
+      "schema": "controller-install-request.schema.json",
+      "value": {
+        "version": 1,
+        "team_id": "team_1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request_id": "request_2",
+        "idempotency_key": "idempotency_2"
+      }
+    },
+    "controller_install_response": {
+      "schema": "controller-install-response.schema.json",
+      "value": {
+        "version": 1,
+        "status": "installed",
+        "team_id": "team_1",
+        "assistant_id": "hello-world",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "oci_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    },
+    "install_authorization_request": {
+      "schema": "install-authorization-request.schema.json",
+      "value": {
+        "version": 1,
+        "account_id": "creator_1",
+        "team_id": "team_1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "oci_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "delegation_jti": "delegation_2",
+        "request_id": "request_2",
+        "idempotency_key": "idempotency_2"
+      }
+    },
+    "install_authorization_receipt": {
+      "schema": "install-authorization-receipt.schema.json",
+      "value": {
+        "version": 1,
+        "authorization_id": "authorization_1",
+        "account_id": "creator_1",
+        "team_id": "team_1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "oci_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "delegation_jti": "delegation_2",
+        "request_id": "request_2",
+        "idempotency_key": "idempotency_2",
+        "issued_at": 2000,
+        "expires_at": 2120
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "team_list_delegation",
+      "fixture": "team_list_delegation",
+      "valid": true
+    },
+    {
+      "name": "assistant_install_delegation",
+      "fixture": "assistant_install_delegation",
+      "valid": true
+    },
+    {
+      "name": "delegation_wrong_issuer",
+      "fixture": "team_list_delegation",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "iss"
+        ],
+        "value": "https://attacker.example"
+      }
+    },
+    {
+      "name": "delegation_wrong_audience",
+      "fixture": "team_list_delegation",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "aud"
+        ],
+        "value": "https://developers.shimpz.com/another-service"
+      }
+    },
+    {
+      "name": "team_list_delegation_with_install_context",
+      "fixture": "team_list_delegation",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "team_id"
+        ],
+        "value": "team_1"
+      }
+    },
+    {
+      "name": "install_delegation_without_team",
+      "fixture": "assistant_install_delegation",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "remove",
+        "path": [
+          "team_id"
+        ]
+      }
+    },
+    {
+      "name": "delegation_zero_lifetime",
+      "fixture": "team_list_delegation",
+      "valid": false,
+      "error": "delegation_lifetime",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "exp"
+        ],
+        "value": 1000
+      }
+    },
+    {
+      "name": "delegation_lifetime_over_60_seconds",
+      "fixture": "assistant_install_delegation",
+      "valid": false,
+      "error": "delegation_lifetime",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "exp"
+        ],
+        "value": 1061
+      }
+    },
+    {
+      "name": "team_list_response",
+      "fixture": "team_list_response",
+      "valid": true
+    },
+    {
+      "name": "team_list_unknown_field",
+      "fixture": "team_list_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "next_page"
+        ],
+        "value": "unexpected"
+      }
+    },
+    {
+      "name": "team_list_invalid_team_id",
+      "fixture": "team_list_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "teams"
+        ],
+        "value": [
+          {
+            "id": "../team",
+            "name": "Invalid Team"
+          }
+        ]
+      }
+    },
+    {
+      "name": "resolve_pending",
+      "fixture": "resolve_response",
+      "valid": true
+    },
+    {
+      "name": "resolve_approved",
+      "fixture": "resolve_response",
+      "valid": true,
+      "mutation": {
+        "op": "set",
+        "path": [
+          "review_state"
+        ],
+        "value": "approved"
+      }
+    },
+    {
+      "name": "resolve_catalog_rejected",
+      "fixture": "resolve_response",
+      "valid": true,
+      "mutation": {
+        "op": "set",
+        "path": [
+          "review_state"
+        ],
+        "value": "catalog_rejected"
+      }
+    },
+    {
+      "name": "resolve_mutable_image",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "image_reference"
+        ],
+        "value": "ghcr.io/theshimpz/shimpz-assistants:latest"
+      }
+    },
+    {
+      "name": "resolve_image_digest_mismatch",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "resolve_digest_mismatch",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "oci_digest"
+        ],
+        "value": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "name": "resolve_wrong_runtime_kind",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "kind"
+        ],
+        "value": "assistant-http-v1"
+      }
+    },
+    {
+      "name": "resolve_runtime_port",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "port"
+        ],
+        "value": 8080
+      }
+    },
+    {
+      "name": "resolve_wrong_interpreter",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "interpreter"
+        ],
+        "value": "/usr/bin/python3"
+      }
+    },
+    {
+      "name": "resolve_wrong_power_mode",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "power_executable",
+          "mode"
+        ],
+        "value": 511
+      }
+    },
+    {
+      "name": "resolve_wrong_entrypoint",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "entrypoint"
+        ],
+        "value": [
+          "/bin/sh"
+        ]
+      }
+    },
+    {
+      "name": "resolve_with_capability",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "runtime",
+          "capabilities"
+        ],
+        "value": [
+          "NET_ADMIN"
+        ]
+      }
+    },
+    {
+      "name": "resolve_blocked",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "blocked"
+        ],
+        "value": true
+      }
+    },
+    {
+      "name": "resolve_wrong_trust_repository",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "trust",
+          "signature_reference"
+        ],
+        "value": "ghcr.io/attacker/signatures@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "name": "resolve_embedded_signature_bundle",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "trust",
+          "signature_bundle"
+        ],
+        "value": {
+          "payload": "not-admitted"
+        }
+      }
+    },
+    {
+      "name": "resolve_reserved_assistant_id",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "assistant_id"
+        ],
+        "value": "postgres"
+      }
+    },
+    {
+      "name": "resolve_machine_contract_unknown_field",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "machine_contract",
+          "server"
+        ],
+        "value": {
+          "port": 8080
+        }
+      }
+    },
+    {
+      "name": "resolve_missing_account_intent",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "resolve_account_mismatch",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "accounts"
+        ],
+        "value": []
+      }
+    },
+    {
+      "name": "resolve_duplicate_account_intent",
+      "fixture": "resolve_response",
+      "valid": false,
+      "error": "resolve_account_mismatch",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "accounts"
+        ],
+        "value": [
+          {
+            "id": "cloudflare",
+            "provider": "cloudflare",
+            "scopes": [
+              "zone.read"
+            ]
+          },
+          {
+            "id": "cloudflare",
+            "provider": "cloudflare",
+            "scopes": [
+              "zone.read"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "controller_install_request",
+      "fixture": "controller_install_request",
+      "valid": true
+    },
+    {
+      "name": "controller_install_request_unknown_field",
+      "fixture": "controller_install_request",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "image"
+        ],
+        "value": "attacker/image:latest"
+      }
+    },
+    {
+      "name": "controller_install_request_bad_digest",
+      "fixture": "controller_install_request",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "source_digest"
+        ],
+        "value": "sha256:ABC"
+      }
+    },
+    {
+      "name": "controller_install_response",
+      "fixture": "controller_install_response",
+      "valid": true
+    },
+    {
+      "name": "controller_install_response_wrong_status",
+      "fixture": "controller_install_response",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "status"
+        ],
+        "value": "queued"
+      }
+    },
+    {
+      "name": "install_authorization_request",
+      "fixture": "install_authorization_request",
+      "valid": true
+    },
+    {
+      "name": "install_authorization_request_without_delegation",
+      "fixture": "install_authorization_request",
+      "valid": false,
+      "error": "schema_violation",
+      "mutation": {
+        "op": "remove",
+        "path": [
+          "delegation_jti"
+        ]
+      }
+    },
+    {
+      "name": "install_authorization_receipt",
+      "fixture": "install_authorization_receipt",
+      "valid": true
+    },
+    {
+      "name": "install_authorization_zero_lifetime",
+      "fixture": "install_authorization_receipt",
+      "valid": false,
+      "error": "authorization_lifetime",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "expires_at"
+        ],
+        "value": 2000
+      }
+    },
+    {
+      "name": "install_authorization_over_120_seconds",
+      "fixture": "install_authorization_receipt",
+      "valid": false,
+      "error": "authorization_lifetime",
+      "mutation": {
+        "op": "set",
+        "path": [
+          "expires_at"
+        ],
+        "value": 2121
+      }
+    }
+  ]
+}

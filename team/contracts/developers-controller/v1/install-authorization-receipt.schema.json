@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.shimpz.com/developers-controller/v1/install-authorization-receipt.schema.json",
+  "title": "Shimpz install authorization receipt v1",
+  "$ref": "definitions.schema.json#/$defs/installAuthorizationReceipt"
+}

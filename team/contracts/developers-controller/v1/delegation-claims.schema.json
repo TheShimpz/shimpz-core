@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.shimpz.com/developers-controller/v1/delegation-claims.schema.json",
+  "title": "Shimpz Developers delegation claims v1",
+  "$ref": "definitions.schema.json#/$defs/delegationClaims"
+}
