@@ -7,18 +7,13 @@ from http import HTTPStatus
 from pathlib import Path
 
 import power_execution
-from container_policy import local as local_container_policy
 from docker.errors import DockerException, NotFound
 from local_registry import AssistantSpec
 
 from local_support.errors import ApiProblemError as ApiProblem
 
-MAX_RESPONSE_BYTES = 512 * 1024
-RPC_TIMEOUT_SECONDS = 8
 HEALTH_TIMEOUT_SECONDS = 15
-ASSISTANT_UID = local_container_policy.ASSISTANT_UID
 ASSISTANT_WORKDIR = str(Path("/") / "tmp")
-POWER_COMMAND = "/usr/local/bin/shimpz-power"
 
 
 def _close_exec_stream(stream) -> None:
@@ -63,7 +58,7 @@ def _power_not_running(container) -> bool:
 
 
 def _read_rpc_frames(self, raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
-    return power_execution.read_rpc_frames(raw_socket, deadline, MAX_RESPONSE_BYTES)
+    return power_execution.read_rpc_frames(raw_socket, deadline, power_execution.MAX_RPC_RESPONSE_BYTES)
 
 
 def _rpc(
@@ -88,14 +83,14 @@ def _rpc(
     try:
         return power_execution.rpc_exchange(
             container.id,
-            [POWER_COMMAND, power_id],
+            [power_execution.POWER_COMMAND, power_id],
             encoded,
             power_execution.RpcExchangeStrategy(
                 api=self.client.api,
-                user=ASSISTANT_UID,
+                user=power_execution.ASSISTANT_RPC_USER,
                 workdir=ASSISTANT_WORKDIR,
-                timeout=RPC_TIMEOUT_SECONDS,
-                maximum=MAX_RESPONSE_BYTES,
+                timeout=power_execution.RPC_TIMEOUT_SECONDS,
+                maximum=power_execution.MAX_RPC_RESPONSE_BYTES,
                 transport_errors=(DockerException,),
                 fail_stop=lambda: self._fail_stop_power(container),
                 cancelled=lambda _exc: None,
@@ -103,12 +98,7 @@ def _rpc(
             ),
         )
     except power_execution.RpcExchangeError as exc:
-        message, code = {
-            "timeout": ("Assistant Power timed out", "assistant-timeout"),
-            "ambiguous": ("Assistant Power status is ambiguous", "assistant-rpc-failed"),
-            "failed": ("Assistant Power failed", "assistant-rpc-failed"),
-            "invalid-result": ("Assistant Power failed", "assistant-rpc-failed"),
-        }.get(exc.kind, (None, None))
+        message, code = power_execution.rpc_failure_message(exc.kind)
         status = power_execution.rpc_failure_status(exc.kind)
         raise ApiProblem(status, message, code=code) from exc
 

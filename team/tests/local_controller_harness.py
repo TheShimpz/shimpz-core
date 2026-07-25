@@ -19,8 +19,8 @@ import local_chat_continuation_store
 import local_registry
 import oauth_account_store
 import oauth_pkce_challenges
+import power_execution
 from local_support import assistant_lifecycle
-from local_support.assistant_rpc import ASSISTANT_UID
 from local_support.chat_types import ActiveAssistant
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}
@@ -165,7 +165,7 @@ class LocalContractCase(unittest.TestCase):
                 "Config": {
                     "Labels": labels,
                     "Image": OUTDATED_ASSISTANT_IMAGE,
-                    "User": ASSISTANT_UID,
+                    "User": power_execution.ASSISTANT_RPC_USER,
                     "Env": [],
                 },
                 "HostConfig": {

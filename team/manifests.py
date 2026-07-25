@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 
 import docker
 import docker.types
+import power_execution
 from container_policy import network as network_policy
 from marketplace import AppSpec
 
@@ -296,7 +297,7 @@ def build_team_app_kwargs(
         "name": team_app_container_name(team_id, app_id),
         "runtime": RUNTIME,
         "environment": env,
-        "user": "10001:10001",
+        "user": power_execution.ASSISTANT_RPC_USER,
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true", "apparmor=docker-default"],
         "privileged": False,

@@ -15,16 +15,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import brain_runtime_client
-import manifests
-import power_execution
-import power_journal
-
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import brain_runtime_client
 import local_app
+import manifests
+import power_execution
+import power_journal
+from container_policy import local as local_container_policy
 from hosted_app_fixture import hosted_assistants, runtime_state
 from local_support import assistant_rpc as local_assistant_rpc
 
@@ -158,7 +158,7 @@ class PowerRpcFrameTests(unittest.TestCase):
         oversized = struct.pack(
             ">BxxxL",
             1,
-            max(hosted_assistants.MAX_ASSISTANT_RPC_OUTPUT_BYTES, local_assistant_rpc.MAX_RESPONSE_BYTES) + 2,
+            power_execution.MAX_RPC_RESPONSE_BYTES + 2,
         )
         cases = (
             b"\x01\x00\x00",
@@ -311,7 +311,7 @@ class PowerRpcFrameTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
         fail_stop.assert_called_once_with("team_1", container)
-        self.assertEqual(create.call_args.args[1], [hosted_assistants.POWER_COMMAND, "test"])
+        self.assertEqual(create.call_args.args[1], [power_execution.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], manifests.CONTAINER_TMP)
         self.assertEqual(create.call_args.kwargs["environment"], {})
 
@@ -343,9 +343,68 @@ class PowerRpcFrameTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
         controller.assistant_lifecycle._fail_stop_power.assert_called_once()
-        self.assertEqual(create.call_args.args[1], [local_assistant_rpc.POWER_COMMAND, "test"])
+        self.assertEqual(create.call_args.args[1], [power_execution.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], local_assistant_rpc.ASSISTANT_WORKDIR)
         self.assertEqual(create.call_args.kwargs["environment"], {})
+
+
+class RpcMessageParity(unittest.TestCase):
+    def _hosted(self, kind):
+        request = hosted_assistants.AssistantRpcRequest(
+            team_id="t",
+            container=SimpleNamespace(id="c"),
+            power_id="p",
+            payload={"input": {}, "accounts": {}},
+            token=None,
+        )
+        with (
+            mock.patch.object(runtime_state, "_docker", SimpleNamespace(api=object())),
+            mock.patch.object(
+                power_execution,
+                "rpc_exchange",
+                side_effect=power_execution.RpcExchangeError(kind),
+            ),
+            self.assertRaises(runtime_state.ApiError) as caught,
+        ):
+            hosted_assistants._assistant_rpc_exchange(request)
+        return caught.exception.message
+
+    def _local(self, kind):
+        fake = SimpleNamespace(
+            client=SimpleNamespace(api=object()),
+            _close_exec_stream=lambda _stream: None,
+            _fail_stop_power=lambda _container: None,
+            _blocked_power_workloads=set(),
+        )
+        with (
+            mock.patch.object(
+                power_execution,
+                "rpc_exchange",
+                side_effect=power_execution.RpcExchangeError(kind),
+            ),
+            self.assertRaises(local_assistant_rpc.ApiProblem) as caught,
+        ):
+            local_assistant_rpc._rpc(
+                fake,
+                SimpleNamespace(id="c"),
+                "p",
+                {"input": {}, "accounts": {}},
+            )
+        return caught.exception.message
+
+    def test_same_message_per_kind(self):
+        self.assertEqual(
+            set(power_execution.RPC_FAILURE_MESSAGES),
+            set(power_execution.RPC_FAILURE_STATUSES),
+        )
+        self.assertEqual(
+            power_execution.ASSISTANT_RPC_USER,
+            local_container_policy.ASSISTANT_UID,
+        )
+        for kind in ("timeout", "ambiguous", "invalid-result", "failed"):
+            canonical = power_execution.rpc_failure_message(kind)[0]
+            self.assertEqual(self._hosted(kind), canonical)
+            self.assertEqual(self._local(kind), canonical)
 
 
 if __name__ == "__main__":

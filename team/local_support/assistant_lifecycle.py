@@ -4,12 +4,12 @@ from collections.abc import Callable
 from contextlib import suppress
 from http import HTTPStatus
 
+import power_execution
 from container_policy import local as local_container_policy
 from docker.errors import DockerException, NotFound
 from docker.types import LogConfig, Ulimit
 from local_registry import AssistantSpec
 
-from local_support.assistant_rpc import ASSISTANT_UID
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.errors import ApiProblemError as ApiProblem
 from local_support.validation import validate_team_id
@@ -105,7 +105,7 @@ def _create_assistant_container(self, team_id: str, spec: AssistantSpec, network
             name=self._container_name(team_id, spec.assistant_id),
             command=None,
             detach=True,
-            user=ASSISTANT_UID,
+            user=power_execution.ASSISTANT_RPC_USER,
             network=network.name,
             labels=self._assistant_labels(team_id, spec),
             environment={

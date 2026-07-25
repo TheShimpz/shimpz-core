@@ -25,7 +25,17 @@ RPC_FAILURE_STATUSES = {
     "invalid-result": HTTPStatus.BAD_GATEWAY,
     "failed": HTTPStatus.BAD_GATEWAY,
 }
+RPC_FAILURE_MESSAGES = {
+    "timeout": ("Assistant Power timed out", "assistant-timeout"),
+    "ambiguous": ("Assistant Power status is ambiguous", "assistant-rpc-failed"),
+    "invalid-result": ("Assistant Power returned an invalid result", "assistant-rpc-failed"),
+    "failed": ("Assistant Power failed", "assistant-rpc-failed"),
+}
+POWER_COMMAND = "/usr/local/bin/shimpz-power"
+RPC_TIMEOUT_SECONDS = 8
+MAX_RPC_RESPONSE_BYTES = 512 * 1024
 MAX_RPC_REQUEST_BYTES = 512 * 1024
+ASSISTANT_RPC_USER = "10001:10001"
 
 
 def _raise_unknown_rpc_failure(kind: str) -> NoReturn:
@@ -36,6 +46,14 @@ def rpc_failure_status(kind: str) -> HTTPStatus:
     """Map every non-routing RPC failure kind to its shared HTTP status."""
     try:
         return RPC_FAILURE_STATUSES[kind]
+    except KeyError:
+        _raise_unknown_rpc_failure(kind)
+
+
+def rpc_failure_message(kind: str) -> tuple[str, str]:
+    """Map every non-routing RPC failure kind to its shared public message."""
+    try:
+        return RPC_FAILURE_MESSAGES[kind]
     except KeyError:
         _raise_unknown_rpc_failure(kind)
 

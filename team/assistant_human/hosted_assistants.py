@@ -31,9 +31,6 @@ from http_boundary import runtime_state
 CHAT_OUTPUT_CAP = 60000
 MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILE_BODY_BYTES = MAX_INBOX_FILE_BYTES
-MAX_ASSISTANT_RPC_OUTPUT_BYTES = 512 * 1024
-ASSISTANT_RPC_TIMEOUT_SECONDS = 8
-POWER_COMMAND = "/usr/local/bin/shimpz-power"
 MAX_CHAT_FILES = 8
 MAX_CHAT_ASSISTANTS = 16
 CHAT_PAUSED_STATUSES = chat_turn_engine.CHAT_PAUSED_STATUSES
@@ -236,7 +233,7 @@ def _select_team_assistants(
 
 
 def _read_rpc_frames(raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
-    return power_execution.read_rpc_frames(raw_socket, deadline, MAX_ASSISTANT_RPC_OUTPUT_BYTES)
+    return power_execution.read_rpc_frames(raw_socket, deadline, power_execution.MAX_RPC_RESPONSE_BYTES)
 
 
 def _register_active_power(team_id: str, token: str, container) -> None:
@@ -312,14 +309,14 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
         try:
             return power_execution.rpc_exchange(
                 container.id,
-                [POWER_COMMAND, request.power_id],
+                [power_execution.POWER_COMMAND, request.power_id],
                 encoded,
                 power_execution.RpcExchangeStrategy(
                     api=runtime_state._docker.api,
-                    user="10001:10001",
+                    user=power_execution.ASSISTANT_RPC_USER,
                     workdir=manifests.CONTAINER_TMP,
-                    timeout=ASSISTANT_RPC_TIMEOUT_SECONDS,
-                    maximum=MAX_ASSISTANT_RPC_OUTPUT_BYTES,
+                    timeout=power_execution.RPC_TIMEOUT_SECONDS,
+                    maximum=power_execution.MAX_RPC_RESPONSE_BYTES,
                     transport_errors=(docker.errors.DockerException,),
                     fail_stop=lambda: _fail_stop_power(team_id, container),
                     cancelled=lambda exc: _raise_if_rpc_cancelled(token, exc),
@@ -327,14 +324,9 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
                 ),
             )
         except power_execution.RpcExchangeError as exc:
-            suffix = {
-                "timeout": "timed out",
-                "ambiguous": "status is ambiguous",
-                "invalid-result": "returned an invalid result",
-                "failed": "failed",
-            }.get(exc.kind)
+            message = power_execution.rpc_failure_message(exc.kind)[0]
             status = power_execution.rpc_failure_status(exc.kind)
-            raise runtime_state.ApiError(status, f"Assistant Power {suffix}") from exc
+            raise runtime_state.ApiError(status, message) from exc
     finally:
         _release_optional_power(team_id, token, container.id)
 
