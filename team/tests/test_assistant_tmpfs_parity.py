@@ -30,9 +30,7 @@ class AssistantTmpfsParity(LocalContractCase):
             reload=lambda: None,
             start=lambda: None,
         )
-        controller.assistant_lifecycle.client.containers.create = lambda **kwargs: (
-            captured.update(kwargs) or created
-        )
+        controller.assistant_lifecycle.client.containers.create = lambda **kwargs: captured.update(kwargs) or created
         controller.assistant_lifecycle._admit_assistant_allowed_hosts = lambda *_args: ()
         controller.assistant_lifecycle._validate_container = lambda *_args: None
         controller.assistant_lifecycle._wait_ready = lambda *_args: None
