@@ -76,18 +76,15 @@ class PowerRpcFrameTests(unittest.TestCase):
         self.assertEqual(local_stdout, stdout)
         self.assertEqual(local_stderr, stderr)
 
-    def test_rpc_response_distinguishes_results_and_suspensions(self) -> None:
+    def test_rpc_response_accepts_only_a_direct_spec_v1_object(self) -> None:
         self.assertEqual(
-            power_execution.decode_rpc_response(b'{"result":{"ok":true}}'),
+            power_execution.decode_rpc_response(b'{"ok":true}'),
             {"ok": True},
         )
-        suspension = power_execution.decode_rpc_response(b'{"suspend":{"ordinal":0,"kind":"request"}}')
-        self.assertIsInstance(suspension, power_execution.RpcSuspension)
-        self.assertEqual(suspension.payload, {"ordinal": 0, "kind": "request"})
         for invalid in (
-            b'{"ok":true}',
-            b'{"result":{},"suspend":{}}',
-            b'{"suspend":"invalid"}',
+            b'{"ok":true,"ok":false}',
+            b'{"value":NaN}',
+            b"[]",
         ):
             with self.subTest(invalid=invalid), self.assertRaises(power_execution.RpcExchangeError):
                 power_execution.decode_rpc_response(invalid)

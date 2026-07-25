@@ -205,19 +205,32 @@ def project_rpc_result(
         raise RpcInvalidResultError from exc
 
 
-def decode_rpc_response(raw: bytes) -> object:
-    """Decode the closed result-or-suspend stdout protocol."""
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_value: str) -> NoReturn:
+    raise ValueError
+
+
+def decode_rpc_response(raw: bytes) -> dict[str, object]:
+    """Decode one direct Spec v1 Power result."""
     try:
-        response = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        response = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise RpcExchangeError("invalid-result") from exc
-    if not isinstance(response, dict) or len(response) != 1:
+    if not isinstance(response, dict):
         raise RpcExchangeError("invalid-result")
-    if set(response) == {"result"}:
-        return response["result"]
-    if set(response) == {"suspend"} and isinstance(response["suspend"], dict):
-        return RpcSuspension(response["suspend"])
-    raise RpcExchangeError("invalid-result")
+    return response
 
 
 @dataclass(frozen=True, slots=True)
