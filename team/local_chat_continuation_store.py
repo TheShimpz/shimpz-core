@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+import strict_json
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -263,25 +264,10 @@ def _record(value: object, expected_team: str) -> dict[str, object]:
     return value
 
 
-def _no_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ContinuationStoreError("continuation state has duplicate fields")
-        value[key] = item
-    return value
-
-
 def _decode_json(payload: bytes) -> object:
     try:
-        return json.loads(
-            payload,
-            object_pairs_hook=_no_duplicate_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(
-                ContinuationStoreError("continuation state contains a non-finite number")
-            ),
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return strict_json.loads(payload)
+    except (UnicodeDecodeError, ValueError) as exc:
         raise ContinuationStoreError("continuation state is not valid JSON") from exc
 
 

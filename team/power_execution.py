@@ -14,6 +14,7 @@ from http import HTTPStatus
 from typing import NoReturn
 
 import power_journal
+import strict_json
 
 # A missing manifest Power is a missing resource; an unavailable connected account is an unmet
 # request precondition. Both Controllers use these statuses so their public contracts cannot drift.
@@ -228,27 +229,10 @@ def project_rpc_result(
         raise RpcInvalidResultError from exc
 
 
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError
-        value[key] = item
-    return value
-
-
-def _reject_json_constant(_value: str) -> NoReturn:
-    raise ValueError
-
-
 def decode_rpc_response(raw: bytes) -> dict[str, object]:
     """Decode one direct Spec v1 Power result."""
     try:
-        response = json.loads(
-            raw,
-            object_pairs_hook=_unique_json_object,
-            parse_constant=_reject_json_constant,
-        )
+        response = strict_json.loads(raw)
     except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise RpcExchangeError("invalid-result") from exc
     if not isinstance(response, dict):

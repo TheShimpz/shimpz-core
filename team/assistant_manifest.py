@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import oauth_providers
+import strict_json
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
@@ -203,24 +204,11 @@ def reviewed_manifest_contract(
     )
 
 
-def _reject_json_constant(_value: str) -> None:
-    raise ValueError("non-finite JSON number")
-
-
-def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
-
-
 def _strict_json(raw: bytes, *, maximum: int, kind: str) -> object:
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= maximum:
         raise ManifestError(f"Assistant {kind} has an invalid size")
     try:
-        return json.loads(raw, parse_constant=_reject_json_constant, object_pairs_hook=_unique_json_object)
+        return strict_json.loads(raw)
     except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise ManifestError(f"Assistant {kind} is invalid JSON") from exc
 

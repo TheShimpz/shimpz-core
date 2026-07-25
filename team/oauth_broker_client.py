@@ -18,6 +18,7 @@ from urllib.parse import urlencode, urlsplit
 
 import oauth_http_client
 import oauth_providers
+import strict_json
 
 BROKER_ORIGIN = "https://shimpz.com"
 DEFAULT_CALLBACK_MODE = "loopback"
@@ -172,17 +173,9 @@ def _object(response: BrokerHTTPResponse) -> dict[str, object]:
     ):
         raise OAuthBrokerClientError("OAuth broker operation failed")
 
-    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise OAuthBrokerClientError("OAuth broker response is invalid")
-            result[key] = value
-        return result
-
     try:
-        value = json.loads(response.body, object_pairs_hook=unique)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        value = strict_json.loads(response.body)
+    except (UnicodeDecodeError, ValueError) as exc:
         raise OAuthBrokerClientError("OAuth broker response is invalid") from exc
     if not isinstance(value, dict):
         raise OAuthBrokerClientError("OAuth broker response is invalid")

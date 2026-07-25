@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hmac
-import json
 import re
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import BinaryIO
 from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit
+
+import strict_json
 
 MAX_REQUEST_TARGET_BYTES = 512
 MAX_FILENAME_BYTES = 255
@@ -30,19 +31,6 @@ class RequestTarget:
     path: str
     parts: tuple[str, ...]
     query: dict[str, str]
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON field")
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(_value: str) -> None:
-    raise ValueError("non-finite JSON number")
 
 
 def bearer_matches(headers: object, token: str) -> bool:
@@ -96,12 +84,8 @@ def read_json_object(
         raw = stream.read(length)
         if len(raw) != length:
             raise ValueError("short request body")
-        body = json.loads(
-            raw,
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_json_constant,
-        )
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        body = strict_json.loads(raw)
+    except (OSError, UnicodeError, ValueError) as exc:
         raise HttpContractError(
             HTTPStatus.BAD_REQUEST,
             "invalid JSON body",

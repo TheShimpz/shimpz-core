@@ -6,13 +6,13 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
 
 import assistant_account_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
 import local_chat_continuation_store
+import strict_json
 
 SCHEMA_VERSION = 1
 MAX_JSON_DEPTH = 16
@@ -239,25 +239,10 @@ def encode(
     return _bindings(kind, requirements, pending), payload
 
 
-def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ContinuationCodecError("continuation contains duplicate fields")
-        result[key] = value
-    return result
-
-
 def _decode_payload(payload: bytes) -> dict[str, object]:
     try:
-        value = json.loads(
-            payload,
-            object_pairs_hook=_strict_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(
-                ContinuationCodecError("continuation contains a non-finite number")
-            ),
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        value = strict_json.loads(payload)
+    except (UnicodeDecodeError, ValueError) as exc:
         raise ContinuationCodecError("continuation is not valid JSON") from exc
     return _mapping(value, {"schema", "kind", "requirements", "pending"}, "continuation")
 

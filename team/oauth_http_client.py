@@ -8,7 +8,6 @@ response shapes. Redirects are deliberately not followed.
 from __future__ import annotations
 
 import http.client
-import json
 import re
 from base64 import b64encode
 from collections.abc import Mapping
@@ -17,6 +16,7 @@ from typing import Protocol
 from urllib.parse import urlencode, urlsplit
 
 import oauth_providers
+import strict_json
 
 MAX_RESPONSE_BYTES = 32 * 1024
 MAX_TOKEN_BYTES = 16 * 1024
@@ -154,17 +154,9 @@ def _strict_object(payload: bytes) -> dict[str, object]:
     if not payload or len(payload) > MAX_RESPONSE_BYTES:
         raise OAuthHTTPError("OAuth provider response is invalid")
 
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise OAuthHTTPError("OAuth provider response is invalid")
-            result[key] = value
-        return result
-
     try:
-        decoded = json.loads(payload, object_pairs_hook=reject_duplicates)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        decoded = strict_json.loads(payload)
+    except (UnicodeDecodeError, ValueError) as exc:
         raise OAuthHTTPError("OAuth provider response is invalid") from exc
     if not isinstance(decoded, dict):
         raise OAuthHTTPError("OAuth provider response is invalid")

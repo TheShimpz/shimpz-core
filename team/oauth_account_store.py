@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 import oauth_providers
+import strict_json
 from assistant_human import private_state
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -219,18 +220,17 @@ def _token_set(
 
 
 def _strict_json(payload: bytes) -> object:
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise OAuthAccountStoreError("OAuth account state has duplicate fields")
-            result[key] = value
-        return result
-
     try:
-        return json.loads(payload, object_pairs_hook=reject_duplicates)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return strict_json.loads(payload)
+    except UnicodeDecodeError as exc:
         raise OAuthAccountStoreError("OAuth account state is not valid JSON") from exc
+    except ValueError as exc:
+        message = (
+            "OAuth account state has duplicate fields"
+            if str(exc) == "duplicate JSON field"
+            else "OAuth account state is not valid JSON"
+        )
+        raise OAuthAccountStoreError(message) from exc
 
 
 def _record_metadata(
