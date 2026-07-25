@@ -26,6 +26,8 @@ CONTRACT_PATH = "/opt/shimpz/shimpz.contract.json"
 CATALOG_PATH = Path(__file__).with_name("assistant_catalog.json")
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_CONTRACT_BYTES = 512 * 1024
+MAX_CATALOG_ASSISTANTS = 32
+MAX_CATALOG_BYTES = MAX_CATALOG_ASSISTANTS * MAX_CONTRACT_BYTES + 64 * 1024
 MAX_ARCHIVE_BYTES = MAX_MANIFEST_BYTES + (32 * 1024)
 MAX_ALLOWED_HOSTS = 32
 MAX_ACCOUNTS = 16
@@ -373,11 +375,11 @@ def load_reviewed_catalog(path: Path = CATALOG_PATH) -> dict[str, ReviewedAssist
         raw = path.read_bytes()
     except OSError as exc:
         raise ManifestError("Assistant reviewed catalog is unavailable") from exc
-    catalog = _strict_json(raw, maximum=MAX_CONTRACT_BYTES * 2, kind="reviewed catalog")
+    catalog = _strict_json(raw, maximum=MAX_CATALOG_BYTES, kind="reviewed catalog")
     if not isinstance(catalog, dict) or set(catalog) != {"version", "assistants"} or catalog["version"] != 1:
         raise ManifestError("Assistant reviewed catalog has an unsupported shape")
     assistants = catalog["assistants"]
-    if not isinstance(assistants, dict) or not assistants or len(assistants) > 32:
+    if not isinstance(assistants, dict) or not assistants or len(assistants) > MAX_CATALOG_ASSISTANTS:
         raise ManifestError("Assistant reviewed catalog is invalid")
     reviewed: dict[str, ReviewedAssistant] = {}
     for raw_id, metadata in assistants.items():
