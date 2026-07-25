@@ -179,7 +179,7 @@ class LocalChatScopeTests(LocalContractCase):
                 hello,
                 assistant_id="account-helper",
                 image=hello.image.replace("a" * 64, "b" * 64),
-                powers={"lookup": replace(hello.powers["list-zones"], path="/v1/powers/lookup")},
+                powers={"lookup": hello.powers["list-zones"]},
             )
             controller.registry[account_helper.assistant_id] = account_helper
             controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (
@@ -358,7 +358,7 @@ class LocalChatScopeTests(LocalContractCase):
                 hello,
                 assistant_id="account-helper",
                 image=hello.image.replace("a" * 64, "b" * 64),
-                powers={"lookup": replace(hello.powers["list-zones"], path="/v1/powers/lookup")},
+                powers={"lookup": hello.powers["list-zones"]},
             )
             controller.registry[account_helper.assistant_id] = account_helper
             controller.chat_turn_service._active_chat_assistants = lambda _team_id, _network: (

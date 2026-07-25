@@ -78,8 +78,8 @@ class LocalContractTests(LocalContractCase):
             {"list-zones", "list-dns-records"},
         )
         self.assertEqual(
-            registry["shimpz-cloudflare"].powers["list-zones"].path,
-            "/v1/powers/list-zones",
+            registry["shimpz-cloudflare"].powers["list-zones"].accounts,
+            ("cloudflare",),
         )
         self.assertEqual(
             registry["shimpz-cloudflare"].allowed_hosts,
