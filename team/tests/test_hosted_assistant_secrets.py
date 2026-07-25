@@ -673,7 +673,7 @@ class HostedAssistantSecretTests(unittest.TestCase):
             mock.patch.object(hosted_apps, "_admit_app_contract", return_value=()),
             mock.patch.object(hosted_apps, "_validate_admitted_egress", return_value="admitted-token"),
             mock.patch.object(hosted_apps, "_validate_assistant_proxy_environment", return_value=None),
-            mock.patch.object(hosted_apps, "_app_ready_now", return_value=(True, "running")),
+            mock.patch.object(hosted_apps, "_registered_app_ready_now", return_value=(True, "running")),
         ):
             result = hosted_apps._install_app(
                 TEAM_ID,

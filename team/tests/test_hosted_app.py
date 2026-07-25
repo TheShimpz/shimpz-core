@@ -158,6 +158,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
         ):
             self.assertEqual(hosted_apps._admit_app_contract(spec, container), tuple(sorted(spec.allowed_hosts)))
         self.assertEqual(len(reviewed_contracts), 1)
+
         self.assertEqual(
             {account.id: (account.provider, account.scopes) for account in reviewed_contracts[0].accounts},
             {
@@ -211,6 +212,14 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
         ):
             hosted_apps._admit_app_contract(spec, container)
         self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
+
+    def test_prebuilt_assistant_readiness_does_not_require_http(self) -> None:
+        container = types.SimpleNamespace(status="running", reload=mock.Mock())
+        spec = marketplace.APPS["shimpz-cloudflare"]
+        with mock.patch.object(hosted_apps, "_probe_app_health") as probe:
+            self.assertEqual(hosted_apps._wait_registered_app_ready(container, spec), (True, "running"))
+            self.assertEqual(hosted_apps._registered_app_ready_now(container, spec), (True, "running"))
+        probe.assert_not_called()
 
     def test_manifest_mismatch_rolls_back_before_policy_proxy_or_start(self) -> None:
         events: list[object] = []

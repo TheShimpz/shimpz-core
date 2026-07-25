@@ -286,6 +286,38 @@ def _app_ready_now(container, port: int, health_path: str) -> tuple[bool, str]:
     return True, container.status
 
 
+def _wait_registered_app_ready(
+    container,
+    spec: marketplace.AppSpec,
+) -> tuple[bool, str]:
+    if spec.assistant is None:
+        return _wait_app_healthy(container, spec.port, spec.health_path)
+    for attempt in range(runtime_state.HEALTH_RETRIES):
+        container.reload()
+        if container.status == "running":
+            return True, "running"
+        if container.status not in {"created", "restarting"}:
+            return False, f"container not running (status={container.status})"
+        if attempt < runtime_state.HEALTH_RETRIES - 1:
+            time.sleep(runtime_state.HEALTH_DELAY_SECONDS)
+    return False, "Assistant container never started"
+
+
+def _registered_app_ready_now(
+    container,
+    spec: marketplace.AppSpec,
+) -> tuple[bool, str]:
+    if spec.assistant is None:
+        return _app_ready_now(container, spec.port, spec.health_path)
+    try:
+        container.reload()
+    except docker.errors.DockerException:
+        return False, "container readiness could not be verified"
+    if container.status != "running":
+        return False, f"container not running (status={container.status})"
+    return True, "running"
+
+
 def _teardown_app(
     team_id: str,
     app_id: str,
@@ -448,7 +480,7 @@ def _admit_existing_app(
     admitted_hosts = _admit_app_contract(spec, existing)
     token = _validate_admitted_egress(team_id, app_id, admitted_hosts, egress_store)
     _validate_assistant_proxy_environment(existing, token, admitted_hosts, egress_store)
-    ready, status = _app_ready_now(existing, spec.port, spec.health_path)
+    ready, status = _registered_app_ready_now(existing, spec)
     if not ready:
         raise runtime_state.ApiError(
             HTTPStatus.CONFLICT,
@@ -515,14 +547,14 @@ def _provision_app_transaction(
         _validate_assistant_proxy_environment(container, token, admitted_hosts, egress_store)
         _activate_admitted_egress(network, token, admitted_hosts, egress_store)
         hosted_resources._start_team_with_isolation(container)
-        healthy, reason = _wait_app_healthy(container, spec.port, spec.health_path)
+        healthy, reason = _wait_registered_app_ready(container, spec)
         if not healthy:
             raise runtime_state.ApiError(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 f"app {app_id!r} failed its health probe ({reason}; rolled back)",
             )
         hosted_resources._require_team_isolation(container)
-        ready, committed_status = _app_ready_now(container, spec.port, spec.health_path)
+        ready, committed_status = _registered_app_ready_now(container, spec)
         if not ready:
             raise runtime_state.ApiError(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
