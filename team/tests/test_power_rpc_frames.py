@@ -114,19 +114,12 @@ class PowerRpcFrameTests(unittest.TestCase):
 
     def test_private_generation_helpers_apply_one_power_contract(self) -> None:
         powers = {
-            "lookup": SimpleNamespace(secrets=("api-key",), accounts=("cloud",)),
+            "lookup": SimpleNamespace(accounts=("cloud",)),
         }
-        secret_metadata = mock.Mock(
-            return_value=(SimpleNamespace(id="api-key", configured=True, generation=3),),
-        )
         account_metadata = mock.Mock(
             return_value=(SimpleNamespace(id="cloud", status="connected", generation=5),),
         )
 
-        self.assertEqual(
-            power_execution.secret_generations(powers, "lookup", secret_metadata),
-            (("api-key", 3),),
-        )
         self.assertEqual(
             power_execution.account_generations(
                 powers,
@@ -136,7 +129,6 @@ class PowerRpcFrameTests(unittest.TestCase):
             ),
             (("cloud", 5),),
         )
-        secret_metadata.assert_called_once_with(("api-key",))
         account_metadata.assert_called_once_with({"cloud": "declaration"})
         with self.assertRaisesRegex(power_journal.PowerJournalConflictError, "account contract"):
             power_execution.account_generations(powers, {}, "lookup", account_metadata)
@@ -144,8 +136,7 @@ class PowerRpcFrameTests(unittest.TestCase):
     def test_rpc_result_projection_rejects_private_and_invalid_outputs(self) -> None:
         projected = power_execution.project_rpc_result(
             {"ok": True},
-            {"secret": "private"},
-            {},
+            {"cloud": {"access_token": "private"}},
             (),
             lambda value: value,
         )
@@ -153,7 +144,6 @@ class PowerRpcFrameTests(unittest.TestCase):
 
         suspended = power_execution.project_rpc_result(
             power_execution.RpcSuspension({"kind": "request"}),
-            {},
             {},
             (),
             lambda _value: self.fail("suspension reached output validation"),
@@ -163,15 +153,13 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaises(power_execution.RpcSecretExposureError):
             power_execution.project_rpc_result(
                 {"echo": "private"},
-                {"secret": "private"},
-                {},
+                {"cloud": {"access_token": "private"}},
                 (),
                 lambda value: value,
             )
         with self.assertRaises(power_execution.RpcInvalidResultError):
             power_execution.project_rpc_result(
                 {"invalid": True},
-                {},
                 {},
                 (),
                 lambda _value: (_ for _ in ()).throw(ValueError("invalid")),
@@ -282,22 +270,11 @@ class PowerRpcFrameTests(unittest.TestCase):
         self.assertEqual(execute.call_count, 2)
 
     def test_power_resolution_failures_have_identical_statuses(self) -> None:
-        hosted_contract = SimpleNamespace(powers={})
         local_spec = SimpleNamespace(assistant_id="assistant", name="Assistant", powers={}, accounts={})
-
-        with self.assertRaises(runtime_state.ApiError) as hosted_secret:
-            hosted_assistants._resolve_power_secrets("team_1", "assistant", hosted_contract, "missing")
-        with self.assertRaises(local_app.ApiProblem) as local_secret:
-            self.local.chat_turn_service._resolve_power_secrets("team_1", local_spec, "missing")
-        self.assertEqual(
-            hosted_secret.exception.status,
-            local_secret.exception.status,
-            power_execution.UNDECLARED_POWER_STATUS,
-        )
 
         hosted_active = SimpleNamespace(
             assistant_id="assistant",
-            contract=SimpleNamespace(powers={}, secrets={}, accounts={}),
+            contract=SimpleNamespace(powers={}, accounts={}),
         )
         self.local.assistant_accounts = object()
         with self.assertRaises(runtime_state.ApiError) as hosted_account:

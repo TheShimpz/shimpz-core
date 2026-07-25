@@ -33,14 +33,7 @@ class PowerSpec:
     summary: str
     input_schema: dict[str, object]
     output_schema: dict[str, object]
-    secrets: tuple[str, ...]
     accounts: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class SecretSpec:
-    name: str
-    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +49,6 @@ class AssistantSpec:
     summary: str
     image: str
     powers: dict[str, PowerSpec]
-    secrets: dict[str, SecretSpec]
     allowed_hosts: tuple[str, ...]
     accounts: dict[str, AccountSpec] = field(default_factory=dict)
     machine_contract: dict[str, object] = field(default_factory=dict)
@@ -111,12 +103,10 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
                     summary=power_id.replace("-", " ").capitalize(),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],
-                    secrets=(),
                     accounts=tuple(power["accounts"]),
                 )
                 for power_id, power in contract.powers.items()
             },
-            secrets={},
             allowed_hosts=contract.allowed_hosts,
             accounts={
                 account.id: AccountSpec(provider=account.provider, scopes=account.scopes)

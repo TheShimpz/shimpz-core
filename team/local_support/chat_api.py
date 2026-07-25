@@ -15,10 +15,9 @@ MAX_CHAT_MESSAGE_CHARS = 16_000
 
 def _pending_chat_continuation(self, team_id: str) -> dict[str, object] | None:
     existing_account = self.account_challenges.current(team_id)
-    existing_secret = self.secret_challenges.current(team_id)
     existing_input = self.input_challenges.current(team_id)
     existing_approval = self.approval_challenges.current(team_id)
-    if sum(item is not None for item in (existing_account, existing_secret, existing_input, existing_approval)) > 1:
+    if sum(item is not None for item in (existing_account, existing_input, existing_approval)) > 1:
         raise ApiProblem(
             HTTPStatus.SERVICE_UNAVAILABLE,
             "Team chat continuation state is unavailable",
@@ -26,8 +25,6 @@ def _pending_chat_continuation(self, team_id: str) -> dict[str, object] | None:
         )
     if existing_account is not None:
         return self._account_response(existing_account)
-    if existing_secret is not None:
-        return self._challenge_response(existing_secret)
     if existing_input is not None:
         return self._input_response(existing_input)
     if existing_approval is not None:
@@ -67,9 +64,6 @@ def _segment_response(
             pending,
             (
                 lambda suspension, requirements, state: self._pause_account(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: self._pause_chat(
                     team_id, token, suspension, requirements, state
                 ),
                 lambda suspension, requirements, state: self._pause_input(

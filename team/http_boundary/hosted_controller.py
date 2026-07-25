@@ -172,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
         audit.log(
             "chat",
             team_id,
-            result="ok" if terminal["type"] in {"done", "accounts-required", "secrets-required"} else "error",
+            result="ok" if terminal["type"] in {"done", "accounts-required"} else "error",
             streamed=True,
             status=terminal.get("status"),
             reason=stream_error,
@@ -330,25 +330,6 @@ class Handler(BaseHTTPRequestHandler):
             assistant=assistant_id,
             account=account_id,
             disconnected=result["disconnected"],
-        )
-        self._send_json(HTTPStatus.OK, result, no_store=True)
-
-    def _route_assistant_secret_list(self, request: _AuthorizedRequest) -> None:
-        self._send_json(
-            HTTPStatus.OK,
-            hosted_assistants._assistant_secret_inventory(request.team_id, request.lease),
-            no_store=True,
-        )
-
-    def _route_assistant_secret_replace(self, request: _AuthorizedRequest) -> None:
-        runtime_state._enforce_rate("secret", request.principal)
-        body = self._read_body(max_bytes=runtime_state.MAX_ASSISTANT_SECRET_BODY_BYTES)
-        result = hosted_assistants._replace_assistant_secrets(request.team_id, body, request.lease)
-        audit.log(
-            "assistant_secret_replace",
-            request.team_id,
-            result="ok",
-            assistant=body.get("assistant_id") if isinstance(body, dict) else None,
         )
         self._send_json(HTTPStatus.OK, result, no_store=True)
 
@@ -546,32 +527,6 @@ class Handler(BaseHTTPRequestHandler):
             no_store=True,
         )
 
-    def _route_chat_secrets(
-        self,
-        request: _AuthorizedRequest,
-        *,
-        submit: bool,
-    ) -> None:
-        if not submit:
-            self._send_json(
-                HTTPStatus.OK,
-                hosted_assistants._pending_chat_secrets(request.team_id, request.lease),
-                no_store=True,
-            )
-            return
-        runtime_state._enforce_rate("chat", request.principal)
-        result = hosted_chat_api._submit_chat_secrets(
-            request.team_id,
-            self._read_body(max_bytes=runtime_state.MAX_ASSISTANT_SECRET_BODY_BYTES),
-            request.lease,
-        )
-        paused = result.get("status") in hosted_assistants.CHAT_PAUSED_STATUSES
-        self._send_json(
-            HTTPStatus.PRECONDITION_REQUIRED if paused else HTTPStatus.OK,
-            result,
-            no_store=True,
-        )
-
     def _route_chat_stop(self, request: _AuthorizedRequest) -> None:
         runtime_state._enforce_rate("stop", request.principal)
         self._send_json(
@@ -644,15 +599,11 @@ _AUTHORIZED_ROUTES = {
     "chat-stream": functools.partial(Handler._route_chat_turn, stream=True),
     "chat-account-pending": functools.partial(Handler._route_chat_accounts, submit=False),
     "chat-account-submit": functools.partial(Handler._route_chat_accounts, submit=True),
-    "chat-secret-pending": functools.partial(Handler._route_chat_secrets, submit=False),
-    "chat-secret-submit": functools.partial(Handler._route_chat_secrets, submit=True),
     "chat-input-pending": functools.partial(Handler._route_human_chat, kind="input", submit=False),
     "chat-input-submit": functools.partial(Handler._route_human_chat, kind="input", submit=True),
     "chat-approval-pending": functools.partial(Handler._route_human_chat, kind="approval", submit=False),
     "chat-approval-submit": functools.partial(Handler._route_human_chat, kind="approval", submit=True),
     "chat-stop": Handler._route_chat_stop,
-    "assistant-secret-list": Handler._route_assistant_secret_list,
-    "assistant-secret-replace": Handler._route_assistant_secret_replace,
     "assistant-account-list": Handler._route_assistant_account_list,
     "assistant-account-authorize": Handler._route_assistant_account_authorize,
     "assistant-account-disconnect": Handler._route_assistant_account_disconnect,

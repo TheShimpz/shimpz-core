@@ -9,8 +9,6 @@ from typing import NoReturn
 import assistant_account_challenges
 import assistant_genesis
 import assistant_manifest
-import assistant_secret_challenges
-import assistant_secret_store
 import inference_config
 import local_chat_continuation_store
 import local_chat_continuations
@@ -196,47 +194,6 @@ def _active_chat_assistants(self, team_id: str, network_name: str) -> tuple[_Act
     return tuple(active)
 
 
-def _raise_secret_problem(exc: assistant_secret_store.AssistantSecretError) -> NoReturn:
-    if isinstance(exc, assistant_secret_store.AssistantSecretMissingError):
-        raise ApiProblem(
-            HTTPStatus.PRECONDITION_REQUIRED,
-            "Assistant secrets are required",
-            code="assistant-secrets-required",
-        ) from exc
-    if isinstance(exc, assistant_secret_store.AssistantSecretValidationError):
-        raise ApiProblem(
-            HTTPStatus.UNPROCESSABLE_ENTITY,
-            "Assistant secret values are invalid",
-            code="invalid-assistant-secrets",
-        ) from exc
-    raise ApiProblem(
-        HTTPStatus.SERVICE_UNAVAILABLE,
-        "Assistant secret state is unavailable",
-        code="assistant-secret-state-unavailable",
-    ) from exc
-
-
-def _delete_assistant_secret_state(self, team_id: str, assistant_id: str) -> None:
-    try:
-        self.assistant_secrets.delete_assistant(team_id, assistant_id)
-    except assistant_secret_store.AssistantSecretError as exc:
-        self._raise_secret_problem(exc)
-
-
-def _delete_team_secret_state(self, team_id: str) -> None:
-    try:
-        self.assistant_secrets.delete_team(team_id)
-    except assistant_secret_store.AssistantSecretError as exc:
-        self._raise_secret_problem(exc)
-
-
-def _delete_all_secret_state(self) -> None:
-    try:
-        self.assistant_secrets.delete_all()
-    except assistant_secret_store.AssistantSecretError as exc:
-        self._raise_secret_problem(exc)
-
-
 def _delete_assistant_account_state(self, team_id: str, assistant_id: str) -> None:
     try:
         self.assistant_accounts.delete_assistant(team_id, assistant_id)
@@ -357,14 +314,6 @@ def _restore_chat_continuation(
                 decoded.requirements,
                 decoded.pending,
             )
-        elif decoded.kind == "secrets":
-            self.secret_challenges.restore(
-                stored.team_id,
-                stored.challenge_id,
-                remaining_seconds,
-                decoded.requirements,
-                decoded.pending,
-            )
         elif decoded.kind == "input":
             if len(decoded.requirements) != 1:
                 raise local_chat_continuations.ContinuationCodecError("input continuation requirements are malformed")
@@ -389,7 +338,6 @@ def _restore_chat_continuation(
         local_chat_continuation_store.ContinuationStoreError,
         local_chat_continuations.ContinuationCodecError,
         assistant_account_challenges.AccountChallengeError,
-        assistant_secret_challenges.SecretChallengeError,
         assistant_input_challenges.InputChallengeError,
         assistant_approval_challenges.ApprovalChallengeError,
     ) as exc:

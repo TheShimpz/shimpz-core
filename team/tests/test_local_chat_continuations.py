@@ -8,7 +8,6 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
 import assistant_account_challenges
-import assistant_secret_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
@@ -85,14 +84,6 @@ class LocalChatContinuationCodecTests(unittest.TestCase):
                     "Demo Assistant",
                     ("publish",),
                     (("cloudflare", "cloudflare", ("dns.read", "zone.read")),),
-                ),
-            ),
-            "secrets": (
-                assistant_secret_challenges.SecretRequirement(
-                    "demo-assistant",
-                    "Demo Assistant",
-                    ("publish",),
-                    (("api-key", "API key", "Credential used for publishing."),),
                 ),
             ),
             "input": (

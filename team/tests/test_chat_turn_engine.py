@@ -122,7 +122,6 @@ def _local_controller(local_active, config, events: list[str], fail):
 
     controller.chat_turn_service._require_chat_private_inputs = local_private_inputs
     controller.chat_turn_service._require_power_rpc_envelope = lambda *_args: events.append("preflight")
-    controller.chat_turn_service._power_secret_generations = lambda *_args: events.append("secrets") or ()
     controller.chat_turn_service._power_account_generations = lambda *_args: events.append("accounts") or ()
     controller.chat_turn_service._chat_cancelled = lambda _token: False
     controller.chat_turn_service._validate_chat_context = lambda *_args: None
@@ -196,7 +195,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
 
         self.assertEqual(
             requirements.groups(),
-            ((), (), ("input-required",), ()),
+            ((), ("input-required",), ()),
         )
         self.assertEqual(
             chat_turn_engine.suspension_gate_count(*requirements.groups()),
@@ -213,7 +212,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             lambda _outcome: "pending",
             (
                 lambda *_args: "accounts",
-                lambda *_args: "secrets",
                 lambda *_args: "inputs",
                 lambda *_args: "approvals",
             ),
@@ -410,7 +408,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             summary="Test Assistant",
             image="example.invalid/assistant@sha256:" + ("c" * 64),
             powers={"list-zones": local_power},
-            secrets={},
             allowed_hosts=(),
         )
         local_active = ActiveAssistant(local_spec, assistant_container.id)
@@ -444,7 +441,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
                 _require_model_credential_current=lambda *_args: hosted_events.append("model"),
                 _require_hosted_power_rpc_envelope=lambda *_args: hosted_events.append("preflight"),
                 _hosted_power_identity=lambda _active: (assistant_container.id, local_spec.image),
-                _power_secret_generations=lambda *_args: hosted_events.append("secrets") or (),
                 _power_account_generations=lambda *_args: hosted_events.append("accounts") or (),
             ),
             mock.patch.object(
@@ -455,7 +451,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             mock.patch.object(
                 hosted_harness.hosted_chat_segment,
                 "_hosted_private_requirements",
-                return_value=(("account-required",), ()),
+                return_value=("account-required",),
             ),
             mock.patch.object(
                 hosted_harness.runtime_state,
@@ -520,8 +516,8 @@ class SharedChatTurnEngineTest(unittest.TestCase):
 
         local_prepared.durable_batch._operation(request)
         local_strategy.finalize()
-        self.assertEqual(hosted_events, ["model", "preflight", "secrets", "accounts", "model"])
-        self.assertEqual(local_events, ["preflight", "secrets", "accounts"])
+        self.assertEqual(hosted_events, ["model", "preflight", "accounts", "model"])
+        self.assertEqual(local_events, ["preflight", "accounts"])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import sys
 import tempfile
@@ -13,14 +12,11 @@ from unittest import mock
 
 import assistant_account_challenges
 import assistant_account_flow
-import assistant_secret_challenges
-import assistant_secret_store
 import brain_runtime_client
 import chat_orchestrator
 import marketplace
 import oauth_account_store
 import oauth_http_client
-import power_journal
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))
@@ -60,28 +56,6 @@ def _zones(name: str = "example.com") -> dict[str, object]:
     }
 
 
-class _Runtime:
-    def __init__(self) -> None:
-        self.start_calls = 0
-        self.resume_calls = 0
-        self.request = brain_runtime_client.PowerRequest(
-            "lookup",
-            ASSISTANT_ID,
-            "list-zones",
-            ZONE_INPUT,
-        )
-
-    def start(self, _context, _message):
-        self.start_calls += 1
-        return brain_runtime_client.RuntimeTurn("power-required", "", (self.request,))
-
-    def resume(self, _context, results):
-        self.resume_calls += 1
-        if set(results) != {"lookup"}:
-            raise AssertionError("the admitted Power must resume once")
-        return brain_runtime_client.RuntimeTurn("completed", "Connected lookup complete.", ())
-
-
 class HostedOAuthAccountTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -98,12 +72,10 @@ class HostedOAuthAccountTests(unittest.TestCase):
             powers={
                 power_id: replace(
                     power,
-                    secrets=(),
                     accounts=("cloudflare",) if power_id == "list-zones" else (),
                 )
                 for power_id, power in trusted.powers.items()
             },
-            secrets={},
             accounts={"cloudflare": marketplace.AccountSpec("cloudflare", SCOPES)},
         )
         self.container = types.SimpleNamespace(id="b" * 64)
@@ -180,7 +152,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
             )
             payload = assistant_account_flow.inventory_payload(
                 TEAM_ID,
-                [hosted_assistants._hosted_secret_spec(self.active)],
+                [hosted_assistants._hosted_account_spec(self.active)],
                 self.store,
             )
 
@@ -253,108 +225,6 @@ class HostedOAuthAccountTests(unittest.TestCase):
         self.assertIsNone(challenge_store.current(TEAM_ID))
         self.assertEqual(self.store.metadata(TEAM_ID, ASSISTANT_ID, {}), ())
         self.assertNotIn(ACCESS_TOKEN, self.store.state_path.read_text(encoding="utf-8"))
-
-    def test_account_resume_can_pause_for_secrets_before_any_power_runs(self) -> None:
-        private_contract = replace(
-            self.contract,
-            powers={
-                power_id: replace(
-                    power,
-                    secrets=("lookup-key",) if power_id == "list-zones" else (),
-                )
-                for power_id, power in self.contract.powers.items()
-            },
-            secrets={"lookup-key": marketplace.SecretSpec("Lookup key", "Required for this lookup.")},
-        )
-        active = hosted_assistants._ActiveAssistant(ASSISTANT_ID, private_contract, self.container)
-        anchor = types.SimpleNamespace(
-            id=ANCHOR_ID,
-            labels={"team.name": "Marketing", "team.owner": "account_1"},
-        )
-        runtime = _Runtime()
-        account_challenges = assistant_account_challenges.AccountChallengeStore()
-        secret_challenges = assistant_secret_challenges.SecretChallengeStore()
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            secret_store = assistant_secret_store.AssistantSecretStore(
-                root / "secret-state" / "secrets.json",
-                root / "secret-key" / "aes256.key",
-            )
-            journal = power_journal.PowerJournal(root / "journal" / "journal.sqlite3")
-            self.addCleanup(journal.close)
-            rpc_calls: list[dict[str, object]] = []
-
-            def rpc(_team_id, _token, _container, _power_id, payload):
-                rpc_calls.append(payload)
-                return _zones()
-
-            @contextlib.contextmanager
-            def exclusive(_team_id, _lease):
-                yield "resumed-turn", anchor
-
-            with (
-                mock.patch.multiple(
-                    runtime_state,
-                    _brain_runtime=runtime,
-                    _commit_chat_terminal=lambda *_args: True,
-                    _inference_store=types.SimpleNamespace(
-                        load=lambda _team_id: types.SimpleNamespace(provider="openai", model="gpt-test")
-                    ),
-                    _power_execution_journal=lambda: journal,
-                    _assistant_accounts=self.store,
-                    _assistant_account_challenges=account_challenges,
-                    _assistant_secrets=secret_store,
-                    _assistant_secret_challenges=secret_challenges,
-                ),
-                mock.patch.multiple(
-                    harness.hosted_assistants,
-                    _active_team_assistants=lambda _team_id: (active,),
-                    _chat_file_metadata=lambda _team_id, _files: [],
-                    _installed_assistant=lambda *_args: (ASSISTANT_ID, private_contract, self.container),
-                    _assistant_rpc=rpc,
-                    _model_credential=lambda _owner, _provider: ("model-key-value", 7),
-                    _require_model_credential_current=lambda *_args: None,
-                ),
-                mock.patch.object(
-                    harness.hosted_apps,
-                    "_require_assistant_genesis",
-                    return_value="Use only the declared X Power.",
-                ),
-                mock.patch.object(harness.hosted_chat_segment, "_current_team_anchor", return_value=anchor),
-            ):
-                account_prompt = hosted_chat_segment._chat_in_turn(
-                    TEAM_ID,
-                    "Look up Cloudflare.",
-                    [],
-                    (ASSISTANT_ID,),
-                    "initial-turn",
-                    anchor,
-                    "account_1",
-                )
-                self.assertEqual(account_prompt["status"], "accounts-required")
-                self.assertEqual(runtime.start_calls, 1)
-                self.assertEqual(runtime.resume_calls, 0)
-                self.assertEqual(rpc_calls, [])
-
-                self._connect()
-                with mock.patch.object(hosted_chat_api, "_exclusive_chat_turn", exclusive):
-                    secret_prompt = hosted_chat_api._resume_chat_accounts(
-                        TEAM_ID,
-                        account_prompt["challenge_id"],
-                        hosted_resources._AuthorizationLease(
-                            TEAM_ID,
-                            ANCHOR_ID,
-                            "account_1",
-                            ("account", "account_1"),
-                        ),
-                    )
-
-            self.assertEqual(secret_prompt["status"], "secrets-required")
-            self.assertEqual(runtime.start_calls, 1)
-            self.assertEqual(runtime.resume_calls, 0)
-            self.assertEqual(rpc_calls, [])
-            self.assertIsNone(account_challenges.current(TEAM_ID))
-            self.assertIsNotNone(secret_challenges.current(TEAM_ID))
 
     def test_authorize_and_callback_expose_no_oauth_private_material(self) -> None:
         challenge_store = assistant_account_challenges.AccountChallengeStore()

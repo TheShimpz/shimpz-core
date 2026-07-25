@@ -111,12 +111,6 @@ def _run_chat_segment_with_metadata(
                     request.team_id,
                     bindings,
                     power_request,
-                    answers_by_interrupt.get(power_request.interrupt_id, ()),
-                ),
-                lambda power_request: self._power_secret_generations(
-                    request.team_id,
-                    _required_active_assistant(bindings, power_request.assistant_id),
-                    power_request.power,
                 ),
                 lambda power_request: self._power_account_generations(
                     request.team_id,
@@ -213,7 +207,6 @@ def _run_chat_segment_with_metadata(
             identity,
             outcome,
             requirements.accounts,
-            requirements.secrets,
             requirements.inputs,
             approval_requirements,
             tuple(sorted(answers_by_interrupt.items())),

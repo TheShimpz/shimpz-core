@@ -23,7 +23,6 @@ from hosted_app_fixture import (
 
 assistant_account_challenges = runtime_state.assistant_account_challenges
 assistant_manifest = hosted_apps.assistant_manifest
-assistant_secret_challenges = runtime_state.assistant_secret_challenges
 brain_runtime_client = runtime_state.brain_runtime_client
 chat_orchestrator = hosted_chat_segment.chat_orchestrator
 manifests = hosted_apps.manifests

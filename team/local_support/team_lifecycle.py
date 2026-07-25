@@ -108,7 +108,6 @@ def _delete_team_persistence(self, team_id: str) -> bool:
 
 
 def _delete_team_private_state(self, team_id: str) -> None:
-    self.chat_turn_service._delete_team_secret_state(team_id)
     self.chat_turn_service._delete_team_account_state(team_id)
 
 
@@ -129,7 +128,6 @@ def _remove_team_network(self, network) -> bool:
 
 def destroy_team(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self.secret_challenges.cancel_team(team_id)
     self.approval_challenges.cancel_team(team_id)
     self.input_challenges.cancel_team(team_id)
     self.chat_turn_service._delete_chat_continuation(team_id)
@@ -235,7 +233,6 @@ def _remove_space_resources(
     networks: list,
     owned_assistants: set[tuple[str, str]],
 ) -> bool:
-    self.chat_turn_service._delete_all_secret_state()
     self.chat_turn_service._delete_all_account_state()
     self.chat_turn_service._revoke_all_approval_grants()
     for container in containers:
@@ -256,7 +253,6 @@ def _remove_space_resources(
 
 def reset_space(self) -> dict[str, object]:
     """Remove every exactly owned workload/network without accepting resource ids."""
-    self.secret_challenges.cancel_all()
     self.approval_challenges.cancel_all()
     self.input_challenges.cancel_all()
     self.chat_turn_service._clear_chat_continuations()

@@ -8,9 +8,6 @@ from dataclasses import replace
 from http import HTTPStatus
 
 import assistant_account_challenges
-import assistant_secret_challenges
-import assistant_secret_flow
-import assistant_secret_store
 import audit
 import chat_turn_engine
 import docker.errors
@@ -89,15 +86,12 @@ def _chat(
 
 def _pending_hosted_chat(team_id: str) -> dict[str, object] | None:
     account = runtime_state._assistant_account_challenges.current(team_id)
-    secret = runtime_state._assistant_secret_challenges.current(team_id)
     input_challenge = runtime_state._assistant_input_challenges.current(team_id)
     approval = runtime_state._assistant_approval_challenges.current(team_id)
-    if sum(item is not None for item in (account, secret, input_challenge, approval)) > 1:
+    if sum(item is not None for item in (account, input_challenge, approval)) > 1:
         raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team chat continuation state is unavailable")
     if account is not None:
         return hosted_chat_segment._hosted_account_challenge_payload(account)
-    if secret is not None:
-        return assistant_secret_flow.challenge_payload(secret)
     if input_challenge is not None:
         return assistant_input_flow.challenge_payload(input_challenge)
     if approval is not None:
@@ -229,7 +223,7 @@ def _resume_chat_accounts(
             bindings = {active.assistant_id: active for active in assistants}
             return chat_turn_engine.AccountResumeContext(
                 current_identity,
-                hosted_assistants._secret_bindings(bindings),
+                hosted_assistants._account_bindings(bindings),
                 pending.continuation.turn.powers,
             )
 
@@ -263,84 +257,6 @@ def _resume_chat_accounts(
         pending = admission.pending
         if not isinstance(pending, hosted_assistants._PendingHostedChat):
             raise AssertionError("shared account resume returned invalid state")
-
-        segment = hosted_chat_segment._run_hosted_chat_segment(
-            hosted_chat_segment.HostedChatSegmentRequest(
-                team_id=team_id,
-                file_ids=list(pending.file_ids),
-                assistant_ids=pending.assistant_ids,
-                token=token,
-                container=container,
-                owner=lease.owner,
-                continuation=pending.continuation,
-                expected_identity=pending.identity,
-                answer_logs=pending.answer_logs,
-            )
-        )
-        return hosted_chat_segment._hosted_segment_response(
-            team_id,
-            token,
-            segment,
-            pending.assistant_ids,
-            pending.file_ids,
-            pending.owner,
-        )
-
-
-def _submit_chat_secrets(
-    team_id: str,
-    body: object,
-    lease: hosted_resources._AuthorizationLease,
-) -> dict[str, object]:
-    try:
-        challenge_id = body.get("challenge_id") if isinstance(body, dict) else None
-        challenge = runtime_state._assistant_secret_challenges.get(team_id, challenge_id)
-        values = assistant_secret_flow.submission_values(challenge, body)
-    except assistant_secret_challenges.SecretChallengeNotFoundError as exc:
-        raise runtime_state.ApiError(
-            HTTPStatus.CONFLICT,
-            "Assistant secret request expired; retry the message",
-        ) from exc
-    except (assistant_secret_challenges.SecretChallengeError, assistant_secret_flow.SecretFlowError) as exc:
-        raise runtime_state.ApiError(
-            HTTPStatus.UNPROCESSABLE_ENTITY,
-            "Assistant secret submission is invalid",
-        ) from exc
-    pending = challenge.payload
-    if not isinstance(pending, hosted_assistants._PendingHostedChat) or pending.owner != lease.owner:
-        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
-
-    with _exclusive_chat_turn(team_id, lease) as (token, container):
-        *_unused, current_identity = hosted_chat_segment._hosted_chat_setup(
-            team_id,
-            list(pending.file_ids),
-            pending.assistant_ids,
-            container,
-            lease.owner,
-        )
-        if current_identity != pending.identity:
-            runtime_state._assistant_secret_challenges.cancel_team(team_id)
-            raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
-
-        def commit_secret_transaction(current) -> None:
-            if current is not challenge:
-                raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
-            runtime_state._assistant_secrets.put_for_assistants(team_id, values)
-
-        try:
-            claimed = runtime_state._assistant_secret_challenges.claim_after(
-                team_id,
-                challenge.id,
-                commit_secret_transaction,
-            )
-            if claimed is not challenge:
-                raise assistant_secret_challenges.SecretChallengeNotFoundError("secret challenge is unavailable")
-        except assistant_secret_challenges.SecretChallengeNotFoundError as exc:
-            raise runtime_state.ApiError(
-                HTTPStatus.CONFLICT, "Assistant secret request expired; retry the message"
-            ) from exc
-        except assistant_secret_store.AssistantSecretError as exc:
-            runtime_state._raise_assistant_secret_error(exc)
 
         segment = hosted_chat_segment._run_hosted_chat_segment(
             hosted_chat_segment.HostedChatSegmentRequest(
@@ -544,11 +460,10 @@ def _stop_active_power(team_id: str, token: str | None) -> bool:
 
 def _stop_chat(team_id: str, lease: hosted_resources._AuthorizationLease) -> dict:
     """Cancel one Controller-owned turn and fail-stop a Power already executing."""
-    secret_cancelled = runtime_state._assistant_secret_challenges.cancel_team(team_id)
     account_cancelled = runtime_state._assistant_account_challenges.cancel_team(team_id)
     input_cancelled = runtime_state._assistant_input_challenges.cancel_team(team_id)
     approval_cancelled = runtime_state._assistant_approval_challenges.cancel_team(team_id)
-    challenge_cancelled = secret_cancelled or account_cancelled or input_cancelled or approval_cancelled
+    challenge_cancelled = account_cancelled or input_cancelled or approval_cancelled
     with runtime_state._lock_for(team_id):
         container = hosted_resources._require_current_authorization(team_id, lease)
         container.reload()

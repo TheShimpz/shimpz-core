@@ -21,7 +21,6 @@ class LocalRegistryAccountTests(unittest.TestCase):
             )
             spec = local_registry.load_registry(path)["shimpz-cloudflare"]
 
-        self.assertEqual(spec.secrets, {})
         self.assertEqual(spec.accounts["cloudflare"].provider, "cloudflare")
         self.assertEqual(spec.accounts["cloudflare"].scopes, ("dns.read", "offline_access", "zone.read"))
         self.assertEqual(spec.allowed_hosts, ("api.cloudflare.com",))

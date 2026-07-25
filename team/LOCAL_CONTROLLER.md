@@ -99,17 +99,10 @@ The former 1.2–1.6k twin-Controller LOC reduction target is intentionally drop
 decisions are now shared, while extracting the remaining runtime-preparation wiring would add more
 abstraction and total code without improving either Controller's safety contract.
 
-### Assistant secret, approval, and account administration
-
-Assistant Spec v3 has no authored static-secret declaration, so the secret inventory, replacement,
-and chat-challenge machinery below is intentionally dormant: no admitted v3 contract can populate
-it. It remains a fail-closed reserved boundary for a separately reviewed future non-OAuth credential
-surface and must not be treated as active Assistant API until a later spec explicitly enables it.
+### Assistant approval and account administration
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/teams/{team_id}/assistant-secrets` | masked configured-secret inventory |
-| `PUT` | `/v1/teams/{team_id}/assistant-secrets` | replace one Assistant's encrypted secret set |
 | `GET` | `/v1/teams/{team_id}/assistant-approvals` | list remembered Assistant/Power grants |
 | `DELETE` | `/v1/teams/{team_id}/assistant-approvals` | revoke every remembered grant for the Team |
 | `GET` | `/v1/teams/{team_id}/assistant-accounts` | list redacted connected-account state |

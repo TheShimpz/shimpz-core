@@ -76,8 +76,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         self.assertIn("chmod 0750 /run/shimpz-brain-runtime", dockerfile)
         self.assertIn("/var/lib/team-driver/inference", dockerfile)
         self.assertIn("/var/lib/team-driver/power-journal", dockerfile)
-        self.assertIn("/var/lib/team-driver/assistant-secrets/state", dockerfile)
-        self.assertIn("/var/lib/team-driver/assistant-secrets/key", dockerfile)
+        self.assertNotIn("/var/lib/team-driver/assistant-secrets", dockerfile)
         self.assertIn("/var/lib/team-driver/assistant-accounts/state", dockerfile)
         self.assertIn("/var/lib/team-driver/assistant-accounts/key", dockerfile)
         self.assertIn(

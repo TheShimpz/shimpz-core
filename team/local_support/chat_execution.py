@@ -4,8 +4,6 @@ from http import HTTPStatus
 from typing import NoReturn
 
 import assistant_account_flow
-import assistant_secret_flow
-import assistant_secret_store
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
@@ -164,24 +162,7 @@ def _require_chat_private_inputs(
             "Assistant account contract is unavailable",
             code="assistant-account-contract-invalid",
         ) from exc
-    if requirements.accounts:
-        return True
-    try:
-        requirements.secrets = assistant_secret_flow.requirements_for_batch(
-            team_id,
-            bindings,
-            requests,
-            self.assistant_secrets,
-        )
-    except assistant_secret_store.AssistantSecretError as exc:
-        self._raise_secret_problem(exc)
-    except assistant_secret_flow.SecretFlowError as exc:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant secret contract is unavailable",
-            code="assistant-secret-contract-invalid",
-        ) from exc
-    return bool(requirements.secrets)
+    return bool(requirements.accounts)
 
 
 def _validate_chat_context(

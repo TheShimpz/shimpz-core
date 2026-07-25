@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_secret_flow
 import power_journal
 
 # A missing manifest Power is a missing resource; an unavailable connected account is an unmet
@@ -76,7 +75,6 @@ def power_operation(
     request: object,
     assistant_container_id: object,
     assistant_image: object,
-    secret_generations: tuple[tuple[str, int], ...] = (),
     account_generations: tuple[tuple[str, int], ...] = (),
 ) -> power_journal.Operation:
     """Fingerprint one normalized request and every immutable private-state generation."""
@@ -93,7 +91,6 @@ def power_operation(
                 "account_generations": account_generations,
                 "input": request.input,
                 "power": request.power,
-                "secret_generations": secret_generations,
             },
             allow_nan=False,
             ensure_ascii=False,
@@ -110,7 +107,6 @@ class PowerBatchStrategy:
     binding_identity: Callable[[object], tuple[object, object]]
     execute: Callable[[object], object]
     preflight: Callable[[object], None]
-    secret_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: ()
     account_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: ()
 
 
@@ -144,7 +140,6 @@ class PowerBatch:
             request,
             container_id,
             image,
-            self._strategy.secret_generations(request),
             self._strategy.account_generations(request),
         )
 
@@ -219,13 +214,12 @@ class RpcInvocationResult:
 
 def project_rpc_result(
     raw_result: object,
-    secrets_by_id: Mapping[str, str],
     accounts_by_id: Mapping[str, Mapping[str, object]],
     answers: tuple[object, ...],
     validate: Callable[[object], object],
 ) -> RpcInvocationResult:
     """Reject private echoes, retain suspensions, and validate one terminal Power result."""
-    private_values = protected_rpc_values(secrets_by_id, accounts_by_id, answers)
+    private_values = protected_rpc_values(accounts_by_id, answers)
     inspected = raw_result.payload if isinstance(raw_result, RpcSuspension) else raw_result
     if contains_secret(inspected, private_values):
         raise RpcSecretExposureError
@@ -345,29 +339,13 @@ def rpc_exchange(
     return decode_rpc_response(bytes(stdout))
 
 
-def private_generations(metadata: tuple[object, ...], *, connected: bool) -> tuple[tuple[str, int], ...]:
-    """Project only usable positive generations from secret or account metadata."""
-    if connected:
-        valid = all(getattr(item, "status", None) == "connected" for item in metadata)
-    else:
-        valid = all(getattr(item, "configured", False) is True for item in metadata)
+def private_generations(metadata: tuple[object, ...]) -> tuple[tuple[str, int], ...]:
+    """Project only usable positive Account generations."""
+    valid = all(getattr(item, "status", None) == "connected" for item in metadata)
     generations = tuple(getattr(item, "generation", None) for item in metadata)
     if not valid or any(type(generation) is not int or generation < 1 for generation in generations):
-        kind = "account" if connected else "secret"
-        raise power_journal.PowerJournalConflictError(f"Power {kind} generation is unavailable")
+        raise power_journal.PowerJournalConflictError("Power account generation is unavailable")
     return tuple((item.id, generation) for item, generation in zip(metadata, generations, strict=True))
-
-
-def secret_generations(
-    powers: Mapping[str, object],
-    power_id: str,
-    metadata: Callable[[tuple[str, ...]], tuple[object, ...]],
-) -> tuple[tuple[str, int], ...]:
-    """Read one declared Power's configured secret generations."""
-    power = powers.get(power_id)
-    if power is None:
-        raise power_journal.PowerJournalConflictError("Power secret contract is unavailable")
-    return private_generations(tuple(metadata(tuple(getattr(power, "secrets", ())))), connected=False)
 
 
 def account_generations(
@@ -384,22 +362,18 @@ def account_generations(
     declarations = {account_id: accounts[account_id] for account_id in account_ids if account_id in accounts}
     if len(declarations) != len(account_ids):
         raise power_journal.PowerJournalConflictError("Power account contract is unavailable")
-    return private_generations(tuple(metadata(declarations)), connected=True)
+    return private_generations(tuple(metadata(declarations)))
 
 
 def require_rpc_envelope(
     active: object,
     request: object,
-    resolve_secrets: Callable[[object, str], Mapping[str, str]],
     resolve_accounts: Callable[[object, str], Mapping[str, Mapping[str, object]]],
-    answers: tuple[object, ...] = (),
 ) -> None:
-    """Resolve and size-check one complete private RPC envelope before journaling."""
-    assistant_secret_flow.require_power_rpc_envelope(
+    """Resolve and size-check the exact Spec v1 invocation before journaling."""
+    encode_rpc_invocation(
         request.input,
-        resolve_secrets(active, request.power),
-        resolve_accounts(active, request.power),
-        answers,
+        account_access_tokens(resolve_accounts(active, request.power)),
     )
 
 
@@ -422,13 +396,11 @@ def contains_secret(value: object, secrets_by_id: Mapping[str, str]) -> bool:
 
 
 def protected_rpc_values(
-    secrets_by_id: Mapping[str, str],
     accounts_by_id: Mapping[str, Mapping[str, object]],
     answers: Iterable[object],
 ) -> dict[str, str]:
     """Collect literal private strings that an Assistant must not return."""
     return {
-        **secrets_by_id,
         **{
             f"account:{account_id}": access_token
             for account_id, envelope in accounts_by_id.items()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import http.client
 from http import HTTPStatus
 
-import assistant_secret_store
 import audit
 import brain_runtime_client
 import cleanup_state
@@ -175,17 +174,6 @@ def _teardown_inference(team_id: str) -> bool:
     return True
 
 
-def _teardown_assistant_secrets(team_id: str) -> bool:
-    runtime_state._assistant_secret_challenges.cancel_team(team_id)
-    runtime_state._assistant_input_challenges.cancel_team(team_id)
-    runtime_state._assistant_approval_challenges.cancel_team(team_id)
-    try:
-        runtime_state._assistant_secrets.delete_team(team_id)
-    except assistant_secret_store.AssistantSecretError:
-        return False
-    return True
-
-
 def _teardown_assistant_accounts(team_id: str) -> bool:
     runtime_state._assistant_account_challenges.cancel_team(team_id)
     try:
@@ -243,7 +231,6 @@ def _teardown(team_id: str, *, owner: str, brain_id: str) -> hosted_resources._C
         or not _teardown_apps(team_id)
         or not _teardown_storage(team_id)
         or not _teardown_inference(team_id)
-        or not _teardown_assistant_secrets(team_id)
         or not _teardown_assistant_accounts(team_id)
         or not _teardown_network_planes(team_id)
         or not _remove_teardown_brain(brain)

@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
-import assistant_secret_challenges
 import brain_runtime_client
 import local_app
 from assistant_human import approval_challenges as assistant_approval_challenges
@@ -28,13 +27,6 @@ DNS_RESULT = {
     "records": [],
     "pagination": {"page": 1, "per_page": 25, "count": 0, "total_count": 0, "total_pages": 0},
 }
-TEST_SECRET_VALUES = {
-    "service-token": "service-test-credential-123456789",
-    "client-key": "client-key-test-credential-123456789",
-    "client-secret": "client-secret-test-credential-123456789",
-    "session-token": "session-token-test-credential-123456789",
-    "session-secret": "session-secret-test-credential-123456789",
-}
 TEST_ACCOUNT_ACCESS_TOKEN = "-".join(("oauth", "access", "test", "token", "123456789"))
 TEST_ACCOUNT_REFRESH_TOKEN = "-".join(("oauth", "refresh", "test", "token", "123456789"))
 CURRENT_ASSISTANT_IMAGE = "ghcr.io/theshimpz/shimpz-space@sha256:" + "b" * 64
@@ -46,12 +38,10 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
-        controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         controller.assistant_accounts = SimpleNamespace(
             delete_team=lambda team_id: events.append(("accounts-delete", team_id))
         )
@@ -147,7 +137,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.secret_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-secrets"))
         controller.approval_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-approvals"))
         controller.input_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-inputs"))
         controller.chat_continuations = SimpleNamespace(clear=lambda: 0)
@@ -169,7 +158,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         controller.assistant_lifecycle._validate_network = lambda _network, team_id, **_kwargs: events.append(
             ("validate-network", team_id)
         )
-        controller.chat_turn_service._delete_all_secret_state = lambda: events.append("delete-secrets")
         controller.chat_turn_service._delete_all_account_state = lambda: events.append("delete-accounts")
         controller.chat_turn_service._revoke_all_approval_grants = lambda: events.append("revoke-approvals")
         controller.assistant_lifecycle._remove_egress_policy = lambda team_id, assistant_id: events.append(
@@ -189,12 +177,10 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[str] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
-        controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,
@@ -238,12 +224,10 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
         controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
-        controller.assistant_secrets = SimpleNamespace(delete_team=lambda _team_id: False)
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,

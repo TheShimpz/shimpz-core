@@ -14,7 +14,7 @@ import chat_orchestrator
 import oauth_account_store
 import power_journal
 
-CHAT_PAUSED_STATUSES = frozenset({"accounts-required", "secrets-required", "input-required", "approval-required"})
+CHAT_PAUSED_STATUSES = frozenset({"accounts-required", "input-required", "approval-required"})
 
 
 @dataclass(slots=True)
@@ -22,12 +22,11 @@ class SegmentRequirements:
     """Mutable suspension gates populated while one shared segment is driven."""
 
     accounts: tuple[object, ...] = ()
-    secrets: tuple[object, ...] = ()
     inputs: tuple[object, ...] = ()
     approvals: tuple[object, ...] = ()
 
     def groups(self) -> tuple[tuple[object, ...], ...]:
-        return self.accounts, self.secrets, self.inputs, self.approvals
+        return self.accounts, self.inputs, self.approvals
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,13 +48,12 @@ class SegmentResult:
     identity: tuple[object, ...]
     outcome: chat_orchestrator.ChatOutcome | chat_orchestrator.ChatSuspension
     accounts: tuple[object, ...]
-    secrets: tuple[object, ...]
     inputs: tuple[object, ...]
     approvals: tuple[object, ...]
     answer_logs: tuple[tuple[str, tuple[object, ...]], ...]
 
     def requirement_groups(self) -> tuple[tuple[object, ...], ...]:
-        return self.accounts, self.secrets, self.inputs, self.approvals
+        return self.accounts, self.inputs, self.approvals
 
 
 @dataclass(frozen=True, slots=True)

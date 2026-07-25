@@ -12,13 +12,10 @@ import weakref
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
-from typing import NoReturn
 
 import assistant_account_challenges
 import assistant_genesis
 import assistant_manifest
-import assistant_secret_challenges
-import assistant_secret_store
 import brain_runtime_client
 import docker
 import inference_config
@@ -65,7 +62,6 @@ if not _LARGEST_RESOURCE_LIMIT <= OWNER_MEMORY_BUDGET_BYTES <= GLOBAL_MEMORY_BUD
     raise ValueError("SHIMPZ_TEAM_OWNER_MEM_BUDGET must fit one resource and the global memory budget")
 MAX_JSON_BODY_BYTES = max(1024, int(os.environ.get("SHIMPZ_TEAM_MAX_JSON_BODY_BYTES", str(128 * 1024))))
 MAX_DRIVER_JSON_BODY_BYTES = 64 * 1024
-MAX_ASSISTANT_SECRET_BODY_BYTES = 512 * 1024
 CREATE_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_CREATE_RATE_LIMIT", 5)
 CREATE_RATE_WINDOW_SECONDS = _positive_int_env("SHIMPZ_TEAM_CREATE_RATE_WINDOW_SECONDS", 3600)
 INSTALL_RATE_LIMIT = _positive_int_env("SHIMPZ_TEAM_INSTALL_RATE_LIMIT", 20)
@@ -84,18 +80,6 @@ POWER_JOURNAL_PATH = Path(
     os.environ.get(
         "SHIMPZ_TEAM_POWER_JOURNAL_PATH",
         "/var/lib/team-driver/power-journal/journal.sqlite3",
-    )
-)
-ASSISTANT_SECRET_STATE_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_SECRET_STATE_PATH",
-        "/var/lib/team-driver/assistant-secrets/state/secrets.json",
-    )
-)
-ASSISTANT_SECRET_KEY_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_SECRET_KEY_PATH",
-        "/var/lib/team-driver/assistant-secrets/key/aes256.key",
     )
 )
 ASSISTANT_ACCOUNT_STATE_PATH = Path(
@@ -145,11 +129,6 @@ _brain_runtime = brain_runtime_client.BrainRuntimeClient()
 _assistant_genesis_cache = assistant_genesis.GenesisCache()
 _assistant_allowed_hosts_cache = assistant_manifest.ManifestContractCache()
 _assistant_machine_contract_cache = assistant_manifest.MachineContractCache()
-_assistant_secrets = assistant_secret_store.AssistantSecretStore(
-    ASSISTANT_SECRET_STATE_PATH,
-    ASSISTANT_SECRET_KEY_PATH,
-)
-_assistant_secret_challenges = assistant_secret_challenges.SecretChallengeStore()
 _assistant_accounts = oauth_account_store.OAuthAccountStore(
     ASSISTANT_ACCOUNT_STATE_PATH,
     ASSISTANT_ACCOUNT_KEY_PATH,
@@ -221,7 +200,6 @@ _rate_limiters = {
     "install": _FixedWindowRateLimiter(INSTALL_RATE_LIMIT, INSTALL_RATE_WINDOW_SECONDS),
     "chat": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
     "stream": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
-    "secret": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
     "stop": _FixedWindowRateLimiter(CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SECONDS),
     "file_upload": _FixedWindowRateLimiter(FILE_UPLOAD_RATE_LIMIT, FILE_UPLOAD_RATE_WINDOW_SECONDS),
 }
@@ -320,14 +298,6 @@ def _commit_chat_terminal(team_id: str, token: str) -> bool:
             _active_chat_tokens.pop(team_id, None)
             _active_chat_container_ids.pop(team_id, None)
         return True
-
-
-def _raise_assistant_secret_error(exc: assistant_secret_store.AssistantSecretError) -> NoReturn:
-    if isinstance(exc, assistant_secret_store.AssistantSecretMissingError):
-        raise ApiError(HTTPStatus.PRECONDITION_REQUIRED, "Assistant secrets are required") from exc
-    if isinstance(exc, assistant_secret_store.AssistantSecretValidationError):
-        raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "Assistant secret values are invalid") from exc
-    raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant secret state is unavailable") from exc
 
 
 def _revoke_assistant_approval_grants(team_id: str, assistant_id: str) -> None:

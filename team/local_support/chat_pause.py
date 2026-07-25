@@ -4,7 +4,6 @@ from http import HTTPStatus
 
 import assistant_account_challenges
 import assistant_account_flow
-import assistant_secret_challenges
 import chat_orchestrator
 import chat_turn_engine
 from assistant_human import approval_challenges as assistant_approval_challenges
@@ -14,31 +13,6 @@ from assistant_human import input_flow as assistant_input_flow
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat
 from local_support.errors import ApiProblemError as ApiProblem
-
-
-def _pause_chat(
-    self,
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[assistant_secret_challenges.SecretRequirement, ...],
-    payload: _PendingLocalChat,
-) -> dict[str, object]:
-    try:
-        challenge = self.secret_challenges.create(team_id, requirements, payload)
-    except assistant_secret_challenges.SecretChallengeError as exc:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant secret request is already pending",
-            code="assistant-secret-challenge-conflict",
-        ) from exc
-    try:
-        self._persist_chat_continuation("secrets", challenge, requirements, payload)
-    except ApiProblem:
-        self.secret_challenges.cancel_team(team_id)
-        raise
-    self._commit_suspension(team_id, token, outcome, payload, self.secret_challenges, challenge.id)
-    return self._challenge_response(challenge)
 
 
 def _commit_suspension(

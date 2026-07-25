@@ -8,9 +8,6 @@ from typing import NoReturn
 
 import assistant_account_challenges
 import assistant_account_flow
-import assistant_secret_challenges
-import assistant_secret_flow
-import assistant_secret_store
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
@@ -120,14 +117,11 @@ def _hosted_private_requirements(
     team_id: str,
     bindings: dict[str, hosted_assistants._ActiveAssistant],
     requests: tuple[brain_runtime_client.PowerRequest, ...],
-) -> tuple[
-    tuple[assistant_account_challenges.AccountRequirement, ...],
-    tuple[assistant_secret_challenges.SecretRequirement, ...],
-]:
+) -> tuple[assistant_account_challenges.AccountRequirement, ...]:
     try:
-        accounts = assistant_account_flow.requirements_for_batch(
+        return assistant_account_flow.requirements_for_batch(
             team_id,
-            hosted_assistants._secret_bindings(bindings),
+            hosted_assistants._account_bindings(bindings),
             requests,
             runtime_state._assistant_accounts,
         )
@@ -136,20 +130,6 @@ def _hosted_private_requirements(
         oauth_account_store.OAuthAccountStoreError,
     ) as exc:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Assistant account contract is unavailable") from exc
-    if accounts:
-        return accounts, ()
-    try:
-        secrets_required = assistant_secret_flow.requirements_for_batch(
-            team_id,
-            hosted_assistants._secret_bindings(bindings),
-            requests,
-            runtime_state._assistant_secrets,
-        )
-    except assistant_secret_store.AssistantSecretError as exc:
-        runtime_state._raise_assistant_secret_error(exc)
-    except assistant_secret_flow.SecretFlowError as exc:
-        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Assistant secret contract is unavailable") from exc
-    return (), secrets_required
 
 
 def _hosted_approval_requirement(
@@ -358,10 +338,6 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
                     team_id,
                     bindings,
                     request,
-                    answers_by_interrupt.get(request.interrupt_id, ()),
-                ),
-                lambda request: hosted_assistants._power_secret_generations(
-                    team_id, bindings[request.assistant_id], request.power
                 ),
                 lambda request: hosted_assistants._power_account_generations(
                     team_id, bindings[request.assistant_id], request.power
@@ -374,12 +350,12 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
         requests: tuple[object, ...],
         requirements: chat_turn_engine.SegmentRequirements,
     ) -> bool:
-        requirements.accounts, requirements.secrets = _hosted_private_requirements(
+        requirements.accounts = _hosted_private_requirements(
             team_id,
             bindings,
             requests,
         )
-        return bool(requirements.accounts or requirements.secrets)
+        return bool(requirements.accounts)
 
     def validate_context() -> None:
         nonlocal inspect_memo
@@ -436,26 +412,10 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
             identity,
             outcome,
             requirements.accounts,
-            requirements.secrets,
             requirements.inputs,
             approval_requirements,
             tuple(sorted(answers_by_interrupt.items())),
         )
-
-
-def _pause_hosted_chat(
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[assistant_secret_challenges.SecretRequirement, ...],
-    pending: hosted_assistants._PendingHostedChat,
-) -> dict[str, object]:
-    try:
-        challenge = runtime_state._assistant_secret_challenges.create(team_id, requirements, pending)
-    except assistant_secret_challenges.SecretChallengeError as exc:
-        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Assistant secret request is already pending") from exc
-    _commit_hosted_suspension(team_id, token, outcome, pending, runtime_state._assistant_secret_challenges)
-    return assistant_secret_flow.challenge_payload(challenge)
 
 
 def _commit_hosted_suspension(
@@ -477,7 +437,7 @@ def _commit_hosted_suspension(
 def _hosted_account_challenge_payload(
     challenge: assistant_account_challenges.PendingAccountChallenge,
 ) -> dict[str, object]:
-    bindings: dict[str, hosted_assistants._HostedAssistantSecretBinding] = {}
+    bindings: dict[str, hosted_assistants._HostedAssistantBinding] = {}
     try:
         for requirement in challenge.requirements:
             assistant_id, contract, container = hosted_assistants._installed_assistant(
@@ -485,8 +445,8 @@ def _hosted_account_challenge_payload(
                 requirement.assistant_id,
             )
             active = hosted_assistants._ActiveAssistant(assistant_id, contract, container)
-            bindings[assistant_id] = hosted_assistants._HostedAssistantSecretBinding(
-                hosted_assistants._hosted_secret_spec(active)
+            bindings[assistant_id] = hosted_assistants._HostedAssistantBinding(
+                hosted_assistants._hosted_account_spec(active)
             )
         return assistant_account_flow.challenge_payload(challenge, bindings)
     except (marketplace.MarketplaceError, assistant_account_flow.AccountFlowError) as exc:
@@ -593,9 +553,6 @@ def _hosted_segment_response(
             pending,
             (
                 lambda suspension, requirements, state: _pause_hosted_connection(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: _pause_hosted_chat(
                     team_id, token, suspension, requirements, state
                 ),
                 lambda suspension, requirements, state: _pause_hosted_input(

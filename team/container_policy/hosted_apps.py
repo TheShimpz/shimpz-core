@@ -10,7 +10,6 @@ from typing import NoReturn
 
 import assistant_genesis
 import assistant_manifest
-import assistant_secret_store
 import docker
 import docker.errors
 import egress_policy
@@ -384,25 +383,6 @@ def _drop_app_database(team_id: str, app_id: str) -> hosted_resources._CleanupRe
     return hosted_resources._CleanupResult(True, True)
 
 
-def _retain_admitted_assistant_secrets(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
-    """Prune credentials removed from the exact Assistant contract that just passed admission."""
-    if spec.assistant is None:
-        return
-    try:
-        pruned = runtime_state._assistant_secrets.retain_declared(
-            team_id,
-            app_id,
-            tuple(sorted(spec.assistant.secrets)),
-        )
-    except assistant_secret_store.AssistantSecretError as exc:
-        runtime_state._raise_assistant_secret_error(exc)
-    if pruned:
-        # A paused turn may still reference a secret removed by this admitted release.
-        runtime_state._assistant_secret_challenges.cancel_team(team_id)
-        runtime_state._assistant_input_challenges.cancel_team(team_id)
-        runtime_state._assistant_approval_challenges.cancel_team(team_id)
-
-
 def _retain_admitted_assistant_accounts(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
     """Prune OAuth grants removed from the exact Assistant contract admitted at install."""
     if spec.assistant is None:
@@ -417,11 +397,6 @@ def _retain_admitted_assistant_accounts(team_id: str, app_id: str, spec: marketp
         raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable") from exc
     if pruned:
         runtime_state._assistant_account_challenges.cancel_team(team_id)
-
-
-def _retain_admitted_assistant_private_state(team_id: str, app_id: str, spec: marketplace.AppSpec) -> None:
-    _retain_admitted_assistant_secrets(team_id, app_id, spec)
-    _retain_admitted_assistant_accounts(team_id, app_id, spec)
 
 
 @runtime_state._serialize_against_team_chat
@@ -486,7 +461,7 @@ def _admit_existing_app(
             HTTPStatus.CONFLICT,
             f"installed app {app_id!r} is not ready ({status}); uninstall it before reinstalling",
         )
-    _retain_admitted_assistant_private_state(team_id, app_id, spec)
+    _retain_admitted_assistant_accounts(team_id, app_id, spec)
     return {"team_id": team_id, "app": app_id, "status": status, "installed": False}
 
 
@@ -560,7 +535,7 @@ def _provision_app_transaction(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 f"app {app_id!r} lost readiness before install commit ({committed_status}; rolled back)",
             )
-        _retain_admitted_assistant_private_state(team_id, app_id, spec)
+        _retain_admitted_assistant_accounts(team_id, app_id, spec)
     except Exception as exc:
         cleanup = _teardown_app(team_id, app_id, drop_db=spec.db)
         if not cleanup.complete:
@@ -582,7 +557,6 @@ def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._Authoriza
     with runtime_state._lock_for(team_id):
         # Removal is a remediation operation and must remain available for a legacy blocked Team.
         hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
-        runtime_state._assistant_secret_challenges.cancel_team(team_id)
         runtime_state._assistant_account_challenges.cancel_team(team_id)
         runtime_state._assistant_input_challenges.cancel_team(team_id)
         runtime_state._assistant_approval_challenges.cancel_team(team_id)
@@ -592,10 +566,6 @@ def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._Authoriza
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "app teardown is incomplete; retry uninstall or contact the operator",
             )
-        try:
-            runtime_state._assistant_secrets.delete_assistant(team_id, app_id)
-        except assistant_secret_store.AssistantSecretError as exc:
-            runtime_state._raise_assistant_secret_error(exc)
         try:
             runtime_state._assistant_accounts.delete_assistant(team_id, app_id)
         except oauth_account_store.OAuthAccountStoreError as exc:

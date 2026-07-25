@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import assistant_account_challenges
-import assistant_secret_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
@@ -187,7 +186,6 @@ def _identity_payload(identity: tuple[object, ...]) -> dict[str, object]:
 def _requirements_payload(kind: str, requirements: tuple[object, ...]) -> list[dict[str, object]]:
     expected = {
         "accounts": assistant_account_challenges.AccountRequirement,
-        "secrets": assistant_secret_challenges.SecretRequirement,
         "input": input_challenges.InputRequirement,
         "approval": approval_challenges.ApprovalRequirement,
     }.get(kind)
@@ -495,33 +493,6 @@ def _account_requirement(value: object) -> assistant_account_challenges.AccountR
     )
 
 
-def _secret_requirement(value: object) -> assistant_secret_challenges.SecretRequirement:
-    raw = _mapping(
-        value,
-        {"assistant_id", "assistant_name", "power_ids", "secrets"},
-        "secret requirement",
-    )
-    secrets: list[tuple[str, str, str]] = []
-    for item in _sequence(raw["secrets"], 64, "secret requirements"):
-        if not isinstance(item, list) or len(item) != 3:
-            raise ContinuationCodecError("secret requirement is malformed")
-        secrets.append(
-            (
-                _component_id(item[0], "secret id"),
-                str(_text(item[1], 80, "secret name")),
-                str(_text(item[2], 160, "secret summary")),
-            )
-        )
-    if not secrets:
-        raise ContinuationCodecError("secret requirement is malformed")
-    return assistant_secret_challenges.SecretRequirement(
-        _component_id(raw["assistant_id"], "secret Assistant"),
-        str(_text(raw["assistant_name"], 80, "secret Assistant name")),
-        _tuple_text(raw["power_ids"], 80, "secret Powers"),
-        tuple(secrets),
-    )
-
-
 def _input_requirement(value: object) -> input_challenges.InputRequirement:
     raw = _mapping(
         value,
@@ -619,7 +590,6 @@ def decode(
         raise ContinuationCodecError("stored continuation contract changed")
     constructors = {
         "accounts": _account_requirement,
-        "secrets": _secret_requirement,
         "input": _input_requirement,
         "approval": _approval_requirement,
     }

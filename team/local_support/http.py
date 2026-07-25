@@ -262,7 +262,6 @@ class Handler(BaseHTTPRequestHandler):
     ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
         pending = {
             "accounts": ("pending_chat_accounts", "chat-account-pending"),
-            "secrets": ("pending_chat_secrets", "chat-secret-pending"),
             "approval": ("pending_chat_approval", "chat-approval-pending"),
             "input": ("pending_chat_input", "chat-input-pending"),
         }.get(segment)
@@ -279,7 +278,6 @@ class Handler(BaseHTTPRequestHandler):
     ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
         submission = {
             "accounts": ("resume_chat_accounts", "chat-account-submit", MAX_BODY_BYTES),
-            "secrets": ("submit_chat_secrets", "chat-secret-submit", MAX_SECRET_BODY_BYTES),
             "input": ("submit_chat_input", "chat-input-submit", MAX_SECRET_BODY_BYTES),
             "approval": ("submit_chat_approval", "chat-approval-submit", MAX_SECRET_BODY_BYTES),
         }.get(segment)
@@ -324,34 +322,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "POST" and segment == "stop":
             return self._chat_stop(team_id)
         return self._chat_submit(team_id, segment) if self.command == "POST" else None
-
-    def _assistant_secret_route(
-        self,
-        parts: list[str],
-    ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
-        if len(parts) != 4 or parts[:2] != ["v1", "teams"] or parts[3] != "assistant-secrets":
-            return None
-        team_id = validate_team_id(parts[2])
-        if self.command == "GET":
-            return (
-                HTTPStatus.OK,
-                self.server.controller.chat_turn_service.list_assistant_secrets(team_id),
-                "assistant-secret-list",
-                team_id,
-                None,
-            )
-        if self.command == "PUT":
-            return (
-                HTTPStatus.OK,
-                self.server.controller.chat_turn_service.replace_assistant_secrets(
-                    team_id,
-                    self._body(max_bytes=MAX_SECRET_BODY_BYTES),
-                ),
-                "assistant-secret-replace",
-                team_id,
-                None,
-            )
-        return None
 
     def _assistant_approval_route(
         self,
@@ -463,7 +433,6 @@ class Handler(BaseHTTPRequestHandler):
             "file": self._file_route,
             "inference": self._inference_route,
             "chat": self._chat_route,
-            "assistant-secret": self._assistant_secret_route,
             "assistant-approval": self._assistant_approval_route,
             "assistant-account": self._assistant_account_route,
             "team": self._team_route,

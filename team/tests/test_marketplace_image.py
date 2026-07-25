@@ -70,7 +70,6 @@ class MarketplaceImageTests(unittest.TestCase):
         assert spec.assistant is not None
         self.assertFalse(hasattr(spec.assistant, "rpc_command"))
         self.assertEqual(set(spec.assistant.powers), {"list-zones", "list-dns-records"})
-        self.assertEqual(spec.assistant.secrets, {})
         self.assertEqual(spec.assistant.accounts["cloudflare"].provider, "cloudflare")
         self.assertEqual(
             spec.assistant.accounts["cloudflare"].scopes,

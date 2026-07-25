@@ -319,7 +319,6 @@ class ControllerRouteMatch:
             ("file-", "file"),
             ("inference-", "inference"),
             ("chat-", "chat"),
-            ("assistant-secret-", "assistant-secret"),
             ("assistant-approval-", "assistant-approval"),
             ("assistant-account-", "assistant-account"),
         ):
@@ -352,11 +351,7 @@ CONTROLLER_ROUTES = (
     _controller_route("POST", "/v1/teams/:team_id/chat", "chat"),
     _controller_route("GET", "/v1/teams/:team_id/chat/accounts", "chat-account-pending"),
     _controller_route("POST", "/v1/teams/:team_id/chat/accounts", "chat-account-submit"),
-    _controller_route("GET", "/v1/teams/:team_id/chat/secrets", "chat-secret-pending"),
-    _controller_route("POST", "/v1/teams/:team_id/chat/secrets", "chat-secret-submit"),
     _controller_route("POST", "/v1/teams/:team_id/chat/stop", "chat-stop"),
-    _controller_route("GET", "/v1/teams/:team_id/assistant-secrets", "assistant-secret-list"),
-    _controller_route("PUT", "/v1/teams/:team_id/assistant-secrets", "assistant-secret-replace"),
     _controller_route("GET", "/v1/teams/:team_id/assistant-accounts", "assistant-account-list"),
     _controller_route(
         "POST",

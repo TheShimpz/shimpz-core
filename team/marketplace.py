@@ -40,14 +40,7 @@ class PowerSpec:
     summary: str
     input_schema: Mapping[str, Any]
     output_schema: Mapping[str, Any]
-    secrets: tuple[str, ...] = ()
     accounts: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class SecretSpec:
-    name: str
-    summary: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +52,6 @@ class AccountSpec:
 @dataclass(frozen=True, slots=True)
 class AssistantContract:
     powers: dict[str, PowerSpec]
-    secrets: dict[str, SecretSpec]
     accounts: dict[str, AccountSpec] = field(default_factory=dict)
     machine_contract: dict[str, Any] = field(default_factory=dict)
 
@@ -108,12 +100,10 @@ APPS: dict[str, AppSpec] = {
                     summary=power_id.replace("-", " ").capitalize(),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],
-                    secrets=(),
                     accounts=tuple(power["accounts"]),
                 )
                 for power_id, power in _CLOUDFLARE.powers.items()
             },
-            secrets={},
             accounts={
                 account.id: AccountSpec(provider=account.provider, scopes=account.scopes)
                 for account in _CLOUDFLARE.accounts

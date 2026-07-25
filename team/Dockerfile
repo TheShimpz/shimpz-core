@@ -73,7 +73,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py marketplace.py marketplace_image.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
-     assistant_chat.py assistant_secret_challenges.py assistant_secret_flow.py assistant_secret_store.py local_registry.py \
+     assistant_chat.py \
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
@@ -90,8 +90,6 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/cleanup \
         /var/lib/team-driver/inference \
         /var/lib/team-driver/power-journal \
-        /var/lib/team-driver/assistant-secrets/state \
-        /var/lib/team-driver/assistant-secrets/key \
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
         /var/lib/team-driver/assistant-approvals \
@@ -109,8 +107,6 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/cleanup \
         /var/lib/team-driver/inference \
         /var/lib/team-driver/power-journal \
-        /var/lib/team-driver/assistant-secrets/state \
-        /var/lib/team-driver/assistant-secrets/key \
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
         /var/lib/team-driver/assistant-approvals \

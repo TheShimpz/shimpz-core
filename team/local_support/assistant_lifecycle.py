@@ -266,7 +266,6 @@ def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object
 @_serialize_against_local_team_chat
 def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, object]:
     spec = self._resolve(assistant_id)
-    self.secret_challenges.cancel_team(team_id)
     self.approval_challenges.cancel_team(team_id)
     self.input_challenges.cancel_team(team_id)
     self.chat_turn_service._delete_chat_continuation(team_id)
@@ -283,7 +282,6 @@ def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, obje
                     network,
                     remaining_egress=remaining_egress,
                 )
-            self.chat_turn_service._delete_assistant_secret_state(team_id, assistant_id)
             self.chat_turn_service._delete_assistant_account_state(team_id, assistant_id)
             return {"assistant": assistant_id, "uninstalled": False}
         self._validate_container_security(container, team_id, spec, network.name)
@@ -309,6 +307,5 @@ def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, obje
                 network,
                 remaining_egress=remaining_egress,
             )
-        self.chat_turn_service._delete_assistant_secret_state(team_id, assistant_id)
         self.chat_turn_service._delete_assistant_account_state(team_id, assistant_id)
         return {"assistant": assistant_id, "uninstalled": True}

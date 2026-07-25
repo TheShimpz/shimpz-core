@@ -126,8 +126,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 inference_store=SimpleNamespace(),
                 brain_runtime=SimpleNamespace(),
                 power_state=SimpleNamespace(),
-                assistant_secrets=SimpleNamespace(),
-                secret_challenges=SimpleNamespace(),
                 assistant_accounts=injected_store,
                 account_challenges=injected_challenges,
                 oauth_service=SimpleNamespace(),
@@ -263,8 +261,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                     inference_store=SimpleNamespace(),
                     brain_runtime=SimpleNamespace(),
                     power_state=SimpleNamespace(),
-                    assistant_secrets=SimpleNamespace(),
-                    secret_challenges=SimpleNamespace(),
                     assistant_accounts=accounts,
                     account_challenges=SimpleNamespace(),
                     oauth_pkce=pkce,
@@ -424,11 +420,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
-            controller.assistant_secrets = SimpleNamespace(
-                metadata=lambda *_args: (_ for _ in ()).throw(
-                    AssertionError("secret gate must run only after the account gate")
-                )
-            )
             controller.approval_grants = SimpleNamespace()
             controller._wire_collaborators()
             active = ActiveAssistant(spec, "b" * 64)
@@ -462,7 +453,7 @@ class LocalOAuthAccountTests(unittest.TestCase):
         self.assertIsInstance(result.outcome, chat_orchestrator.ChatSuspension)
         self.assertEqual(len(result.accounts), 1)
         self.assertEqual(result.accounts[0].accounts[0][0], "cloudflare")
-        self.assertEqual((result.secrets, result.inputs, result.approvals, result.answer_logs), ((), (), (), ()))
+        self.assertEqual((result.inputs, result.approvals, result.answer_logs), ((), (), ()))
 
     def test_account_resume_is_one_use_and_returns_completed_turn(self) -> None:
         registry = self._registry()
@@ -530,7 +521,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 "Team One",
                 identity,
                 chat_orchestrator.ChatOutcome("Done", ()),
-                (),
                 (),
                 (),
                 (),

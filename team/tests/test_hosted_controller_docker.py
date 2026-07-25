@@ -172,8 +172,6 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
                 ("GET", f"{base}/apps"),
                 ("POST", f"{base}/apps"),
                 ("DELETE", f"{base}/apps/notification-center"),
-                ("GET", f"{base}/assistant-secrets"),
-                ("PUT", f"{base}/assistant-secrets"),
                 ("GET", f"{base}/assistant-accounts"),
                 ("POST", f"{base}/assistant-accounts/challenges/{'a' * 32}/authorize"),
                 ("DELETE", f"{base}/assistant-accounts/shimpz-cloudflare/cloudflare"),

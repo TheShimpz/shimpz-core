@@ -87,7 +87,6 @@ def _spec() -> AssistantSpec:
                 "Read one external profile.",
                 {},
                 {},
-                (),
                 ("cloudflare-read",),
             ),
             "publish-post": PowerSpec(
@@ -96,11 +95,9 @@ def _spec() -> AssistantSpec:
                 "Publish one approved external update.",
                 {},
                 {},
-                (),
                 ("cloudflare-write",),
             ),
         },
-        secrets={},
         allowed_hosts=("api.cloudflare.com",),
         accounts={
             "cloudflare-read": AccountSpec("cloudflare", read_scopes),
@@ -126,11 +123,9 @@ def _cloudflare_spec() -> AssistantSpec:
                 "List a bounded page of Cloudflare zones and domains.",
                 {},
                 {},
-                (),
                 ("cloudflare",),
             )
         },
-        secrets={},
         allowed_hosts=("api.cloudflare.com",),
         accounts={
             "cloudflare": AccountSpec("cloudflare", ("dns.read", "offline_access", "zone.read")),

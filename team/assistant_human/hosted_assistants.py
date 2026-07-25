@@ -9,8 +9,6 @@ from http import HTTPStatus
 
 import assistant_account_flow
 import assistant_chat
-import assistant_secret_flow
-import assistant_secret_store
 import audit
 import brain_credentials_client
 import brain_runtime_client
@@ -49,26 +47,24 @@ class _ActiveAssistant:
 
 
 @dataclass(frozen=True, slots=True)
-class _HostedAssistantSecretSpec:
-    """Small adapter shared by the closed secret and account contracts."""
+class _HostedAssistantSpec:
+    """Small adapter for the closed account contract."""
 
     assistant_id: str
     name: str
     powers: dict[str, object]
-    secrets: dict[str, marketplace.SecretSpec]
     accounts: dict[str, marketplace.AccountSpec]
 
 
 @dataclass(frozen=True, slots=True)
-class _HostedPowerSecretSpec:
-    secrets: tuple[str, ...]
+class _HostedPowerSpec:
     accounts: tuple[str, ...]
     summary: str
 
 
 @dataclass(frozen=True, slots=True)
-class _HostedAssistantSecretBinding:
-    spec: _HostedAssistantSecretSpec
+class _HostedAssistantBinding:
+    spec: _HostedAssistantSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,37 +79,33 @@ class _PendingHostedChat:
     answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
-def _hosted_secret_spec(active: _ActiveAssistant) -> _HostedAssistantSecretSpec:
+def _hosted_account_spec(active: _ActiveAssistant) -> _HostedAssistantSpec:
     name = active.assistant_id.replace("-", " ").title()
-    return _HostedAssistantSecretSpec(
+    return _HostedAssistantSpec(
         assistant_id=active.assistant_id,
         name=name,
         powers={
-            power_id: _HostedPowerSecretSpec(
-                tuple(getattr(power, "secrets", ())),
+            power_id: _HostedPowerSpec(
                 tuple(getattr(power, "accounts", ())),
                 str(getattr(power, "summary", "")),
             )
             for power_id, power in active.contract.powers.items()
         },
-        secrets=getattr(active.contract, "secrets", {}),
         accounts=getattr(active.contract, "accounts", {}),
     )
 
 
-def _secret_bindings(
+def _account_bindings(
     bindings: dict[str, _ActiveAssistant],
-) -> dict[str, _HostedAssistantSecretBinding]:
+) -> dict[str, _HostedAssistantBinding]:
     return {
-        assistant_id: _HostedAssistantSecretBinding(_hosted_secret_spec(active))
-        for assistant_id, active in bindings.items()
+        assistant_id: _HostedAssistantBinding(_hosted_account_spec(active)) for assistant_id, active in bindings.items()
     }
 
 
 def _power_operation(
     request: brain_runtime_client.PowerRequest,
     assistant_container_id: object,
-    secret_generations: tuple[tuple[str, int], ...] = (),
     account_generations: tuple[tuple[str, int], ...] = (),
 ) -> power_journal.Operation:
     spec = marketplace.APPS.get(request.assistant_id)
@@ -122,7 +114,6 @@ def _power_operation(
         request,
         assistant_container_id,
         image,
-        secret_generations,
         account_generations,
     )
 
@@ -367,43 +358,6 @@ def _assistant_rpc(
     )
 
 
-def _power_secret_generations(
-    team_id: str,
-    active: _ActiveAssistant,
-    power_id: str,
-) -> tuple[tuple[str, int], ...]:
-    try:
-        return power_execution.secret_generations(
-            active.contract.powers,
-            power_id,
-            lambda secret_ids: runtime_state._assistant_secrets.metadata(
-                team_id,
-                active.assistant_id,
-                secret_ids,
-            ),
-        )
-    except assistant_secret_store.AssistantSecretError as exc:
-        raise power_journal.PowerJournalConflictError("Power secret state is unavailable") from exc
-
-
-def _resolve_power_secrets(
-    team_id: str,
-    assistant_id: str,
-    contract: marketplace.AssistantContract,
-    power_id: str,
-) -> dict[str, str]:
-    power = contract.powers.get(power_id)
-    if power is None:
-        raise runtime_state.ApiError(power_execution.UNDECLARED_POWER_STATUS, "Assistant requested an undeclared Power")
-    secret_ids = tuple(getattr(power, "secrets", ()))
-    if not secret_ids:
-        return {}
-    try:
-        return runtime_state._assistant_secrets.resolve_many(team_id, assistant_id, secret_ids)
-    except assistant_secret_store.AssistantSecretError as exc:
-        runtime_state._raise_assistant_secret_error(exc)
-
-
 def _power_account_generations(
     team_id: str,
     active: _ActiveAssistant,
@@ -450,7 +404,7 @@ def _resolve_power_accounts(
     try:
         return assistant_account_flow.resolve_power_accounts(
             team_id,
-            _hosted_secret_spec(active),
+            _hosted_account_spec(active),
             power_id,
             runtime_state._assistant_accounts,
             _refresh_oauth_account,
@@ -465,7 +419,6 @@ def _require_hosted_power_rpc_envelope(
     team_id: str,
     bindings: dict[str, _ActiveAssistant],
     request: brain_runtime_client.PowerRequest,
-    answers: tuple[object, ...] = (),
 ) -> None:
     active = bindings.get(request.assistant_id)
     if active is None:
@@ -474,37 +427,14 @@ def _require_hosted_power_rpc_envelope(
         power_execution.require_rpc_envelope(
             active,
             request,
-            lambda binding, power_id: _resolve_power_secrets(
-                team_id,
-                binding.assistant_id,
-                binding.contract,
-                power_id,
-            ),
             lambda binding, power_id: _resolve_power_accounts(team_id, binding, power_id),
-            answers,
         )
-    except assistant_secret_flow.SecretFlowError as exc:
+    except ValueError as exc:
         raise runtime_state.ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Assistant Power input is too large") from exc
 
 
 def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
     return power_execution.contains_secret(value, secrets_by_id)
-
-
-def _assistant_secret_inventory(
-    team_id: str,
-    lease: hosted_resources._AuthorizationLease,
-) -> dict[str, object]:
-    with runtime_state._lock_for(team_id):
-        hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
-        try:
-            return assistant_secret_flow.inventory_payload(
-                team_id,
-                _installed_assistant_secret_specs(team_id),
-                runtime_state._assistant_secrets,
-            )
-        except assistant_secret_store.AssistantSecretError as exc:
-            runtime_state._raise_assistant_secret_error(exc)
 
 
 def _assistant_account_inventory(
@@ -516,7 +446,7 @@ def _assistant_account_inventory(
         try:
             payload = assistant_account_flow.inventory_payload(
                 team_id,
-                _installed_assistant_secret_specs(team_id),
+                _installed_assistant_specs(team_id),
                 runtime_state._assistant_accounts,
             )
         except oauth_account_store.OAuthAccountStoreError as exc:
@@ -528,8 +458,8 @@ def _assistant_account_inventory(
     return {"team_id": team_id, **payload}
 
 
-def _installed_assistant_secret_specs(team_id: str) -> tuple[_HostedAssistantSecretSpec, ...]:
-    specs: list[_HostedAssistantSecretSpec] = []
+def _installed_assistant_specs(team_id: str) -> tuple[_HostedAssistantSpec, ...]:
+    specs: list[_HostedAssistantSpec] = []
     seen: set[str] = set()
     try:
         containers = hosted_apps._team_app_containers(team_id)
@@ -545,54 +475,8 @@ def _installed_assistant_secret_specs(team_id: str) -> tuple[_HostedAssistantSec
         if assistant_id in seen:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "duplicate installed Assistant identity")
         seen.add(assistant_id)
-        specs.append(_hosted_secret_spec(_ActiveAssistant(assistant_id, app_spec.assistant, container)))
+        specs.append(_hosted_account_spec(_ActiveAssistant(assistant_id, app_spec.assistant, container)))
     return tuple(specs)
-
-
-@runtime_state._serialize_against_team_chat
-def _replace_assistant_secrets(
-    team_id: str,
-    body: object,
-    lease: hosted_resources._AuthorizationLease,
-) -> dict[str, object]:
-    """Atomically rotate declared credentials after revalidating the exact installed Assistant."""
-    with runtime_state._lock_for(team_id):
-        hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
-        if not isinstance(body, dict):
-            raise runtime_state.ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, "Assistant secret replacement is invalid")
-        try:
-            assistant_id, contract, container = _installed_assistant(team_id, body.get("assistant_id"))
-            spec = _hosted_secret_spec(_ActiveAssistant(assistant_id, contract, container))
-            replacements = assistant_secret_flow.replacement_values(spec, body)
-        except (marketplace.MarketplaceError, assistant_secret_flow.SecretFlowError) as exc:
-            raise runtime_state.ApiError(
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                "Assistant secret replacement is invalid",
-            ) from exc
-        inventory_specs = _installed_assistant_secret_specs(team_id)
-        # A paused continuation is generation-bound; it must never overwrite this rotation later.
-        runtime_state._assistant_secret_challenges.cancel_team(team_id)
-        runtime_state._assistant_input_challenges.cancel_team(team_id)
-        runtime_state._assistant_approval_challenges.cancel_team(team_id)
-        try:
-            runtime_state._assistant_secrets.put_many(team_id, assistant_id, replacements)
-            return assistant_secret_flow.inventory_payload(team_id, inventory_specs, runtime_state._assistant_secrets)
-        except assistant_secret_store.AssistantSecretError as exc:
-            runtime_state._raise_assistant_secret_error(exc)
-
-
-def _pending_chat_secrets(
-    team_id: str,
-    lease: hosted_resources._AuthorizationLease,
-) -> dict[str, object]:
-    with runtime_state._lock_for(team_id):
-        hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
-        challenge = runtime_state._assistant_secret_challenges.current(team_id)
-    return (
-        assistant_secret_flow.challenge_payload(challenge)
-        if challenge is not None
-        else {"team_id": team_id, "status": "none"}
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,7 +550,6 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
     try:
         projected = power_execution.project_rpc_result(
             raw_result,
-            {},
             account_values,
             answers,
             lambda value: marketplace.validate_power_output(assistant_id, power, value),

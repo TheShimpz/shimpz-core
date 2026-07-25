@@ -42,7 +42,6 @@ class SecretScanTests(unittest.TestCase):
     def test_human_answer_echo_is_caught_by_both_controllers(self) -> None:
         protected = local_app.power_execution.protected_rpc_values(
             {},
-            {},
             ("human-submitted-private-value", 42, False),
         )
 

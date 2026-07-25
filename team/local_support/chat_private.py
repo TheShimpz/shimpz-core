@@ -1,13 +1,10 @@
-"""Local Assistant secrets, accounts, and approval configuration operations."""
+"""Local Assistant Account and approval configuration operations."""
 
 from http import HTTPStatus
 from typing import NoReturn
 
 import assistant_account_challenges
 import assistant_account_flow
-import assistant_secret_challenges
-import assistant_secret_flow
-import assistant_secret_store
 import brain_runtime_client
 import oauth_account_service
 import oauth_account_store
@@ -23,36 +20,6 @@ from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import required_active_assistant as _required_active_assistant
 from local_support.errors import ApiProblemError as ApiProblem
 from local_support.validation import validate_team_id
-
-
-def _power_secret_generations(
-    self,
-    team_id: str,
-    active: _ActiveAssistant,
-    power_id: str,
-) -> tuple[tuple[str, int], ...]:
-    try:
-        return power_execution.secret_generations(
-            active.spec.powers,
-            power_id,
-            lambda secret_ids: self.assistant_secrets.metadata(
-                team_id,
-                active.spec.assistant_id,
-                secret_ids,
-            ),
-        )
-    except assistant_secret_store.AssistantSecretError as exc:
-        raise power_journal.PowerJournalConflictError("Power secret state is unavailable") from exc
-
-
-def _resolve_power_secrets(self, team_id: str, spec: AssistantSpec, power_id: str) -> dict[str, str]:
-    power = spec.powers.get(power_id)
-    if power is None:
-        raise ApiProblem(power_execution.UNDECLARED_POWER_STATUS, "Power is not declared", code="power-not-declared")
-    try:
-        return self.assistant_secrets.resolve_many(team_id, spec.assistant_id, power.secrets)
-    except assistant_secret_store.AssistantSecretError as exc:
-        self._raise_secret_problem(exc)
 
 
 def _power_account_generations(
@@ -118,18 +85,15 @@ def _require_power_rpc_envelope(
     team_id: str,
     bindings: dict[str, _ActiveAssistant],
     request: brain_runtime_client.PowerRequest,
-    answers: tuple[object, ...] = (),
 ) -> None:
     active = _required_active_assistant(bindings, request.assistant_id)
     try:
         power_execution.require_rpc_envelope(
             active,
             request,
-            lambda binding, power_id: self._resolve_power_secrets(team_id, binding.spec, power_id),
             lambda binding, power_id: self._resolve_power_accounts(team_id, binding.spec, power_id),
-            answers,
         )
-    except assistant_secret_flow.SecretFlowError as exc:
+    except ValueError as exc:
         raise ApiProblem(
             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
             "Assistant Power input is too large",
@@ -139,19 +103,6 @@ def _require_power_rpc_envelope(
 
 def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
     return power_execution.contains_secret(value, secrets_by_id)
-
-
-def list_assistant_secrets(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    with self._lock(team_id):
-        specs = [
-            self.assistant_lifecycle._resolve(assistant_id)
-            for assistant_id in self.assistant_lifecycle._assistant_ids(team_id)
-        ]
-        try:
-            return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
-        except assistant_secret_store.AssistantSecretError as exc:
-            self._raise_secret_problem(exc)
 
 
 def _raise_account_problem(exc: oauth_account_store.OAuthAccountStoreError) -> NoReturn:
@@ -288,66 +239,6 @@ def disconnect_assistant_account(
             code="assistant-account-oauth-unavailable",
         ) from exc
     return {"disconnected": disconnected}
-
-
-def replace_assistant_secrets(self, team_id: str, body: object) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    if not isinstance(body, dict):
-        raise ApiProblem(
-            HTTPStatus.UNPROCESSABLE_ENTITY,
-            "Assistant secret replacement is invalid",
-            code="invalid-assistant-secrets",
-        )
-    assistant_id = body.get("assistant_id")
-    try:
-        spec = self.assistant_lifecycle._resolve(assistant_id)
-        replacements = assistant_secret_flow.replacement_values(spec, body)
-    except (ApiProblem, assistant_secret_flow.SecretFlowError) as exc:
-        raise ApiProblem(
-            HTTPStatus.UNPROCESSABLE_ENTITY,
-            "Assistant secret replacement is invalid",
-            code="invalid-assistant-secrets",
-        ) from exc
-    chat_lock = self._chat_lock(team_id)
-    if not chat_lock.acquire(blocking=False):
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant secrets cannot change during an active chat turn",
-            code="chat-active",
-        )
-    try:
-        with self._lock(team_id):
-            network = self.assistant_lifecycle._network(team_id)
-            container = self.assistant_lifecycle._assistant_container(team_id, spec.assistant_id)
-            self.assistant_lifecycle._validate_container(container, team_id, spec, network.name)
-            # A paused continuation is bound to the generations it observed. Cancelling every
-            # affected challenge before the atomic write prevents stale JIT input from winning later.
-            self.secret_challenges.cancel_team(team_id)
-            self.approval_challenges.cancel_team(team_id)
-            self.input_challenges.cancel_team(team_id)
-            self._delete_chat_continuation(team_id)
-            try:
-                self.assistant_secrets.put_many(team_id, spec.assistant_id, replacements)
-                installed = self.assistant_lifecycle.list_assistants(team_id)["assistants"]
-                specs = [self.assistant_lifecycle._resolve(item["assistant"]) for item in installed]
-                return assistant_secret_flow.inventory_payload(team_id, specs, self.assistant_secrets)
-            except assistant_secret_store.AssistantSecretError as exc:
-                self._raise_secret_problem(exc)
-    finally:
-        chat_lock.release()
-
-
-def _challenge_response(
-    challenge: assistant_secret_challenges.PendingSecretChallenge,
-) -> dict[str, object]:
-    return assistant_secret_flow.challenge_payload(challenge)
-
-
-def pending_chat_secrets(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    self.assistant_lifecycle._network(team_id)
-    challenge = self.secret_challenges.current(team_id)
-    return self._challenge_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
 
 
 def _approval_response(

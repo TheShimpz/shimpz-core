@@ -22,8 +22,6 @@ from typing import NoReturn
 import assistant_account_challenges
 import assistant_genesis
 import assistant_manifest
-import assistant_secret_challenges
-import assistant_secret_store
 import brain_runtime_client
 import brain_runtime_token_store
 import docker
@@ -127,7 +125,6 @@ class AssistantLifecycleDependencies:
     space_id: str | None = None
     registry: object | None = None
     cpuset_cpus: str | None = None
-    secret_challenges: object | None = None
     approval_challenges: object | None = None
     input_challenges: object | None = None
     lock_for: object | None = None
@@ -145,8 +142,6 @@ class ChatTurnDependencies:
     inference_store: object | None = None
     brain_runtime: object | None = None
     power_state: object | None = None
-    assistant_secrets: object | None = None
-    secret_challenges: object | None = None
     assistant_accounts: object | None = None
     account_challenges: object | None = None
     oauth_pkce: object | None = None
@@ -167,7 +162,6 @@ class AssistantLifecycle:
         self.space_id = dependencies.space_id
         self.registry = dependencies.registry
         self.cpuset_cpus = dependencies.cpuset_cpus
-        self.secret_challenges = dependencies.secret_challenges
         self.approval_challenges = dependencies.approval_challenges
         self.input_challenges = dependencies.input_challenges
         self._lock = dependencies.lock_for
@@ -248,8 +242,6 @@ class ChatTurnService:
         self.inference_store = dependencies.inference_store
         self.brain_runtime = dependencies.brain_runtime
         self.power_state = dependencies.power_state
-        self.assistant_secrets = dependencies.assistant_secrets
-        self.secret_challenges = dependencies.secret_challenges
         self.assistant_accounts = dependencies.assistant_accounts
         self.account_challenges = dependencies.account_challenges
         self.oauth_pkce = dependencies.oauth_pkce
@@ -329,7 +321,6 @@ class ChatTurnService:
     _require_chat_private_inputs = local_chat_execution._require_chat_private_inputs
     _validate_chat_context = local_chat_execution._validate_chat_context
 
-    _pause_chat = local_chat_pause._pause_chat
     _commit_suspension = local_chat_pause._commit_suspension
     _account_response = local_chat_pause._account_response
     _pause_account = local_chat_pause._pause_account
@@ -337,23 +328,17 @@ class ChatTurnService:
     _input_response = staticmethod(local_chat_pause._input_response)
     _pause_input = local_chat_pause._pause_input
 
-    _power_secret_generations = local_chat_private._power_secret_generations
-    _resolve_power_secrets = local_chat_private._resolve_power_secrets
     _power_account_generations = local_chat_private._power_account_generations
     _refresh_oauth_account = local_chat_private._refresh_oauth_account
     _resolve_power_accounts = local_chat_private._resolve_power_accounts
     _require_power_rpc_envelope = local_chat_private._require_power_rpc_envelope
     _contains_secret = staticmethod(local_chat_private._contains_secret)
-    list_assistant_secrets = local_chat_private.list_assistant_secrets
     _raise_account_problem = staticmethod(local_chat_private._raise_account_problem)
     list_assistant_accounts = local_chat_private.list_assistant_accounts
     start_assistant_account_authorization = local_chat_private.start_assistant_account_authorization
     _current_account_declaration = local_chat_private._current_account_declaration
     complete_cloudflare_oauth_callback = local_chat_private.complete_cloudflare_oauth_callback
     disconnect_assistant_account = local_chat_private.disconnect_assistant_account
-    replace_assistant_secrets = local_chat_private.replace_assistant_secrets
-    _challenge_response = staticmethod(local_chat_private._challenge_response)
-    pending_chat_secrets = local_chat_private.pending_chat_secrets
     _approval_response = staticmethod(local_chat_private._approval_response)
     pending_chat_approval = local_chat_private.pending_chat_approval
     pending_chat_input = local_chat_private.pending_chat_input
@@ -361,7 +346,6 @@ class ChatTurnService:
     list_assistant_approval_grants = local_chat_private.list_assistant_approval_grants
     revoke_assistant_approval_grants = local_chat_private.revoke_assistant_approval_grants
 
-    submit_chat_secrets = local_chat_resume.submit_chat_secrets
     submit_chat_input = local_chat_resume.submit_chat_input
     submit_chat_approval = local_chat_resume.submit_chat_approval
     stop_chat = local_chat_resume.stop_chat
@@ -379,10 +363,6 @@ class ChatTurnService:
         return self.assistant_lifecycle._admit_assistant_allowed_hosts(container, spec)
 
     _active_chat_assistants = local_chat_state._active_chat_assistants
-    _raise_secret_problem = staticmethod(local_chat_state._raise_secret_problem)
-    _delete_assistant_secret_state = local_chat_state._delete_assistant_secret_state
-    _delete_team_secret_state = local_chat_state._delete_team_secret_state
-    _delete_all_secret_state = local_chat_state._delete_all_secret_state
     _delete_assistant_account_state = local_chat_state._delete_assistant_account_state
     _delete_team_account_state = local_chat_state._delete_team_account_state
     _delete_all_account_state = local_chat_state._delete_all_account_state
@@ -400,7 +380,6 @@ class ChatTurnService:
 
     _store_chat_input = local_chat_submission._store_chat_input
     _store_chat_approval = local_chat_submission._store_chat_approval
-    _store_chat_secrets = local_chat_submission._store_chat_secrets
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,8 +387,6 @@ class LocalControllerDependencies:
     inference_store: inference_config.InferenceConfigStore | None = None
     brain_runtime: brain_runtime_client.BrainRuntimeClient | None = None
     power_state: power_journal.PowerJournal | None = None
-    assistant_secrets: assistant_secret_store.AssistantSecretStore | None = None
-    secret_challenges: assistant_secret_challenges.SecretChallengeStore | None = None
     assistant_accounts: oauth_account_store.OAuthAccountStore | None = None
     account_challenges: assistant_account_challenges.AccountChallengeStore | None = None
     oauth_pkce: oauth_pkce_challenges.OAuthPKCEChallengeStore | None = None
@@ -459,8 +436,6 @@ class LocalController:
             if dependencies.power_state is not None
             else power_journal.PowerJournal(LOCAL_POWER_JOURNAL_PATH)
         )
-        self.assistant_secrets = dependencies.assistant_secrets or assistant_secret_store.AssistantSecretStore()
-        self.secret_challenges = dependencies.secret_challenges or assistant_secret_challenges.SecretChallengeStore()
         self.assistant_accounts = dependencies.assistant_accounts or oauth_account_store.OAuthAccountStore()
         self.account_challenges = (
             dependencies.account_challenges or assistant_account_challenges.AccountChallengeStore()
@@ -506,7 +481,6 @@ class LocalController:
                 space_id=getattr(self, "space_id", None),
                 registry=getattr(self, "registry", None),
                 cpuset_cpus=getattr(self, "cpuset_cpus", None),
-                secret_challenges=getattr(self, "secret_challenges", None),
                 approval_challenges=getattr(self, "approval_challenges", None),
                 input_challenges=getattr(self, "input_challenges", None),
                 lock_for=self._lock,
@@ -522,8 +496,6 @@ class LocalController:
                 inference_store=getattr(self, "inference_store", None),
                 brain_runtime=getattr(self, "brain_runtime", None),
                 power_state=getattr(self, "power_state", None),
-                assistant_secrets=getattr(self, "assistant_secrets", None),
-                secret_challenges=getattr(self, "secret_challenges", None),
                 assistant_accounts=getattr(self, "assistant_accounts", None),
                 account_challenges=getattr(self, "account_challenges", None),
                 oauth_pkce=getattr(self, "oauth_pkce", None),
@@ -833,7 +805,6 @@ class LocalController:
         try:
             projected = power_execution.project_rpc_result(
                 raw_result,
-                {},
                 account_values,
                 answers,
                 lambda value: validate_power_output(assistant_id, power, value),

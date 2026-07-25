@@ -24,7 +24,6 @@ from hosted_app_fixture import (
 
 assistant_account_challenges = runtime_state.assistant_account_challenges
 assistant_manifest = hosted_apps.assistant_manifest
-assistant_secret_challenges = runtime_state.assistant_secret_challenges
 brain_runtime_client = runtime_state.brain_runtime_client
 chat_orchestrator = hosted_chat_segment.chat_orchestrator
 manifests = hosted_apps.manifests
@@ -40,11 +39,8 @@ class HostedChatLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         """Keep pending private-input state isolated from every hosted test."""
         original_accounts = runtime_state._assistant_account_challenges
-        original_secrets = runtime_state._assistant_secret_challenges
         runtime_state._assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
-        runtime_state._assistant_secret_challenges = assistant_secret_challenges.SecretChallengeStore()
         self.addCleanup(setattr, runtime_state, "_assistant_account_challenges", original_accounts)
-        self.addCleanup(setattr, runtime_state, "_assistant_secret_challenges", original_secrets)
 
     def _journal_chat_environment(self, journal, runtime, rpc):
         contract = marketplace.APPS["shimpz-cloudflare"].assistant
@@ -59,15 +55,6 @@ class HostedChatLifecycleTests(unittest.TestCase):
             labels={"team.name": "Marketing", "team.owner": "account_1"},
         )
         config = types.SimpleNamespace(provider="openai", model="gpt-test")
-        secret_store = types.SimpleNamespace(
-            metadata=lambda _team_id, _assistant_id, secret_ids: tuple(
-                types.SimpleNamespace(id=secret_id, configured=True, generation=1) for secret_id in secret_ids
-            ),
-            resolve_many=lambda _team_id, _assistant_id, secret_ids: dict.fromkeys(
-                secret_ids,
-                "configured-test-secret",
-            ),
-        )
         account_store = oauth_account_store.OAuthAccountStore(
             journal.path.parent / "oauth-state" / "accounts.json",
             journal.path.parent / "oauth-key" / "aes256.key",
@@ -109,7 +96,6 @@ class HostedChatLifecycleTests(unittest.TestCase):
                 _commit_chat_terminal=lambda _team_id, _token: True,
                 _inference_store=types.SimpleNamespace(load=lambda _team_id: config),
                 _power_execution_journal=lambda: journal,
-                _assistant_secrets=secret_store,
                 _assistant_accounts=account_store,
             )
         )
