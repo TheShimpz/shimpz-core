@@ -311,9 +311,7 @@
         ],
         "version": 1
       },
-      "health_path": "/healthz",
       "name": "Shimpz Cloudflare",
-      "rpc_command": "/usr/local/bin/shimpz-assistant-rpc",
       "summary": "List Cloudflare zones and inspect their DNS records through OAuth."
     }
   },

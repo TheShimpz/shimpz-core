@@ -114,7 +114,8 @@ class LocalContractTests(LocalContractCase):
         registry = self._registry(CURRENT_ASSISTANT_IMAGE)
         spec = registry["shimpz-cloudflare"]
         self.assertEqual(spec.allowed_hosts, ("api.cloudflare.com",))
-        self.assertEqual(spec.health_path, "/healthz")
+        self.assertFalse(hasattr(spec, "health_path"))
+        self.assertFalse(hasattr(spec, "rpc_command"))
         self.assertEqual(set(spec.powers), {"list-zones", "list-dns-records"})
         self.assertTrue(all(not hasattr(power, "approval") for power in spec.powers.values()))
         self.assertTrue(all(power.accounts == ("cloudflare",) for power in spec.powers.values()))

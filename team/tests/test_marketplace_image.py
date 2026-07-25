@@ -58,7 +58,7 @@ class MarketplaceImageTests(unittest.TestCase):
         spec = marketplace.APPS["shimpz-cloudflare"]
         self.assertEqual(spec.image, marketplace.SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE)
         self.assertTrue(marketplace.is_digest_image(spec.image))
-        self.assertEqual((spec.port, spec.health_path), (8080, "/healthz"))
+        self.assertEqual(spec.port, 8080)
         self.assertFalse(spec.db)
         self.assertEqual(spec.allowed_hosts, ("api.cloudflare.com",))
         self.assertTrue(spec.first_party)
@@ -68,6 +68,7 @@ class MarketplaceImageTests(unittest.TestCase):
         )
         self.assertIsNotNone(spec.assistant)
         assert spec.assistant is not None
+        self.assertFalse(hasattr(spec.assistant, "rpc_command"))
         self.assertEqual(set(spec.assistant.powers), {"list-zones", "list-dns-records"})
         self.assertEqual(spec.assistant.secrets, {})
         self.assertEqual(spec.assistant.accounts["cloudflare"].provider, "cloudflare")

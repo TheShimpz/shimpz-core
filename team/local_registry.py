@@ -55,8 +55,6 @@ class AssistantSpec:
     name: str
     summary: str
     image: str
-    rpc_command: str
-    health_path: str
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
     allowed_hosts: tuple[str, ...]
@@ -106,8 +104,6 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
             name=contract.name,
             summary=contract.summary,
             image=_digest_ref(raw["images"][assistant_id]),
-            rpc_command=contract.rpc_command,
-            health_path=contract.health_path,
             powers={
                 power_id: PowerSpec(
                     method=power["method"],

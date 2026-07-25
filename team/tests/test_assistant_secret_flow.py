@@ -22,8 +22,6 @@ def _spec() -> AssistantSpec:
         name="X Assistant",
         summary="test",
         image="example.invalid/x@sha256:" + ("a" * 64),
-        rpc_command="/app/rpc",
-        health_path="/healthz",
         powers={
             "read": PowerSpec("POST", "/read", "read", {}, {}, ("bearer",)),
             "write": PowerSpec("POST", "/write", "write", {}, {}, ("key", "secret")),

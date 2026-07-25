@@ -386,7 +386,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             declared_power.output_schema,
         )
         hosted_contract = marketplace.AssistantContract(
-            "assistant-rpc",
             {"list-zones": hosted_power},
             {},
         )
@@ -410,8 +409,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             name="Assistant",
             summary="Test Assistant",
             image="example.invalid/assistant@sha256:" + ("c" * 64),
-            rpc_command="assistant-rpc",
-            health_path="/healthz",
             powers={"list-zones": local_power},
             secrets={},
             allowed_hosts=(),

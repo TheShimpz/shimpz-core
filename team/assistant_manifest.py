@@ -88,8 +88,6 @@ class ReviewedAssistant:
     assistant_id: str
     name: str
     summary: str
-    rpc_command: str
-    health_path: str
     allowed_hosts: tuple[str, ...]
     accounts: tuple[AccountDeclaration, ...]
     powers: dict[str, dict[str, Any]]
@@ -337,8 +335,6 @@ def load_reviewed_catalog(path: Path = CATALOG_PATH) -> dict[str, ReviewedAssist
         if not isinstance(metadata, dict) or set(metadata) != {
             "name",
             "summary",
-            "rpc_command",
-            "health_path",
             "allowed_hosts",
             "accounts",
             "contract",
@@ -346,15 +342,6 @@ def load_reviewed_catalog(path: Path = CATALOG_PATH) -> dict[str, ReviewedAssist
             raise ManifestError("Assistant reviewed catalog entry is invalid")
         name = _public_text(metadata["name"], kind="name", maximum=80)
         summary = _public_text(metadata["summary"], kind="summary", maximum=160)
-        rpc_command = metadata["rpc_command"]
-        health_path = metadata["health_path"]
-        if (
-            not isinstance(rpc_command, str)
-            or re.fullmatch(r"/usr/local/bin/[a-z0-9-]{1,80}", rpc_command) is None
-            or not isinstance(health_path, str)
-            or re.fullmatch(r"/[a-z0-9/-]{1,80}", health_path) is None
-        ):
-            raise ManifestError("Assistant reviewed catalog runtime is invalid")
         raw_accounts = metadata["accounts"]
         if not isinstance(raw_accounts, dict):
             raise ManifestError("Assistant reviewed catalog accounts are invalid")
@@ -369,8 +356,6 @@ def load_reviewed_catalog(path: Path = CATALOG_PATH) -> dict[str, ReviewedAssist
             assistant_id=assistant_id,
             name=name,
             summary=summary,
-            rpc_command=rpc_command,
-            health_path=health_path,
             allowed_hosts=canonical_allowed_hosts(metadata["allowed_hosts"]),
             accounts=accounts,
             powers={power["id"]: power for power in machine_contract["powers"]},

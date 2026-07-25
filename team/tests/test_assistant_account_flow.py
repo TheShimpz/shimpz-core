@@ -80,8 +80,6 @@ def _spec() -> AssistantSpec:
         name="Cloudflare Assistant",
         summary="test",
         image="example.invalid/x@sha256:" + ("a" * 64),
-        rpc_command="/app/rpc",
-        health_path="/healthz",
         powers={
             "read-profile": PowerSpec(
                 "POST",
@@ -121,8 +119,6 @@ def _cloudflare_spec() -> AssistantSpec:
         name="Shimpz Cloudflare",
         summary="test",
         image="example.invalid/cloudflare@sha256:" + ("b" * 64),
-        rpc_command="/app/rpc",
-        health_path="/healthz",
         powers={
             "list-zones": PowerSpec(
                 "POST",

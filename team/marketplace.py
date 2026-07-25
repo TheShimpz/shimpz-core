@@ -58,7 +58,6 @@ class AccountSpec:
 
 @dataclass(frozen=True, slots=True)
 class AssistantContract:
-    rpc_command: str
     powers: dict[str, PowerSpec]
     secrets: dict[str, SecretSpec]
     accounts: dict[str, AccountSpec] = field(default_factory=dict)
@@ -94,7 +93,6 @@ APPS: dict[str, AppSpec] = {
     _CLOUDFLARE.assistant_id: AppSpec(
         image=SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE,
         port=8080,
-        health_path=_CLOUDFLARE.health_path,
         db=False,
         allowed_hosts=_CLOUDFLARE.allowed_hosts,
         first_party=True,
@@ -103,7 +101,6 @@ APPS: dict[str, AppSpec] = {
             ("org.shimpz.assistant.api", "1"),
         ),
         assistant=AssistantContract(
-            rpc_command=_CLOUDFLARE.rpc_command,
             powers={
                 power_id: PowerSpec(
                     method=power["method"],
