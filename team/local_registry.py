@@ -57,7 +57,7 @@ def _digest_ref(value: object) -> str:
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
-    """Load the closed, build-baked local registry schema v1.
+    """Load the closed, build-baked local registry schema v2.
 
     There is deliberately no environment override: changing the allowlist requires a
     new controller image and therefore leaves a normal release/audit trail.
