@@ -10,7 +10,7 @@ import tarfile
 import threading
 import tomllib
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,6 +225,78 @@ def _strict_json(raw: bytes, *, maximum: int, kind: str) -> object:
         raise ManifestError(f"Assistant {kind} is invalid JSON") from exc
 
 
+_SCHEMA_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "propertyNames",
+        "items",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+    }
+)
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "$defs",
+        "definitions",
+    }
+)
+_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_OBJECT_KEYWORDS = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "additionalProperties",
+        "required",
+        "minProperties",
+        "maxProperties",
+        "dependentRequired",
+        "dependentSchemas",
+        "propertyNames",
+    }
+)
+
+
+def _subschema_permits_object(node: dict[str, Any]) -> bool:
+    schema_type = node.get("type")
+    return (
+        schema_type == "object"
+        or (isinstance(schema_type, list) and "object" in schema_type)
+        or (schema_type is None and bool(node.keys() & _OBJECT_KEYWORDS))
+    )
+
+
+def _child_subschemas(node: dict[str, Any]) -> Iterator[object]:
+    for keyword in _SCHEMA_KEYWORDS:
+        child = node.get(keyword)
+        if child is not None and not (keyword == "additionalProperties" and child is False):
+            yield child
+    for keyword in _SCHEMA_MAP_KEYWORDS:
+        children = node.get(keyword)
+        if isinstance(children, dict):
+            yield from children.values()
+    for keyword in _SCHEMA_LIST_KEYWORDS:
+        children = node.get(keyword)
+        if isinstance(children, list):
+            yield from children
+
+
+def _reject_open_or_boolean_subschema(node: object, *, kind: str) -> None:
+    if isinstance(node, bool):
+        raise ManifestError(f"Assistant Power {kind} schema must not use a boolean subschema")
+    if not isinstance(node, dict):
+        raise ManifestError(f"Assistant Power {kind} schema subschema is invalid")
+    if _subschema_permits_object(node) and node.get("additionalProperties") is not False:
+        raise ManifestError(f"Assistant Power {kind} schema must close every object")
+    for child in _child_subschemas(node):
+        _reject_open_or_boolean_subschema(child, kind=kind)
+
+
 def _machine_schema(value: object, *, kind: str) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("type") != "object":
         raise ManifestError(f"Assistant Power {kind} schema must describe an object")
@@ -235,17 +307,7 @@ def _machine_schema(value: object, *, kind: str) -> dict[str, Any]:
     encoded = json.dumps(value, allow_nan=False, separators=(",", ":")).encode()
     if len(encoded) > 128 * 1024:
         raise ManifestError(f"Assistant Power {kind} schema is too large")
-    pending: list[object] = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, dict):
-            schema_type = item.get("type")
-            permits_object = schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type)
-            if permits_object and item.get("additionalProperties") is not False:
-                raise ManifestError(f"Assistant Power {kind} schema must close every object")
-            pending.extend(item.values())
-        elif isinstance(item, list):
-            pending.extend(item)
+    _reject_open_or_boolean_subschema(value, kind=kind)
     return value
 
 

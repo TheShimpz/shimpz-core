@@ -330,6 +330,34 @@ class AssistantManifestTests(unittest.TestCase):
             ):
                 assistant_manifest.parse_machine_contract(json.dumps(contract).encode(), reviewed.accounts)
 
+    def test_machine_schema_closes_typeless_objects_and_rejects_boolean_subschemas(self) -> None:
+        reviewed = assistant_manifest.load_reviewed_catalog()["shimpz-cloudflare"]
+
+        typeless = json.loads(json.dumps(reviewed.machine_contract))
+        typeless["powers"][0]["input_schema"]["properties"]["page"] = {"properties": {"value": {"type": "string"}}}
+        with self.assertRaisesRegex(assistant_manifest.ManifestError, "must close every object"):
+            assistant_manifest.parse_machine_contract(json.dumps(typeless).encode(), reviewed.accounts)
+
+        boolean = json.loads(json.dumps(reviewed.machine_contract))
+        boolean["powers"][0]["input_schema"]["properties"]["page"] = True
+        with self.assertRaises(assistant_manifest.ManifestError):
+            assistant_manifest.parse_machine_contract(json.dumps(boolean).encode(), reviewed.accounts)
+
+        literals = json.loads(json.dumps(reviewed.machine_contract))
+        literals["powers"][0]["input_schema"]["properties"].update(
+            {
+                "flag": {"type": "boolean", "enum": [True, False]},
+                "choice": {"enum": [True, False]},
+                "fixed": {"const": True},
+            }
+        )
+        parsed = assistant_manifest.parse_machine_contract(json.dumps(literals).encode(), reviewed.accounts)
+
+        self.assertEqual(
+            parsed["powers"][0]["input_schema"]["properties"]["flag"],
+            {"type": "boolean", "enum": [True, False]},
+        )
+
     def test_machine_contract_cache_reads_once_and_requires_exact_review(self) -> None:
         reviewed = assistant_manifest.load_reviewed_catalog()["shimpz-cloudflare"]
         raw = json.dumps(reviewed.machine_contract, separators=(",", ":")).encode()
