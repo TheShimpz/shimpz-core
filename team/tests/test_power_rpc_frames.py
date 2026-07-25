@@ -183,6 +183,45 @@ class PowerRpcFrameTests(unittest.TestCase):
                 (b"", b""),
             )
 
+    def test_rpc_exchange_bounds_stdin_write_by_deadline(self) -> None:
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        for current in (reader, writer):
+            current.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+            current.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        writer.settimeout(3.0)
+        stream = SimpleNamespace(_sock=writer, close=lambda: None)
+        api = SimpleNamespace(
+            exec_create=lambda *_args, **_kwargs: {"Id": "e"},
+            exec_start=lambda *_args, **_kwargs: stream,
+            exec_inspect=lambda *_args, **_kwargs: {"ExitCode": 0},
+        )
+        strategy = power_execution.RpcExchangeStrategy(
+            api=api,
+            user="10001:10001",
+            workdir=manifests.CONTAINER_TMP,
+            timeout=0.5,
+            maximum=power_execution.MAX_RPC_REQUEST_BYTES,
+            transport_errors=(),
+            fail_stop=lambda: None,
+            cancelled=lambda _error: None,
+            close_stream=lambda _stream: None,
+        )
+
+        start = time.monotonic()
+        with self.assertRaises(power_execution.RpcExchangeError) as caught:
+            power_execution.rpc_exchange(
+                "cid",
+                ["/bin/true"],
+                b"x" * (512 * 1024),
+                strategy,
+            )
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(caught.exception.kind, "timeout")
+        self.assertLess(elapsed, 1.5)
+
     def test_both_power_batch_adapters_reject_the_same_generation_drift(self) -> None:
         request = brain_runtime_client.PowerRequest("interrupt-1", "assistant", "lookup", {"query": "safe"})
         generation = [1]

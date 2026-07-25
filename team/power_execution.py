@@ -280,13 +280,10 @@ def rpc_exchange(
             raw_socket = getattr(stream, "_sock", None)
             if raw_socket is None:
                 raise OSError("Docker attach socket cannot half-close stdin")
-            raw_socket.sendall(encoded)
+            deadline = time.monotonic() + strategy.timeout
+            _write_all(raw_socket, encoded, deadline)
             raw_socket.shutdown(socket.SHUT_WR)
-            stdout, stderr = read_rpc_frames(
-                raw_socket,
-                time.monotonic() + strategy.timeout,
-                strategy.maximum,
-            )
+            stdout, stderr = read_rpc_frames(raw_socket, deadline, strategy.maximum)
         except TimeoutError as exc:
             strategy.fail_stop()
             strategy.cancelled(exc)
@@ -396,6 +393,16 @@ def _read_exact(raw_socket: socket.socket, amount: int, deadline: float) -> byte
             raise EOFError
         output.extend(chunk)
     return bytes(output)
+
+
+def _write_all(raw_socket: socket.socket, data: bytes, deadline: float) -> None:
+    view = memoryview(data)
+    sent = 0
+    while sent < len(view):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([], [raw_socket], [], remaining)[1]:
+            raise TimeoutError
+        sent += raw_socket.send(view[sent:])
 
 
 def read_rpc_frames(raw_socket: socket.socket, deadline: float, maximum: int) -> tuple[bytes, bytes]:
