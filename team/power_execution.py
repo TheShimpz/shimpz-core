@@ -26,6 +26,7 @@ RPC_FAILURE_STATUSES = {
     "invalid-result": HTTPStatus.BAD_GATEWAY,
     "failed": HTTPStatus.BAD_GATEWAY,
 }
+MAX_RPC_REQUEST_BYTES = 512 * 1024
 
 
 def _raise_unknown_rpc_failure(kind: str) -> NoReturn:
@@ -38,6 +39,37 @@ def rpc_failure_status(kind: str) -> HTTPStatus:
         return RPC_FAILURE_STATUSES[kind]
     except KeyError:
         _raise_unknown_rpc_failure(kind)
+
+
+def account_access_tokens(accounts: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
+    """Project controller account records into the minimal Spec v1 token mapping."""
+    tokens: dict[str, str] = {}
+    for account_id, envelope in accounts.items():
+        if (
+            not isinstance(account_id, str)
+            or set(envelope) != {"type", "access_token"}
+            or envelope["type"] != "oauth2-bearer"
+            or not isinstance(envelope["access_token"], str)
+        ):
+            raise ValueError("Assistant account envelope is invalid")
+        tokens[account_id] = envelope["access_token"]
+    return tokens
+
+
+def encode_rpc_invocation(power_input: object, accounts: Mapping[str, str]) -> bytes:
+    """Encode one bounded `{input, accounts}` Spec v1 invocation."""
+    try:
+        encoded = json.dumps(
+            {"input": power_input, "accounts": dict(accounts)},
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
+        raise ValueError("Assistant Power invocation is invalid") from exc
+    if len(encoded) > MAX_RPC_REQUEST_BYTES:
+        raise ValueError("Assistant Power invocation is too large")
+    return encoded
 
 
 def power_operation(

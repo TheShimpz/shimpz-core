@@ -105,20 +105,13 @@ class PowerRpcFrameTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "unknown RPC failure"):
             power_execution.rpc_failure_status("unknown")
 
-    def test_local_readiness_uses_the_complete_empty_rpc_envelope(self) -> None:
+    def test_local_readiness_requires_only_a_running_prebuilt_container(self) -> None:
         container = SimpleNamespace(status="running", reload=lambda: None)
-        spec = SimpleNamespace(health_path="/healthz")
-        self.local.assistant_lifecycle._rpc = mock.Mock(return_value={"status": "ok"})
+        self.local.assistant_lifecycle._rpc = mock.Mock()
 
-        self.local.assistant_lifecycle._wait_ready(container, spec)
+        self.local.assistant_lifecycle._wait_ready(container, object())
 
-        self.local.assistant_lifecycle._rpc.assert_called_once_with(
-            container,
-            spec,
-            "GET",
-            "/healthz",
-            {"input": {}, "secrets": {}, "accounts": {}, "answers": []},
-        )
+        self.local.assistant_lifecycle._rpc.assert_not_called()
 
     def test_private_generation_helpers_apply_one_power_contract(self) -> None:
         powers = {
@@ -364,21 +357,23 @@ class PowerRpcFrameTests(unittest.TestCase):
             controller.client = SimpleNamespace(api=api)
             controller._wire_collaborators()
             controller.assistant_lifecycle._fail_stop_power = mock.Mock()
-            spec = SimpleNamespace(rpc_command="/app/rpc")
             with (
                 mock.patch.object(
-                    local_assistant_rpc.assistant_secret_flow,
-                    "encode_private_rpc_envelope",
+                    local_assistant_rpc.power_execution,
+                    "encode_rpc_invocation",
                     return_value=b"request",
                 ),
                 self.assertRaises(local_app.ApiProblem) as caught,
             ):
                 controller.assistant_lifecycle._rpc(
-                    SimpleNamespace(id="assistant-container"), spec, "POST", "/v1/powers/test", {}
+                    SimpleNamespace(id="assistant-container"),
+                    "test",
+                    {"input": {}, "accounts": {}},
                 )
 
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
         controller.assistant_lifecycle._fail_stop_power.assert_called_once()
+        self.assertEqual(create.call_args.args[1], [local_assistant_rpc.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], local_assistant_rpc.ASSISTANT_WORKDIR)
         self.assertEqual(create.call_args.kwargs["environment"], {})
 

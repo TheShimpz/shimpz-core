@@ -6,7 +6,6 @@ from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 
-import assistant_secret_flow
 import power_execution
 from container_policy import local as local_container_policy
 from docker.errors import DockerException, NotFound
@@ -19,10 +18,7 @@ RPC_TIMEOUT_SECONDS = 8
 HEALTH_TIMEOUT_SECONDS = 15
 ASSISTANT_UID = local_container_policy.ASSISTANT_UID
 ASSISTANT_WORKDIR = str(Path("/") / "tmp")
-
-
-class UnsupportedAssistantRpcPathError(RuntimeError):
-    """The fixed Assistant RPC adapter rejected a path it does not implement."""
+POWER_COMMAND = "/usr/local/bin/shimpz-power"
 
 
 def _close_exec_stream(stream) -> None:
@@ -73,16 +69,12 @@ def _read_rpc_frames(self, raw_socket: socket.socket, deadline: float) -> tuple[
 def _rpc(
     self,
     container,
-    spec: AssistantSpec,
-    method: str,
-    path: str,
+    power_id: str,
     payload: dict,
-    *,
-    detect_unsupported_path: bool = False,
 ) -> object:
     try:
-        encoded = assistant_secret_flow.encode_private_rpc_envelope(payload)
-    except assistant_secret_flow.SecretFlowError as exc:
+        encoded = power_execution.encode_rpc_invocation(payload["input"], payload["accounts"])
+    except (KeyError, ValueError) as exc:
         raise ApiProblem(
             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
             "request is too large",
@@ -96,7 +88,7 @@ def _rpc(
     try:
         return power_execution.rpc_exchange(
             container.id,
-            [spec.rpc_command, method, path],
+            [POWER_COMMAND, power_id],
             encoded,
             power_execution.RpcExchangeStrategy(
                 api=self.client.api,
@@ -109,11 +101,8 @@ def _rpc(
                 cancelled=lambda _exc: None,
                 close_stream=close_stream,
             ),
-            detect_unsupported_path=detect_unsupported_path,
         )
     except power_execution.RpcExchangeError as exc:
-        if exc.kind == "unsupported-path":
-            raise UnsupportedAssistantRpcPathError(path) from None
         message, code = {
             "timeout": ("Assistant Power timed out", "assistant-timeout"),
             "ambiguous": ("Assistant Power status is ambiguous", "assistant-rpc-failed"),
@@ -124,25 +113,13 @@ def _rpc(
         raise ApiProblem(status, message, code=code) from exc
 
 
-def _wait_ready(self, container, spec: AssistantSpec) -> None:
+def _wait_ready(self, container, _spec: AssistantSpec) -> None:
     deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         container.reload()
-        if container.status not in {"created", "running"}:
-            break
         if container.status == "running":
-            try:
-                result = self._rpc(
-                    container,
-                    spec,
-                    "GET",
-                    spec.health_path,
-                    assistant_secret_flow.empty_rpc_envelope(),
-                )
-            except ApiProblem:
-                pass
-            else:
-                if result == {"status": "ok"}:
-                    return
+            return
+        if container.status != "created":
+            break
         time.sleep(0.2)
     raise ApiProblem(HTTPStatus.BAD_GATEWAY, "Assistant did not become ready", code="assistant-not-ready")

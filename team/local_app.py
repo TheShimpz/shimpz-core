@@ -803,7 +803,6 @@ class LocalController:
                     "Team capabilities changed; retry",
                     code="team-context-changed",
                 )
-            secret_values = self.chat_turn_service._resolve_power_secrets(team_id, spec, power)
             account_values = self.chat_turn_service._resolve_power_accounts(team_id, spec, power)
             local_audit.record(
                 "assistant-power",
@@ -814,16 +813,12 @@ class LocalController:
             )
             rpc_payload = {
                 "input": safe_payload,
-                "secrets": secret_values,
-                "accounts": account_values,
-                "answers": list(answers),
+                "accounts": power_execution.account_access_tokens(account_values),
             }
         try:
             raw_result = self.assistant_lifecycle._rpc(
                 container,
-                spec,
-                power_spec.method,
-                power_spec.path,
+                power,
                 rpc_payload,
             )
         except ApiProblem:
@@ -838,7 +833,7 @@ class LocalController:
         try:
             projected = power_execution.project_rpc_result(
                 raw_result,
-                secret_values,
+                {},
                 account_values,
                 answers,
                 lambda value: validate_power_output(assistant_id, power, value),

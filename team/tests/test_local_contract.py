@@ -518,13 +518,13 @@ class LocalContractTests(LocalContractCase):
         self.assertEqual(captured["api_key"], key)
         self.assertNotIn(key, json.dumps(response))
 
-    def test_power_rpc_receives_only_the_validated_input_and_private_envelopes(self) -> None:
+    def test_power_rpc_receives_only_the_spec_v1_invocation(self) -> None:
         captured: list[object] = []
         with tempfile.TemporaryDirectory() as directory:
             controller = self._chat_controller(directory, object())
 
-            def rpc(_container, spec, method, path, payload):
-                captured.append((spec.assistant_id, method, path, payload))
+            def rpc(_container, power_id, payload):
+                captured.append((power_id, payload))
                 return LOOKUP_RESULT
 
             controller.assistant_lifecycle._rpc = rpc
@@ -543,50 +543,15 @@ class LocalContractTests(LocalContractCase):
             captured,
             [
                 (
-                    "shimpz-cloudflare",
-                    "POST",
-                    "/v1/powers/list-zones",
+                    "list-zones",
                     {
                         "input": LOOKUP_INPUT,
-                        "secrets": {},
-                        "accounts": {
-                            "cloudflare": {
-                                "type": "oauth2-bearer",
-                                "access_token": TEST_ACCOUNT_ACCESS_TOKEN,
-                            }
-                        },
-                        "answers": [],
+                        "accounts": {"cloudflare": TEST_ACCOUNT_ACCESS_TOKEN},
                     },
                 )
             ],
         )
         self.assertEqual(response["result"], LOOKUP_RESULT)
-
-    def test_power_rpc_surfaces_a_human_suspension_before_output_validation(self) -> None:
-        suspension = local_app.power_execution.RpcSuspension(
-            {
-                "ordinal": 0,
-                "kind": "request",
-                "request_type": "str",
-                "title": "Name",
-                "summary": "Choose a name.",
-                "docs": None,
-                "options": [],
-            }
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            controller = self._chat_controller(directory, object())
-            controller.assistant_lifecycle._rpc = lambda *_args: suspension
-            with mock.patch.object(local_app.local_audit, "record", return_value="trace"):
-                response = controller.invoke(
-                    "team_1",
-                    "shimpz-cloudflare",
-                    "list-zones",
-                    LOOKUP_INPUT,
-                )
-
-        self.assertEqual(response["suspend"], suspension.payload)
-        self.assertNotIn("result", response)
 
     def test_power_output_containing_a_secret_is_blocked_and_redacted(self) -> None:
         raw_secret = TEST_ACCOUNT_ACCESS_TOKEN
