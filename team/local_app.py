@@ -423,7 +423,6 @@ class LocalControllerDependencies:
 
 class LocalController:
     list_assistants = local_assistant_api.list_assistants
-    assistant_help = local_assistant_api.assistant_help_markdown
 
     _purge_power_generation = local_team_lifecycle._purge_power_generation
     _team_assistant_containers = local_team_lifecycle._team_assistant_containers

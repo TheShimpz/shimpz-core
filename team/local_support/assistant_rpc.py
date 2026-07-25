@@ -6,7 +6,6 @@ from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 
-import assistant_help
 import assistant_secret_flow
 import power_execution
 from container_policy import local as local_container_policy
@@ -15,7 +14,7 @@ from local_registry import AssistantSpec
 
 from local_support.errors import ApiProblemError as ApiProblem
 
-MAX_RESPONSE_BYTES = assistant_help.MAX_HELP_BYTES * 6 + 1024
+MAX_RESPONSE_BYTES = 512 * 1024
 RPC_TIMEOUT_SECONDS = 8
 HEALTH_TIMEOUT_SECONDS = 15
 ASSISTANT_UID = local_container_policy.ASSISTANT_UID

@@ -495,14 +495,6 @@ class Handler(BaseHTTPRequestHandler):
                 team_id,
                 assistant_id,
             )
-        if operation == "assistant-help":
-            return (
-                HTTPStatus.OK,
-                controller.assistant_help(team_id, assistant_id, route.params.get("locale", "en")),
-                operation,
-                team_id,
-                assistant_id,
-            )
         if operation == "assistant-invoke":
             return (
                 HTTPStatus.OK,

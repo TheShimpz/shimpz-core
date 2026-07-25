@@ -9,7 +9,6 @@ from http import HTTPStatus
 
 import assistant_account_flow
 import assistant_chat
-import assistant_help
 import assistant_secret_flow
 import assistant_secret_store
 import audit
@@ -34,7 +33,7 @@ from http_boundary import runtime_state
 CHAT_OUTPUT_CAP = 60000
 MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILE_BODY_BYTES = MAX_INBOX_FILE_BYTES
-MAX_ASSISTANT_RPC_OUTPUT_BYTES = assistant_help.MAX_HELP_BYTES * 6 + 1024
+MAX_ASSISTANT_RPC_OUTPUT_BYTES = 512 * 1024
 ASSISTANT_RPC_TIMEOUT_SECONDS = 8
 MAX_CHAT_FILES = 8
 MAX_CHAT_ASSISTANTS = 16
@@ -374,54 +373,6 @@ def _assistant_rpc(
             operation="Assistant Power",
         )
     )
-
-
-def _assistant_help(
-    team_id: str,
-    assistant_id: str,
-    lease: hosted_resources._AuthorizationLease,
-    locale: str = "en",
-) -> dict[str, str]:
-    """Read bounded Markdown through one fixed RPC from an installed running Assistant."""
-    try:
-        locale = assistant_help.validate_locale(locale)
-    except ValueError as exc:
-        raise runtime_state.ApiError(HTTPStatus.BAD_REQUEST, "Assistant Help locale is not supported") from exc
-    with runtime_state._lock_for(team_id):
-        hosted_resources._require_current_authorization(team_id, lease)
-        current_id, contract, container = _installed_assistant(team_id, assistant_id)
-        try:
-            raw_result = _assistant_rpc_exchange(
-                AssistantRpcRequest(
-                    team_id=team_id,
-                    container=container,
-                    command=contract.rpc_command,
-                    method="GET",
-                    path=f"/v1/help/{locale}",
-                    payload=assistant_secret_flow.empty_rpc_envelope(),
-                    token=None,
-                    operation="Assistant Help",
-                    detect_unsupported_path=True,
-                )
-            )
-        except runtime_state._UnsupportedAssistantRpcPathError:
-            raw_result = _assistant_rpc_exchange(
-                AssistantRpcRequest(
-                    team_id=team_id,
-                    container=container,
-                    command=contract.rpc_command,
-                    method="GET",
-                    path="/v1/help",
-                    payload=assistant_secret_flow.empty_rpc_envelope(),
-                    token=None,
-                    operation="Assistant Help",
-                )
-            )
-    try:
-        help_payload = assistant_help.validate_payload(raw_result)
-    except ValueError as exc:
-        raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, f"Assistant Help from {current_id!r} is invalid") from exc
-    return {"assistant": current_id, **help_payload}
 
 
 def _power_secret_generations(

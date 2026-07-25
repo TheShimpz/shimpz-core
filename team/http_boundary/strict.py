@@ -368,8 +368,6 @@ CONTROLLER_ROUTES = (
         "/v1/teams/:team_id/assistant-accounts/:assistant_id/:account_id",
         "assistant-account-disconnect",
     ),
-    _controller_route("GET", "/v1/teams/:team_id/assistants/:assistant_id/help", "assistant-help"),
-    _controller_route("GET", "/v1/teams/:team_id/assistants/:assistant_id/help/:locale", "assistant-help"),
     _controller_route("POST", "/v1/teams/:team_id/chat/stream", "chat-stream", _HOSTED_CONTROLLER_ONLY),
     _controller_route("GET", "/v1/teams/:team_id/apps", "app-list", _HOSTED_CONTROLLER_ONLY),
     _controller_route("POST", "/v1/teams/:team_id/apps", "app-install", _HOSTED_CONTROLLER_ONLY),

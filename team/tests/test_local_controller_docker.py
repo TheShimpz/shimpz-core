@@ -667,16 +667,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
 
         _, listed = self._api(flow.port, flow.token, "GET", "/v1/teams/demo_team/assistants")
         self.assertEqual(listed["assistants"], [{"assistant": "shimpz-cloudflare", "status": "running"}])
-        help_status, assistant_help = self._api(
-            flow.port,
-            flow.token,
-            "GET",
-            "/v1/teams/demo_team/assistants/shimpz-cloudflare/help/pt",
-        )
-        self.assertEqual(help_status, 200)
-        self.assertEqual(assistant_help["assistant"], "shimpz-cloudflare")
-        self.assertIn("# Shimpz Cloudflare", assistant_help["markdown"])
-        self.assertRegex(assistant_help["trace_id"], r"^[0-9a-f]{32}$")
         secret_status, secret_inventory = self._api(
             flow.port,
             flow.token,

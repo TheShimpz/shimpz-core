@@ -29,12 +29,6 @@ class ControllerRoutingTests(unittest.TestCase):
             ),
             (
                 "GET",
-                "/v1/teams/team_1/assistants/helper/help/pt-BR",
-                "assistant-help",
-                {"team_id": "team_1", "assistant_id": "helper", "locale": "pt-BR"},
-            ),
-            (
-                "GET",
                 "/v1/teams/team_1/chat/approval",
                 "chat-approval-pending",
                 {"team_id": "team_1"},
@@ -52,6 +46,16 @@ class ControllerRoutingTests(unittest.TestCase):
                 local = strict_http.resolve_controller_route(strict_http.LOCAL_CONTROLLER, method, _parts(path))
                 self.assertEqual(hosted, local)
                 self.assertEqual(hosted, strict_http.ControllerRouteMatch(operation, params))
+
+    def test_removed_assistant_help_routes_do_not_resolve(self) -> None:
+        paths = (
+            "/v1/teams/team_1/assistants/helper/help",
+            "/v1/teams/team_1/assistants/helper/help/pt-BR",
+        )
+        for profile in (strict_http.HOSTED_CONTROLLER, strict_http.LOCAL_CONTROLLER):
+            for path in paths:
+                with self.subTest(profile=profile, path=path):
+                    self.assertIsNone(strict_http.resolve_controller_route(profile, "GET", _parts(path)))
 
     def test_profile_only_routes_fail_closed_on_the_other_controller(self) -> None:
         cases = ((strict_http.HOSTED_CONTROLLER, "POST", "/v1/teams/team_1/chat/stream", "chat-stream"),)

@@ -625,28 +625,6 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
 
-    def _route_assistant_help(self, request: _AuthorizedRequest) -> None:
-        if request.query:
-            raise runtime_state.ApiError(HTTPStatus.BAD_REQUEST, "query and encoded paths are not accepted")
-        assistant_id = marketplace.validate_app_id(request.params["assistant_id"])
-        help_payload = hosted_assistants._assistant_help(
-            request.team_id,
-            assistant_id,
-            request.lease,
-            request.params.get("locale", "en"),
-        )
-        trace = audit.log(
-            "assistant_help",
-            request.team_id,
-            result="ok",
-            assistant=help_payload["assistant"],
-        )
-        self._send_json(
-            HTTPStatus.OK,
-            {**help_payload, "trace_id": trace},
-            no_store=True,
-        )
-
 
 _GLOBAL_ROUTES = {
     "team-list": Handler._route_team_list,
@@ -678,7 +656,6 @@ _AUTHORIZED_ROUTES = {
     "assistant-account-list": Handler._route_assistant_account_list,
     "assistant-account-authorize": Handler._route_assistant_account_authorize,
     "assistant-account-disconnect": Handler._route_assistant_account_disconnect,
-    "assistant-help": Handler._route_assistant_help,
     "app-list": Handler._route_app_list,
     "app-install": Handler._route_app_install,
     "app-uninstall": Handler._route_app_uninstall,
