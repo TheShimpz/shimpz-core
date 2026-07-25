@@ -313,7 +313,6 @@ class PowerRpcFrameTests(unittest.TestCase):
         fail_stop.assert_called_once_with("team_1", container)
         self.assertEqual(create.call_args.args[1], [power_execution.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], manifests.CONTAINER_TMP)
-        self.assertEqual(create.call_args.kwargs["environment"], {})
 
     def test_local_exchange_fail_stops_on_malformed_frame(self) -> None:
         with _socket_bytes(b"truncated") as raw_socket:
@@ -345,7 +344,6 @@ class PowerRpcFrameTests(unittest.TestCase):
         controller.assistant_lifecycle._fail_stop_power.assert_called_once()
         self.assertEqual(create.call_args.args[1], [power_execution.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], local_assistant_rpc.ASSISTANT_WORKDIR)
-        self.assertEqual(create.call_args.kwargs["environment"], {})
 
 
 class RpcMessageParity(unittest.TestCase):

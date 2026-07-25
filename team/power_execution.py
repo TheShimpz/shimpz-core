@@ -266,6 +266,7 @@ def rpc_exchange(
     stream = None
     try:
         try:
+            # Docker exec Env is additive; the workload inherits the container environment intentionally.
             created = strategy.api.exec_create(
                 container_id,
                 argv,
@@ -275,7 +276,6 @@ def rpc_exchange(
                 privileged=False,
                 user=strategy.user,
                 workdir=strategy.workdir,
-                environment={},
             )
             exec_id = created["Id"]
             stream = strategy.api.exec_start(exec_id, socket=True)
