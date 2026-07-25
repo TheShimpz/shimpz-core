@@ -531,9 +531,10 @@ class HostedChatLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
             self.addCleanup(journal.close)
-            operation = hosted_assistants._power_operation(
+            operation = hosted_assistants.power_execution.power_operation(
                 normalized,
                 "b" * 64,
+                marketplace.APPS["shimpz-cloudflare"].image,
                 account_generations=(("cloudflare", 1),),
             )
             batch = journal.prepare_batch(ANCHOR_ID, thread_id, (operation,))

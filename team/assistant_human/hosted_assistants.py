@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import socket
 from dataclasses import dataclass
 from http import HTTPStatus
 
@@ -97,21 +96,6 @@ def _account_bindings(
     return {
         assistant_id: _HostedAssistantBinding(_hosted_account_spec(active)) for assistant_id, active in bindings.items()
     }
-
-
-def _power_operation(
-    request: brain_runtime_client.PowerRequest,
-    assistant_container_id: object,
-    account_generations: tuple[tuple[str, int], ...] = (),
-) -> power_journal.Operation:
-    spec = marketplace.APPS.get(request.assistant_id)
-    image = spec.image if spec is not None else ""
-    return power_execution.power_operation(
-        request,
-        assistant_container_id,
-        image,
-        account_generations,
-    )
 
 
 def _hosted_power_identity(active: _ActiveAssistant) -> tuple[object, object]:
@@ -230,10 +214,6 @@ def _select_team_assistants(
         return tuple(active_by_id[assistant_id] for assistant_id in assistant_ids)
     except KeyError:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "a selected Assistant is unavailable") from None
-
-
-def _read_rpc_frames(raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
-    return power_execution.read_rpc_frames(raw_socket, deadline, power_execution.MAX_RPC_RESPONSE_BYTES)
 
 
 def _register_active_power(team_id: str, token: str, container) -> None:
@@ -422,10 +402,6 @@ def _require_hosted_power_rpc_envelope(
         )
     except ValueError as exc:
         raise runtime_state.ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Assistant Power input is too large") from exc
-
-
-def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
-    return power_execution.contains_secret(value, secrets_by_id)
 
 
 def _assistant_account_inventory(

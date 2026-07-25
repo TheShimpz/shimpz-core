@@ -98,10 +98,6 @@ def _require_power_rpc_envelope(
         ) from exc
 
 
-def _contains_secret(value: object, secrets_by_id: dict[str, str]) -> bool:
-    return power_execution.contains_secret(value, secrets_by_id)
-
-
 def _raise_account_problem(exc: oauth_account_store.OAuthAccountStoreError) -> NoReturn:
     raise ApiProblem(
         HTTPStatus.SERVICE_UNAVAILABLE,

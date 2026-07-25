@@ -183,7 +183,6 @@ class AssistantLifecycle:
     _close_exec_stream = staticmethod(local_assistant_rpc._close_exec_stream)
     _fail_stop_power = local_assistant_rpc._fail_stop_power
     _power_not_running = staticmethod(local_assistant_rpc._power_not_running)
-    _read_rpc_frames = local_assistant_rpc._read_rpc_frames
     _rpc = local_assistant_rpc._rpc
     _wait_ready = local_assistant_rpc._wait_ready
 
@@ -309,7 +308,6 @@ class ChatTurnService:
     _refresh_oauth_account = local_chat_private._refresh_oauth_account
     _resolve_power_accounts = local_chat_private._resolve_power_accounts
     _require_power_rpc_envelope = local_chat_private._require_power_rpc_envelope
-    _contains_secret = staticmethod(local_chat_private._contains_secret)
     _raise_account_problem = staticmethod(local_chat_private._raise_account_problem)
     list_assistant_accounts = local_chat_private.list_assistant_accounts
     start_assistant_account_authorization = local_chat_private.start_assistant_account_authorization

@@ -64,10 +64,16 @@ class PowerRpcFrameTests(unittest.TestCase):
     def test_split_stdout_and_stderr_frames_are_read_exactly(self) -> None:
         payload = _frame(1, b'{"ok":') + _frame(2, b"warning") + _frame(1, b"true}")
         with _socket_bytes(payload, pieces=(1, 2, 5, 3, 7)) as hosted_socket:
-            stdout, stderr = hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1)
+            stdout, stderr = power_execution.read_rpc_frames(
+                hosted_socket,
+                time.monotonic() + 1,
+                power_execution.MAX_RPC_RESPONSE_BYTES,
+            )
         with _socket_bytes(payload, pieces=(4, 1, 6, 2)) as local_socket:
-            local_stdout, local_stderr = self.local.assistant_lifecycle._read_rpc_frames(
-                local_socket, time.monotonic() + 1
+            local_stdout, local_stderr = power_execution.read_rpc_frames(
+                local_socket,
+                time.monotonic() + 1,
+                power_execution.MAX_RPC_RESPONSE_BYTES,
             )
 
         self.assertEqual(stdout, b'{"ok":true}')
@@ -170,16 +176,35 @@ class PowerRpcFrameTests(unittest.TestCase):
         for payload in cases:
             with self.subTest(payload=payload):
                 with _socket_bytes(payload) as hosted_socket, self.assertRaises(ValueError):
-                    hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1)
+                    power_execution.read_rpc_frames(
+                        hosted_socket,
+                        time.monotonic() + 1,
+                        power_execution.MAX_RPC_RESPONSE_BYTES,
+                    )
                 with _socket_bytes(payload) as local_socket, self.assertRaises(ValueError):
-                    self.local.assistant_lifecycle._read_rpc_frames(local_socket, time.monotonic() + 1)
+                    power_execution.read_rpc_frames(
+                        local_socket,
+                        time.monotonic() + 1,
+                        power_execution.MAX_RPC_RESPONSE_BYTES,
+                    )
 
     def test_clean_eof_is_the_only_empty_success(self) -> None:
         with _socket_bytes(b"") as hosted_socket:
-            self.assertEqual(hosted_assistants._read_rpc_frames(hosted_socket, time.monotonic() + 1), (b"", b""))
+            self.assertEqual(
+                power_execution.read_rpc_frames(
+                    hosted_socket,
+                    time.monotonic() + 1,
+                    power_execution.MAX_RPC_RESPONSE_BYTES,
+                ),
+                (b"", b""),
+            )
         with _socket_bytes(b"") as local_socket:
             self.assertEqual(
-                self.local.assistant_lifecycle._read_rpc_frames(local_socket, time.monotonic() + 1),
+                power_execution.read_rpc_frames(
+                    local_socket,
+                    time.monotonic() + 1,
+                    power_execution.MAX_RPC_RESPONSE_BYTES,
+                ),
                 (b"", b""),
             )
 

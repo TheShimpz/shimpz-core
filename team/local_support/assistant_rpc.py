@@ -1,6 +1,5 @@
 """Local Assistant RPC transport and fail-stop readiness."""
 
-import socket
 import time
 from contextlib import suppress
 from http import HTTPStatus
@@ -55,10 +54,6 @@ def _power_not_running(container) -> bool:
         return False
     state = container.attrs.get("State")
     return isinstance(state, dict) and state.get("Running") is False
-
-
-def _read_rpc_frames(self, raw_socket: socket.socket, deadline: float) -> tuple[bytes, bytes]:
-    return power_execution.read_rpc_frames(raw_socket, deadline, power_execution.MAX_RPC_RESPONSE_BYTES)
 
 
 def _rpc(
