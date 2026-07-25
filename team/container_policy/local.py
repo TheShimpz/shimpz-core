@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 import egress_policy
 from local_registry import is_digest_ref
 
@@ -9,6 +11,7 @@ ASSISTANT_UID = "10001:10001"
 ASSISTANT_MEMORY = 128 * 1024 * 1024
 ASSISTANT_NANO_CPUS = 250_000_000
 ASSISTANT_PIDS = 64
+ASSISTANT_TMPFS = {str(PurePosixPath("/") / "tmp"): "size=256m"}
 _ALL_PROXY_VARIABLES = frozenset(
     {
         "HTTPS_PROXY",
@@ -75,7 +78,7 @@ def inspect_profile(
         or host.get("PidsLimit") != ASSISTANT_PIDS
         or host.get("IpcMode") != "private"
         or host.get("CgroupnsMode") != "private"
-        or host.get("Tmpfs") not in (None, {})
+        or host.get("Tmpfs") != ASSISTANT_TMPFS
         or host.get("AutoRemove") is not False
         or (host.get("RestartPolicy") or {}).get("Name") not in {"", "no"}
         or (host.get("LogConfig") or {}).get("Type") != "json-file"

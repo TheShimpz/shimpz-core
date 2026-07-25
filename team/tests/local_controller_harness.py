@@ -181,7 +181,7 @@ class LocalContractCase(unittest.TestCase):
                     "PidsLimit": assistant_lifecycle.ASSISTANT_PIDS,
                     "IpcMode": "private",
                     "CgroupnsMode": "private",
-                    "Tmpfs": None,
+                    "Tmpfs": dict(assistant_lifecycle.ASSISTANT_TMPFS),
                     "AutoRemove": False,
                     "RestartPolicy": {"Name": "no"},
                     "LogConfig": {

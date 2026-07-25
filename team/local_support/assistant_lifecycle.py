@@ -17,6 +17,7 @@ from local_support.validation import validate_team_id
 ASSISTANT_MEMORY = local_container_policy.ASSISTANT_MEMORY
 ASSISTANT_NANO_CPUS = local_container_policy.ASSISTANT_NANO_CPUS
 ASSISTANT_PIDS = local_container_policy.ASSISTANT_PIDS
+ASSISTANT_TMPFS = local_container_policy.ASSISTANT_TMPFS
 READINESS_RECOVERY_ASSISTANTS = frozenset({"shimpz-cloudflare"})
 
 
@@ -125,6 +126,7 @@ def _create_assistant_container(self, team_id: str, spec: AssistantSpec, network
             nano_cpus=ASSISTANT_NANO_CPUS,
             cpuset_cpus=self.cpuset_cpus,
             pids_limit=ASSISTANT_PIDS,
+            tmpfs=ASSISTANT_TMPFS,
             ulimits=[Ulimit(name="nofile", soft=1024, hard=1024)],
             restart_policy={"Name": "no"},
             log_config=LogConfig(type=LogConfig.types.JSON, config={"max-size": "1m", "max-file": "2"}),

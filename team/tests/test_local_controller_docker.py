@@ -609,7 +609,7 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
         self.assertEqual(host["NanoCpus"], 250_000_000)
         self.assertEqual(host["PidsLimit"], 64)
         self.assertEqual(host["CpusetCpus"], flow.test_cpuset)
-        self.assertIn(host.get("Tmpfs"), (None, {}))
+        self.assertEqual(host.get("Tmpfs"), {"/tmp": "size=256m"})
         self.assertEqual(metadata["Mounts"], [])
         self.assertIn(host["PortBindings"], (None, {}))
         networks = metadata["NetworkSettings"]["Networks"]
