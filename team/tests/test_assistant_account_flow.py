@@ -82,16 +82,12 @@ def _spec() -> AssistantSpec:
         image="example.invalid/x@sha256:" + ("a" * 64),
         powers={
             "read-profile": PowerSpec(
-                "POST",
-                "/read-profile",
                 "Read one external profile.",
                 {},
                 {},
                 ("cloudflare-read",),
             ),
             "publish-post": PowerSpec(
-                "POST",
-                "/publish-post",
                 "Publish one approved external update.",
                 {},
                 {},
@@ -118,8 +114,6 @@ def _cloudflare_spec() -> AssistantSpec:
         image="example.invalid/cloudflare@sha256:" + ("b" * 64),
         powers={
             "list-zones": PowerSpec(
-                "POST",
-                "/v1/powers/list-zones",
                 "List a bounded page of Cloudflare zones and domains.",
                 {},
                 {},

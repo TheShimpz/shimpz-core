@@ -277,8 +277,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             self.fail("the hosted Assistant contract is unavailable")
         declared_power = declared_contract.powers["list-zones"]
         hosted_power = marketplace.PowerSpec(
-            declared_power.method,
-            declared_power.path,
             declared_power.summary,
             declared_power.input_schema,
             declared_power.output_schema,
@@ -295,8 +293,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
         )
 
         local_power = local_registry.PowerSpec(
-            declared_power.method,
-            declared_power.path,
             declared_power.summary,
             dict(declared_power.input_schema),
             dict(declared_power.output_schema),

@@ -84,8 +84,6 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, AssistantSpec]:
             image=_digest_ref(raw["images"][assistant_id]),
             powers={
                 power_id: PowerSpec(
-                    method=power["method"],
-                    path=power["path"],
                     summary=assistant_registry.power_summary(power_id),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],

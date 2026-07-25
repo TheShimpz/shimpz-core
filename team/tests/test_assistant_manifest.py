@@ -265,6 +265,10 @@ class AssistantManifestTests(unittest.TestCase):
             assistant_manifest.parse_machine_contract(raw, reviewed.accounts),
             reviewed.machine_contract,
         )
+        self.assertEqual(
+            set(reviewed.machine_contract["powers"][0]),
+            {"id", "input_schema", "output_schema", "accounts"},
+        )
 
         foreign = json.loads(raw)
         foreign["powers"][0]["accounts"] = ["github"]
@@ -381,7 +385,7 @@ class AssistantManifestTests(unittest.TestCase):
         self.assertEqual(container.reads, 1)
 
         drifted = json.loads(raw)
-        drifted["powers"][0]["path"] = "/v1/powers/other"
+        drifted["powers"][0]["id"] = "other"
         with self.assertRaises(assistant_manifest.ManifestError):
             cache.get(container, reviewed.accounts, drifted)
 

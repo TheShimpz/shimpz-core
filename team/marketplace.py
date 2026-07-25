@@ -81,8 +81,6 @@ APPS: dict[str, AppSpec] = {
         assistant=AssistantContract(
             powers={
                 power_id: PowerSpec(
-                    method=power["method"],
-                    path=power["path"],
                     summary=assistant_registry.power_summary(power_id),
                     input_schema=power["input_schema"],
                     output_schema=power["output_schema"],

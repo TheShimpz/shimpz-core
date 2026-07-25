@@ -315,16 +315,14 @@ def canonical_machine_contract(value: object, declared_accounts: tuple[AccountDe
     for raw_power in raw_powers:
         if not isinstance(raw_power, dict) or set(raw_power) != {
             "id",
-            "method",
-            "path",
             "input_schema",
             "output_schema",
             "accounts",
         }:
             raise ManifestError("Assistant machine contract Power is invalid")
         power_id = _identifier(raw_power["id"], kind="Power")
-        if power_id in ids or raw_power["method"] != "POST" or raw_power["path"] != f"/v1/powers/{power_id}":
-            raise ManifestError("Assistant machine contract Power route is invalid")
+        if power_id in ids:
+            raise ManifestError("Assistant machine contract Power id is duplicated")
         ids.add(power_id)
         accounts = raw_power["accounts"]
         if (
@@ -338,8 +336,6 @@ def canonical_machine_contract(value: object, declared_accounts: tuple[AccountDe
         powers.append(
             {
                 "id": power_id,
-                "method": "POST",
-                "path": raw_power["path"],
                 "input_schema": _machine_schema(raw_power["input_schema"], kind="input"),
                 "output_schema": _machine_schema(raw_power["output_schema"], kind="output"),
                 "accounts": sorted(accounts),

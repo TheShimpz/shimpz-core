@@ -13,8 +13,6 @@ REVIEWED_ASSISTANTS = assistant_manifest.load_reviewed_catalog()
 
 @dataclass(frozen=True, slots=True)
 class PowerSpec:
-    method: str
-    path: str
     summary: str
     input_schema: Mapping[str, object]
     output_schema: Mapping[str, object]

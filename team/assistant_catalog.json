@@ -48,7 +48,6 @@
               ],
               "type": "object"
             },
-            "method": "POST",
             "output_schema": {
               "additionalProperties": false,
               "properties": {
@@ -165,8 +164,7 @@
                 "pagination"
               ],
               "type": "object"
-            },
-            "path": "/v1/powers/list-dns-records"
+            }
           },
           {
             "accounts": [
@@ -195,7 +193,6 @@
               ],
               "type": "object"
             },
-            "method": "POST",
             "output_schema": {
               "additionalProperties": false,
               "properties": {
@@ -305,8 +302,7 @@
                 "pagination"
               ],
               "type": "object"
-            },
-            "path": "/v1/powers/list-zones"
+            }
           }
         ],
         "version": 1
