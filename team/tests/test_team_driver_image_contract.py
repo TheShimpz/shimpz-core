@@ -115,8 +115,11 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         dockerfile = (ROOT / "tests" / "fixtures" / "reference-assistant" / "Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn("tests/fixtures/reference-assistant/shimpz.toml /opt/shimpz/shimpz.toml", dockerfile)
-        self.assertIn('contract=catalog["assistants"]["shimpz-cloudflare"]["contract"]', dockerfile)
-        self.assertIn('/opt/shimpz/shimpz.contract.json").write_text', dockerfile)
+        self.assertIn(
+            "tests/fixtures/reference-assistant/shimpz.contract.json /opt/shimpz/shimpz.contract.json",
+            dockerfile,
+        )
+        self.assertNotIn("assistant_catalog", dockerfile)
         self.assertIn("/opt/shimpz/shimpz.toml /opt/shimpz/shimpz.contract.json", dockerfile)
 
 
