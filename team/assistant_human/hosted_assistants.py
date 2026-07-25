@@ -35,6 +35,7 @@ MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024
 MAX_FILE_BODY_BYTES = MAX_INBOX_FILE_BYTES
 MAX_ASSISTANT_RPC_OUTPUT_BYTES = 512 * 1024
 ASSISTANT_RPC_TIMEOUT_SECONDS = 8
+POWER_COMMAND = "/usr/local/bin/shimpz-power"
 MAX_CHAT_FILES = 8
 MAX_CHAT_ASSISTANTS = 16
 CHAT_PAUSED_STATUSES = chat_turn_engine.CHAT_PAUSED_STATUSES
@@ -295,13 +296,9 @@ def _fail_stop_power(team_id: str, container) -> None:
 class AssistantRpcRequest:
     team_id: str
     container: object
-    command: str
-    method: str
-    path: str
+    power_id: str
     payload: dict
     token: str | None
-    operation: str
-    detect_unsupported_path: bool = False
 
 
 def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
@@ -309,8 +306,11 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
     container = request.container
     token = request.token
     try:
-        encoded = assistant_secret_flow.encode_private_rpc_envelope(request.payload)
-    except assistant_secret_flow.SecretFlowError as exc:
+        encoded = power_execution.encode_rpc_invocation(
+            request.payload["input"],
+            request.payload["accounts"],
+        )
+    except (KeyError, ValueError) as exc:
         raise runtime_state.ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Power input is too large") from exc
     _register_optional_power(team_id, token, container)
 
@@ -322,7 +322,7 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
         try:
             return power_execution.rpc_exchange(
                 container.id,
-                [request.command, request.method, request.path],
+                [POWER_COMMAND, request.power_id],
                 encoded,
                 power_execution.RpcExchangeStrategy(
                     api=runtime_state._docker.api,
@@ -335,11 +335,8 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
                     cancelled=lambda exc: _raise_if_rpc_cancelled(token, exc),
                     close_stream=close_stream,
                 ),
-                detect_unsupported_path=request.detect_unsupported_path,
             )
         except power_execution.RpcExchangeError as exc:
-            if exc.kind == "unsupported-path":
-                raise runtime_state._UnsupportedAssistantRpcPathError(request.path) from None
             suffix = {
                 "timeout": "timed out",
                 "ambiguous": "status is ambiguous",
@@ -347,7 +344,7 @@ def _assistant_rpc_exchange(request: AssistantRpcRequest) -> object:
                 "failed": "failed",
             }.get(exc.kind)
             status = power_execution.rpc_failure_status(exc.kind)
-            raise runtime_state.ApiError(status, f"{request.operation} {suffix}") from exc
+            raise runtime_state.ApiError(status, f"Assistant Power {suffix}") from exc
     finally:
         _release_optional_power(team_id, token, container.id)
 
@@ -356,21 +353,16 @@ def _assistant_rpc(
     team_id: str,
     token: str,
     container,
-    command: str,
-    method: str,
-    path: str,
+    power_id: str,
     payload: dict,
 ) -> object:
     return _assistant_rpc_exchange(
         AssistantRpcRequest(
             team_id=team_id,
             container=container,
-            command=command,
-            method=method,
-            path=path,
+            power_id=power_id,
             payload=payload,
             token=token,
-            operation="Assistant Power",
         )
     )
 
@@ -640,8 +632,6 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
     )
     if current_container.id != container.id:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "installed Assistant changed during the chat turn")
-    power_spec = contract.powers[power]
-    secret_values = _resolve_power_secrets(team_id, assistant_id, contract, power)
     active = _ActiveAssistant(assistant_id, contract, container)
     account_values = _resolve_power_accounts(team_id, active, power)
     audit.log(
@@ -657,14 +647,10 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
             team_id,
             request.token,
             container,
-            contract.rpc_command,
-            power_spec.method,
-            power_spec.path,
+            power,
             {
                 "input": safe_input,
-                "secrets": secret_values,
-                "accounts": account_values,
-                "answers": list(answers),
+                "accounts": power_execution.account_access_tokens(account_values),
             },
         )
     except runtime_state.ApiError as exc:
@@ -680,7 +666,7 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
     try:
         projected = power_execution.project_rpc_result(
             raw_result,
-            secret_values,
+            {},
             account_values,
             answers,
             lambda value: marketplace.validate_power_output(assistant_id, power, value),

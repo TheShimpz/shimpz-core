@@ -150,7 +150,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
         inspect_memo: dict[str, dict[str, dict]] = {}
         turn_token = "turn-token"
 
-        def rpc(_team_id, _token, _container, _command, _method, _path, payload):
+        def rpc(_team_id, _token, _container, _power_id, payload):
             captured.append(payload)
             return _zones()
 
@@ -192,11 +192,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
             [
                 {
                     "input": ZONE_INPUT,
-                    "secrets": {},
-                    "accounts": {
-                        "cloudflare": {"type": "oauth2-bearer", "access_token": ACCESS_TOKEN},
-                    },
-                    "answers": [],
+                    "accounts": {"cloudflare": ACCESS_TOKEN},
                 }
             ],
         )
@@ -288,7 +284,7 @@ class HostedOAuthAccountTests(unittest.TestCase):
             self.addCleanup(journal.close)
             rpc_calls: list[dict[str, object]] = []
 
-            def rpc(_team_id, _token, _container, _command, _method, _path, payload):
+            def rpc(_team_id, _token, _container, _power_id, payload):
                 rpc_calls.append(payload)
                 return _zones()
 

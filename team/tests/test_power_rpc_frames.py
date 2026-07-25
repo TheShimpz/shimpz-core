@@ -15,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import assistant_secret_flow
 import brain_runtime_client
 import manifests
 import power_execution
@@ -324,24 +323,22 @@ class PowerRpcFrameTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_state, "_docker", SimpleNamespace(api=api)),
                 mock.patch.object(hosted_assistants, "_fail_stop_power", fail_stop),
-                mock.patch.object(assistant_secret_flow, "encode_private_rpc_envelope", return_value=b"request"),
+                mock.patch.object(power_execution, "encode_rpc_invocation", return_value=b"request"),
                 self.assertRaises(runtime_state.ApiError) as caught,
             ):
                 hosted_assistants._assistant_rpc_exchange(
                     hosted_assistants.AssistantRpcRequest(
                         team_id="team_1",
                         container=container,
-                        command="/app/rpc",
-                        method="POST",
-                        path="/v1/powers/test",
-                        payload={},
+                        power_id="test",
+                        payload={"input": {}, "accounts": {}},
                         token=None,
-                        operation="Assistant Power",
                     )
                 )
 
         self.assertEqual(caught.exception.status, HTTPStatus.BAD_GATEWAY)
         fail_stop.assert_called_once_with("team_1", container)
+        self.assertEqual(create.call_args.args[1], [hosted_assistants.POWER_COMMAND, "test"])
         self.assertEqual(create.call_args.kwargs["workdir"], manifests.CONTAINER_TMP)
         self.assertEqual(create.call_args.kwargs["environment"], {})
 
