@@ -1,9 +1,4 @@
-"""Encrypted, short-lived local chat continuations.
-
-Only routing metadata is plaintext. The paused Brain turn, frozen Team identity,
-Power inputs, and human answer log stay inside an AES-256-GCM envelope bound to
-the exact Team, challenge, suspension kind, release bindings, and generation.
-"""
+"""Encrypted, short-lived local account continuations."""
 
 from __future__ import annotations
 
@@ -34,7 +29,7 @@ MAX_BINDING_BYTES = 640
 MAX_TTL_SECONDS = 900
 _TEAM_ID = re.compile(r"[a-z0-9_]{1,40}\Z")
 _CHALLENGE_ID = re.compile(r"[0-9a-f]{32}\Z")
-_KINDS = frozenset({"accounts", "secrets", "input", "approval"})
+_KINDS = frozenset({"accounts"})
 
 
 class ContinuationStoreError(RuntimeError):

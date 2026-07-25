@@ -183,8 +183,6 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
                 ("POST", f"{base}/chat/stop"),
                 ("GET", f"{base}/chat/accounts"),
                 ("POST", f"{base}/chat/accounts"),
-                ("GET", f"{base}/chat/secrets"),
-                ("POST", f"{base}/chat/secrets"),
                 ("GET", f"{base}/files"),
                 ("POST", f"{base}/files"),
                 ("DELETE", f"{base}/files/{'b' * 32}"),

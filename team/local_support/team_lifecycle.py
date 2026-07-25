@@ -128,8 +128,6 @@ def _remove_team_network(self, network) -> bool:
 
 def destroy_team(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
-    self.approval_challenges.cancel_team(team_id)
-    self.input_challenges.cancel_team(team_id)
     self.chat_turn_service._delete_chat_continuation(team_id)
     self.chat_turn_service._cancel_chat_for_destroy(team_id)
 
@@ -142,7 +140,6 @@ def destroy_team(self, team_id: str) -> dict[str, object]:
         )
     try:
         with self._lock(team_id):
-            self.chat_turn_service._revoke_team_approval_grants(team_id)
             network = self.assistant_lifecycle._network(team_id, required=False)
             containers = self._team_assistant_containers(team_id)
             self._validate_destroy_containers(containers, team_id, network)
@@ -234,7 +231,6 @@ def _remove_space_resources(
     owned_assistants: set[tuple[str, str]],
 ) -> bool:
     self.chat_turn_service._delete_all_account_state()
-    self.chat_turn_service._revoke_all_approval_grants()
     for container in containers:
         container.remove(force=True)
         self.assistant_lifecycle._blocked_power_workloads.discard(container.id)
@@ -253,8 +249,6 @@ def _remove_space_resources(
 
 def reset_space(self) -> dict[str, object]:
     """Remove every exactly owned workload/network without accepting resource ids."""
-    self.approval_challenges.cancel_all()
-    self.input_challenges.cancel_all()
     self.chat_turn_service._clear_chat_continuations()
     with ExitStack() as locks:
         for lock in self._locks:

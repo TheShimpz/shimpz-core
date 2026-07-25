@@ -14,9 +14,6 @@ import local_chat_continuation_store
 import local_chat_continuations
 import oauth_account_store
 import team_storage
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_grants as assistant_approval_grants
-from assistant_human import input_challenges as assistant_input_challenges
 from docker.errors import DockerException
 from local_registry import AssistantSpec
 
@@ -229,35 +226,6 @@ def _retain_declared_assistant_account_state(self, team_id: str, spec: Assistant
         self._delete_chat_continuation(team_id)
 
 
-def _raise_approval_grant_problem(exc: assistant_approval_grants.ApprovalGrantError) -> NoReturn:
-    raise ApiProblem(
-        HTTPStatus.SERVICE_UNAVAILABLE,
-        "Assistant approval state is unavailable",
-        code="assistant-approval-state-unavailable",
-    ) from exc
-
-
-def _revoke_assistant_approval_grants(self, team_id: str, assistant_id: str) -> None:
-    try:
-        self.approval_grants.revoke_assistant(team_id, assistant_id)
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        self._raise_approval_grant_problem(exc)
-
-
-def _revoke_team_approval_grants(self, team_id: str) -> int:
-    try:
-        return self.approval_grants.revoke_team(team_id)
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        self._raise_approval_grant_problem(exc)
-
-
-def _revoke_all_approval_grants(self) -> int:
-    try:
-        return self.approval_grants.revoke_all()
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        self._raise_approval_grant_problem(exc)
-
-
 def _raise_chat_continuation_problem(exc: Exception) -> NoReturn:
     raise ApiProblem(
         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -314,32 +282,12 @@ def _restore_chat_continuation(
                 decoded.requirements,
                 decoded.pending,
             )
-        elif decoded.kind == "input":
-            if len(decoded.requirements) != 1:
-                raise local_chat_continuations.ContinuationCodecError("input continuation requirements are malformed")
-            self.input_challenges.restore(
-                stored.team_id,
-                stored.challenge_id,
-                remaining_seconds,
-                decoded.requirements[0],
-                decoded.pending,
-            )
-        elif decoded.kind == "approval":
-            self.approval_challenges.restore(
-                stored.team_id,
-                stored.challenge_id,
-                remaining_seconds,
-                decoded.requirements,
-                decoded.pending,
-            )
         else:
             raise local_chat_continuations.ContinuationCodecError("continuation kind is malformed")
     except (
         local_chat_continuation_store.ContinuationStoreError,
         local_chat_continuations.ContinuationCodecError,
         assistant_account_challenges.AccountChallengeError,
-        assistant_input_challenges.InputChallengeError,
-        assistant_approval_challenges.ApprovalChallengeError,
     ) as exc:
         self._raise_chat_continuation_problem(exc)
 

@@ -16,9 +16,7 @@ import brain_runtime_token_store
 import docker
 import marketplace
 import validate
-from assistant_human import approval_flow as assistant_approval_flow
 from assistant_human import hosted_assistants, hosted_chat_api, hosted_chat_segment
-from assistant_human import input_flow as assistant_input_flow
 from container_policy import hosted_apps, hosted_lifecycle, hosted_resources
 
 from http_boundary import hosted, runtime_state, stdlib
@@ -412,37 +410,6 @@ class Handler(BaseHTTPRequestHandler):
             ),
         )
 
-    def _route_human_chat(
-        self,
-        request: _AuthorizedRequest,
-        kind: str,
-        *,
-        submit: bool,
-    ) -> None:
-        if kind == "input":
-            challenge = runtime_state._assistant_input_challenges.current(request.team_id)
-            payload = assistant_input_flow.challenge_payload
-            submit_challenge = hosted_chat_api._submit_chat_input
-        else:
-            challenge = runtime_state._assistant_approval_challenges.current(request.team_id)
-            payload = assistant_approval_flow.challenge_payload
-            submit_challenge = hosted_chat_api._submit_chat_approval
-        if not submit:
-            self._send_json(
-                HTTPStatus.OK,
-                (payload(challenge) if challenge is not None else {"team_id": request.team_id, "status": "none"}),
-                no_store=True,
-            )
-            return
-        runtime_state._enforce_rate("chat", request.principal)
-        result = submit_challenge(request.team_id, self._read_body(), request.lease)
-        paused = result.get("status") in hosted_assistants.CHAT_PAUSED_STATUSES
-        self._send_json(
-            HTTPStatus.PRECONDITION_REQUIRED if paused else HTTPStatus.OK,
-            result,
-            no_store=True,
-        )
-
     def _route_chat_turn(
         self,
         request: _AuthorizedRequest,
@@ -599,10 +566,6 @@ _AUTHORIZED_ROUTES = {
     "chat-stream": functools.partial(Handler._route_chat_turn, stream=True),
     "chat-account-pending": functools.partial(Handler._route_chat_accounts, submit=False),
     "chat-account-submit": functools.partial(Handler._route_chat_accounts, submit=True),
-    "chat-input-pending": functools.partial(Handler._route_human_chat, kind="input", submit=False),
-    "chat-input-submit": functools.partial(Handler._route_human_chat, kind="input", submit=True),
-    "chat-approval-pending": functools.partial(Handler._route_human_chat, kind="approval", submit=False),
-    "chat-approval-submit": functools.partial(Handler._route_human_chat, kind="approval", submit=True),
     "chat-stop": Handler._route_chat_stop,
     "assistant-account-list": Handler._route_assistant_account_list,
     "assistant-account-authorize": Handler._route_assistant_account_authorize,

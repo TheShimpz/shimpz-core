@@ -35,9 +35,6 @@ import oauth_pkce_challenges
 import power_execution
 import power_journal
 import team_storage
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_grants as assistant_approval_grants
-from assistant_human import input_challenges as assistant_input_challenges
 from docker.errors import APIError, DockerException
 from local_registry import (
     AssistantSpec,
@@ -58,7 +55,6 @@ from local_support import chat_private as local_chat_private
 from local_support import chat_resume as local_chat_resume
 from local_support import chat_segment as local_chat_segment
 from local_support import chat_state as local_chat_state
-from local_support import chat_submission as local_chat_submission
 from local_support import egress as local_egress
 from local_support import labels as local_labels
 from local_support import team_lifecycle as local_team_lifecycle
@@ -97,12 +93,6 @@ LOCAL_POWER_JOURNAL_PATH = Path(
         "/var/lib/shimpz-local/power-journal/journal.sqlite3",
     )
 )
-LOCAL_APPROVAL_GRANTS_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_LOCAL_APPROVAL_GRANTS_PATH",
-        "/var/lib/shimpz-local/assistant-approvals/grants.sqlite3",
-    )
-)
 LOCAL_CHAT_CONTINUATIONS_STATE_PATH = Path(
     os.environ.get(
         "SHIMPZ_LOCAL_CHAT_CONTINUATIONS_STATE_PATH",
@@ -125,8 +115,6 @@ class AssistantLifecycleDependencies:
     space_id: str | None = None
     registry: object | None = None
     cpuset_cpus: str | None = None
-    approval_challenges: object | None = None
-    input_challenges: object | None = None
     lock_for: object | None = None
     invoke: object | None = None
     list_assistants: object | None = None
@@ -146,9 +134,6 @@ class ChatTurnDependencies:
     account_challenges: object | None = None
     oauth_pkce: object | None = None
     oauth_service: object | None = None
-    approval_challenges: object | None = None
-    approval_grants: object | None = None
-    input_challenges: object | None = None
     chat_continuations: object | None = None
     lock_for: object | None = None
     raise_storage_problem: object | None = None
@@ -162,8 +147,6 @@ class AssistantLifecycle:
         self.space_id = dependencies.space_id
         self.registry = dependencies.registry
         self.cpuset_cpus = dependencies.cpuset_cpus
-        self.approval_challenges = dependencies.approval_challenges
-        self.input_challenges = dependencies.input_challenges
         self._lock = dependencies.lock_for
         self.invoke = dependencies.invoke
         self.list_assistants = dependencies.list_assistants
@@ -246,9 +229,6 @@ class ChatTurnService:
         self.account_challenges = dependencies.account_challenges
         self.oauth_pkce = dependencies.oauth_pkce
         self.oauth_service = dependencies.oauth_service
-        self.approval_challenges = dependencies.approval_challenges
-        self.approval_grants = dependencies.approval_grants
-        self.input_challenges = dependencies.input_challenges
         self.chat_continuations = dependencies.chat_continuations
         self._lock = dependencies.lock_for
         self._raise_storage_problem = dependencies.raise_storage_problem
@@ -324,9 +304,6 @@ class ChatTurnService:
     _commit_suspension = local_chat_pause._commit_suspension
     _account_response = local_chat_pause._account_response
     _pause_account = local_chat_pause._pause_account
-    _pause_approval = local_chat_pause._pause_approval
-    _input_response = staticmethod(local_chat_pause._input_response)
-    _pause_input = local_chat_pause._pause_input
 
     _power_account_generations = local_chat_private._power_account_generations
     _refresh_oauth_account = local_chat_private._refresh_oauth_account
@@ -339,15 +316,8 @@ class ChatTurnService:
     _current_account_declaration = local_chat_private._current_account_declaration
     complete_cloudflare_oauth_callback = local_chat_private.complete_cloudflare_oauth_callback
     disconnect_assistant_account = local_chat_private.disconnect_assistant_account
-    _approval_response = staticmethod(local_chat_private._approval_response)
-    pending_chat_approval = local_chat_private.pending_chat_approval
-    pending_chat_input = local_chat_private.pending_chat_input
     pending_chat_accounts = local_chat_private.pending_chat_accounts
-    list_assistant_approval_grants = local_chat_private.list_assistant_approval_grants
-    revoke_assistant_approval_grants = local_chat_private.revoke_assistant_approval_grants
 
-    submit_chat_input = local_chat_resume.submit_chat_input
-    submit_chat_approval = local_chat_resume.submit_chat_approval
     stop_chat = local_chat_resume.stop_chat
 
     _run_chat_segment = local_chat_segment._run_chat_segment
@@ -367,19 +337,12 @@ class ChatTurnService:
     _delete_team_account_state = local_chat_state._delete_team_account_state
     _delete_all_account_state = local_chat_state._delete_all_account_state
     _retain_declared_assistant_account_state = local_chat_state._retain_declared_assistant_account_state
-    _raise_approval_grant_problem = staticmethod(local_chat_state._raise_approval_grant_problem)
-    _revoke_assistant_approval_grants = local_chat_state._revoke_assistant_approval_grants
-    _revoke_team_approval_grants = local_chat_state._revoke_team_approval_grants
-    _revoke_all_approval_grants = local_chat_state._revoke_all_approval_grants
     _raise_chat_continuation_problem = staticmethod(local_chat_state._raise_chat_continuation_problem)
     _persist_chat_continuation = local_chat_state._persist_chat_continuation
     _restore_chat_continuation = local_chat_state._restore_chat_continuation
     _restore_all_chat_continuations = local_chat_state._restore_all_chat_continuations
     _delete_chat_continuation = local_chat_state._delete_chat_continuation
     _clear_chat_continuations = local_chat_state._clear_chat_continuations
-
-    _store_chat_input = local_chat_submission._store_chat_input
-    _store_chat_approval = local_chat_submission._store_chat_approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,9 +355,6 @@ class LocalControllerDependencies:
     oauth_pkce: oauth_pkce_challenges.OAuthPKCEChallengeStore | None = None
     oauth_broker: oauth_broker_client.OAuthBrokerClient | None = None
     oauth_service: oauth_account_service.BrokeredOAuthAccountService | None = None
-    approval_challenges: assistant_approval_challenges.ApprovalChallengeStore | None = None
-    approval_grants: assistant_approval_grants.ApprovalGrantStore | None = None
-    input_challenges: assistant_input_challenges.InputChallengeStore | None = None
     chat_continuations: local_chat_continuation_store.EncryptedContinuationStore | None = None
 
 
@@ -453,13 +413,6 @@ class LocalController:
             store=self.assistant_accounts,
             broker=self.oauth_broker,
         )
-        self.approval_challenges = (
-            dependencies.approval_challenges or assistant_approval_challenges.ApprovalChallengeStore()
-        )
-        self.approval_grants = dependencies.approval_grants or assistant_approval_grants.ApprovalGrantStore(
-            LOCAL_APPROVAL_GRANTS_PATH
-        )
-        self.input_challenges = dependencies.input_challenges or assistant_input_challenges.InputChallengeStore()
         self.chat_continuations = (
             dependencies.chat_continuations
             or local_chat_continuation_store.EncryptedContinuationStore(
@@ -481,8 +434,6 @@ class LocalController:
                 space_id=getattr(self, "space_id", None),
                 registry=getattr(self, "registry", None),
                 cpuset_cpus=getattr(self, "cpuset_cpus", None),
-                approval_challenges=getattr(self, "approval_challenges", None),
-                input_challenges=getattr(self, "input_challenges", None),
                 lock_for=self._lock,
                 invoke=self.invoke,
                 list_assistants=self.list_assistants,
@@ -500,9 +451,6 @@ class LocalController:
                 account_challenges=getattr(self, "account_challenges", None),
                 oauth_pkce=getattr(self, "oauth_pkce", None),
                 oauth_service=getattr(self, "oauth_service", None),
-                approval_challenges=getattr(self, "approval_challenges", None),
-                approval_grants=getattr(self, "approval_grants", None),
-                input_challenges=getattr(self, "input_challenges", None),
                 chat_continuations=getattr(self, "chat_continuations", None),
                 lock_for=self._lock,
                 raise_storage_problem=self._raise_storage_problem,
@@ -739,8 +687,6 @@ class LocalController:
         assistant_id: str,
         power: str,
         payload: object,
-        *,
-        answers: tuple[object, ...] = (),
     ) -> dict[str, object]:
         team_id = validate_team_id(team_id)
         spec = self.assistant_lifecycle._resolve(assistant_id)
@@ -806,7 +752,6 @@ class LocalController:
             projected = power_execution.project_rpc_result(
                 raw_result,
                 account_values,
-                answers,
                 lambda value: validate_power_output(assistant_id, power, value),
             )
         except power_execution.RpcSecretExposureError:
@@ -835,15 +780,6 @@ class LocalController:
                 "the Assistant returned an invalid result",
                 code="invalid-power-output",
             ) from exc
-        if projected.suspended:
-            local_audit.record(
-                "assistant-power",
-                result="ok",
-                team_id=team_id,
-                assistant=assistant_id,
-                detail=f"suspended:{power}",
-            )
-            return {"assistant": assistant_id, "power": power, "suspend": projected.value}
         local_audit.record(
             "assistant-power",
             result="ok",
@@ -851,7 +787,7 @@ class LocalController:
             assistant=assistant_id,
             detail=f"completed:{power}",
         )
-        return {"assistant": assistant_id, "power": power, "result": projected.value}
+        return {"assistant": assistant_id, "power": power, "result": projected}
 
 
 def main() -> int:

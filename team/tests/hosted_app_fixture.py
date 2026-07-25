@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
-import tempfile
 import types
 from pathlib import Path
-from unittest import mock
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
@@ -121,16 +118,7 @@ spec = importlib.util.spec_from_file_location("team_app_hosted_test", TEAM / "ap
 app = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 sys.modules[spec.name] = app
-_hosted_test_state = tempfile.TemporaryDirectory()
-with mock.patch.dict(
-    os.environ,
-    {
-        "SHIMPZ_TEAM_ASSISTANT_APPROVAL_GRANTS_PATH": str(
-            Path(_hosted_test_state.name) / "assistant-approvals" / "grants.sqlite3"
-        )
-    },
-):
-    spec.loader.exec_module(app)
+spec.loader.exec_module(app)
 
 runtime_state = sys.modules["http_boundary.runtime_state"]
 hosted_resources = sys.modules["container_policy.hosted_resources"]

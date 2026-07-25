@@ -1,4 +1,4 @@
-"""Local Assistant Account and approval configuration operations."""
+"""Local Assistant Account configuration operations."""
 
 from http import HTTPStatus
 from typing import NoReturn
@@ -10,9 +10,6 @@ import oauth_account_service
 import oauth_account_store
 import power_execution
 import power_journal
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_flow as assistant_approval_flow
-from assistant_human import approval_grants as assistant_approval_grants
 from docker.errors import DockerException
 from local_registry import AssistantSpec
 
@@ -241,60 +238,8 @@ def disconnect_assistant_account(
     return {"disconnected": disconnected}
 
 
-def _approval_response(
-    challenge: assistant_approval_challenges.PendingApprovalChallenge,
-) -> dict[str, object]:
-    return assistant_approval_flow.challenge_payload(challenge)
-
-
-def pending_chat_approval(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    self.assistant_lifecycle._network(team_id)
-    challenge = self.approval_challenges.current(team_id)
-    return self._approval_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
-
-
-def pending_chat_input(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    self.assistant_lifecycle._network(team_id)
-    challenge = self.input_challenges.current(team_id)
-    return self._input_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
-
-
 def pending_chat_accounts(self, team_id: str) -> dict[str, object]:
     team_id = validate_team_id(team_id)
     self.assistant_lifecycle._network(team_id)
     challenge = self.account_challenges.current(team_id)
     return self._account_response(challenge) if challenge is not None else {"team_id": team_id, "status": "none"}
-
-
-def list_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    self.assistant_lifecycle._network(team_id)
-    try:
-        grants = self.approval_grants.list_team(team_id)
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        self._raise_approval_grant_problem(exc)
-    identities = sorted({(item.assistant_id, item.power_id) for item in grants})
-    return {
-        "team_id": team_id,
-        "grants": [{"assistant_id": assistant_id, "power_id": power_id} for assistant_id, power_id in identities],
-    }
-
-
-def revoke_assistant_approval_grants(self, team_id: str) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    self.assistant_lifecycle._network(team_id)
-    chat_lock = self._chat_lock(team_id)
-    if not chat_lock.acquire(blocking=False):
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant approvals cannot change during an active chat turn",
-            code="chat-active",
-        )
-    try:
-        with self._lock(team_id):
-            revoked = self._revoke_team_approval_grants(team_id)
-    finally:
-        chat_lock.release()
-    return {"team_id": team_id, "revoked": revoked}

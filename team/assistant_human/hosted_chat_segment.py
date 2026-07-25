@@ -22,12 +22,7 @@ from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
 from http_boundary import runtime_state
 
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_flow as assistant_approval_flow
-from assistant_human import approval_grants as assistant_approval_grants
 from assistant_human import hosted_assistants
-from assistant_human import input_challenges as assistant_input_challenges
-from assistant_human import input_flow as assistant_input_flow
 
 
 def _current_team_anchor(
@@ -132,51 +127,6 @@ def _hosted_private_requirements(
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Assistant account contract is unavailable") from exc
 
 
-def _hosted_approval_requirement(
-    team_id: str,
-    interactions: tuple[chat_orchestrator.HumanInteraction, ...],
-    answers_by_interrupt: dict[str, tuple[object, ...]],
-    bindings: dict[str, hosted_assistants._ActiveAssistant],
-) -> tuple[assistant_approval_challenges.ApprovalRequirement | None, bool]:
-    if not interactions:
-        return None, False
-    if len(interactions) != 1:
-        raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "Assistant human approval request is invalid")
-    interaction = interactions[0]
-    answers = answers_by_interrupt.get(interaction.request.interrupt_id, ())
-    active = bindings.get(interaction.request.assistant_id)
-    if active is None:
-        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Brain requested an unavailable Assistant")
-    try:
-        requirement = assistant_approval_flow.requirement(
-            interaction,
-            active.assistant_id.replace("-", " ").title(),
-            hosted_assistants._hosted_power_identity(active)[1],
-            len(answers),
-        )
-        granted = requirement.runs == "once" and runtime_state._assistant_approval_grants.is_granted(
-            team_id,
-            requirement.assistant_id,
-            requirement.power_id,
-            requirement.assistant_image,
-            requirement.ordinal,
-        )
-    except assistant_approval_flow.ApprovalFlowError as exc:
-        raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "Assistant human approval request is invalid") from exc
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant approval state is unavailable") from exc
-    return requirement, granted
-
-
-def _hosted_answer_log(
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...],
-) -> dict[str, tuple[object, ...]]:
-    answers_by_interrupt = dict(answer_logs)
-    if len(answers_by_interrupt) != len(answer_logs):
-        raise runtime_state.ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid chat answer log")
-    return answers_by_interrupt
-
-
 @dataclass(frozen=True, slots=True)
 class HostedChatSegmentRequest:
     team_id: str
@@ -188,7 +138,6 @@ class HostedChatSegmentRequest:
     message: str | None = None
     continuation: chat_orchestrator.ChatContinuation | None = None
     expected_identity: tuple[object, ...] | None = None
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
 def _hosted_chat_current_identity(
@@ -237,7 +186,6 @@ def _execute_hosted_power(
     team_id: str,
     token: str,
     bindings: dict[str, hosted_assistants._ActiveAssistant],
-    answers_by_interrupt: dict[str, tuple[object, ...]],
     inspect_memo: dict[str, dict[str, dict]],
     request: brain_runtime_client.PowerRequest,
 ) -> object:
@@ -253,12 +201,9 @@ def _execute_hosted_power(
             container=active.container,
             power=request.power,
             payload=request.input,
-            answers=answers_by_interrupt.get(request.interrupt_id, ()),
             inspect_memo=inspect_memo,
         )
     )
-    if "suspend" in invocation:
-        return power_execution.RpcSuspension(invocation["suspend"])
     return invocation["result"]
 
 
@@ -270,7 +215,6 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
         request.container,
         request.owner,
     )
-    answers_by_interrupt = _hosted_answer_log(request.answer_logs)
     bindings: dict[str, hosted_assistants._ActiveAssistant] = {}
     initial_identity: tuple[object, ...] = ()
     config: inference_config.InferenceConfig | None = None
@@ -288,7 +232,7 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
 
     def execute_power(request: brain_runtime_client.PowerRequest) -> object:
         require_current_credential()
-        return _execute_hosted_power(team_id, token, bindings, answers_by_interrupt, inspect_memo, request)
+        return _execute_hosted_power(team_id, token, bindings, inspect_memo, request)
 
     def prepare() -> chat_turn_engine.PreparedSegment:
         nonlocal bindings, config, generation, initial_identity, prepared_assistants
@@ -370,52 +314,27 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
         if current_identity != initial_identity:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
 
-    current_message = request.message
-    current_continuation = request.continuation
-    current_identity = request.expected_identity
-    while True:
-        team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
-            chat_turn_engine.SegmentStrategy(
-                runtime=runtime_state._brain_runtime,
-                prepare=prepare,
-                validate_power=validate_power,
-                pause_for_private_inputs=pause_for_private_inputs,
-                cancelled=lambda: runtime_state._token_cancelled(token),
-                validate_context=validate_context,
-                raise_problem=_raise_hosted_chat_problem,
-                finalize=require_current_credential,
-            ),
-            message=current_message,
-            continuation=current_continuation,
-            expected_identity=current_identity,
-        )
-        approval_requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...] = ()
-        requirement, granted = _hosted_approval_requirement(
-            team_id,
-            requirements.approvals,
-            answers_by_interrupt,
-            bindings,
-        )
-        if requirement is not None and granted:
-            answers = answers_by_interrupt.get(requirement.interrupt_id, ())
-            answers_by_interrupt[requirement.interrupt_id] = (*answers, True)
-            if not isinstance(outcome, chat_orchestrator.ChatSuspension):
-                raise AssertionError("approval requirement did not suspend")
-            current_message = None
-            current_continuation = outcome.continuation
-            current_identity = identity
-            continue
-        if requirement is not None:
-            approval_requirements = (requirement,)
-        return chat_turn_engine.SegmentResult(
-            team_name,
-            identity,
-            outcome,
-            requirements.accounts,
-            requirements.inputs,
-            approval_requirements,
-            tuple(sorted(answers_by_interrupt.items())),
-        )
+    team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
+        chat_turn_engine.SegmentStrategy(
+            runtime=runtime_state._brain_runtime,
+            prepare=prepare,
+            validate_power=validate_power,
+            pause_for_private_inputs=pause_for_private_inputs,
+            cancelled=lambda: runtime_state._token_cancelled(token),
+            validate_context=validate_context,
+            raise_problem=_raise_hosted_chat_problem,
+            finalize=require_current_credential,
+        ),
+        message=request.message,
+        continuation=request.continuation,
+        expected_identity=request.expected_identity,
+    )
+    return chat_turn_engine.SegmentResult(
+        team_name,
+        identity,
+        outcome,
+        requirements.accounts,
+    )
 
 
 def _commit_hosted_suspension(
@@ -470,55 +389,6 @@ def _pause_hosted_connection(
     return _hosted_account_challenge_payload(challenge)
 
 
-def _pause_hosted_input(
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[chat_orchestrator.HumanInteraction, ...],
-    pending: hosted_assistants._PendingHostedChat,
-) -> dict[str, object]:
-    if len(requirements) != 1:
-        raise runtime_state.ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "invalid human input suspension")
-    interaction = requirements[0]
-    answers = dict(pending.answer_logs).get(interaction.request.interrupt_id, ())
-    try:
-        assistant_id, contract, container = hosted_assistants._installed_assistant(
-            team_id,
-            interaction.request.assistant_id,
-        )
-        requirement = assistant_input_flow.requirement(
-            interaction,
-            hosted_assistants._hosted_power_identity(
-                hosted_assistants._ActiveAssistant(assistant_id, contract, container)
-            )[1],
-            len(answers),
-        )
-        challenge = runtime_state._assistant_input_challenges.create(team_id, requirement, pending)
-    except (
-        marketplace.MarketplaceError,
-        assistant_input_challenges.InputChallengeError,
-        assistant_input_flow.InputFlowError,
-    ) as exc:
-        raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "Assistant human input request is invalid") from exc
-    _commit_hosted_suspension(team_id, token, outcome, pending, runtime_state._assistant_input_challenges)
-    return assistant_input_flow.challenge_payload(challenge)
-
-
-def _pause_hosted_approval(
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...],
-    pending: hosted_assistants._PendingHostedChat,
-) -> dict[str, object]:
-    try:
-        challenge = runtime_state._assistant_approval_challenges.create(team_id, requirements, pending)
-    except assistant_approval_challenges.ApprovalChallengeError as exc:
-        raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Assistant approval is already pending") from exc
-    _commit_hosted_suspension(team_id, token, outcome, pending, runtime_state._assistant_approval_challenges)
-    return assistant_approval_flow.challenge_payload(challenge)
-
-
 def _hosted_segment_response(
     team_id: str,
     token: str,
@@ -534,7 +404,6 @@ def _hosted_segment_response(
             file_ids=file_ids,
             owner=owner,
             identity=segment.identity,
-            answer_logs=segment.answer_logs,
         )
 
     def complete(terminal: chat_orchestrator.ChatOutcome) -> dict[str, object]:
@@ -553,12 +422,6 @@ def _hosted_segment_response(
             pending,
             (
                 lambda suspension, requirements, state: _pause_hosted_connection(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: _pause_hosted_input(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: _pause_hosted_approval(
                     team_id, token, suspension, requirements, state
                 ),
             ),

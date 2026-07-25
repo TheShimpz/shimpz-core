@@ -27,9 +27,6 @@ import oauth_pkce_challenges
 import power_journal
 import team_storage
 import token_store
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_grants as assistant_approval_grants
-from assistant_human import input_challenges as assistant_input_challenges
 
 ALL_INTERFACES = str(ipaddress.IPv4Address(0))
 
@@ -94,12 +91,6 @@ ASSISTANT_ACCOUNT_KEY_PATH = Path(
         "/var/lib/team-driver/assistant-accounts/key/aes256.key",
     )
 )
-ASSISTANT_APPROVAL_GRANTS_PATH = Path(
-    os.environ.get(
-        "SHIMPZ_TEAM_ASSISTANT_APPROVAL_GRANTS_PATH",
-        "/var/lib/team-driver/assistant-approvals/grants.sqlite3",
-    )
-)
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
@@ -134,11 +125,6 @@ _assistant_accounts = oauth_account_store.OAuthAccountStore(
     ASSISTANT_ACCOUNT_KEY_PATH,
 )
 _assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
-# Hosted interaction challenges are process-local: a restart invalidates them and the client retries.
-# Encrypted restart durability belongs only to the local Controller profile.
-_assistant_approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-_assistant_approval_grants = assistant_approval_grants.ApprovalGrantStore(ASSISTANT_APPROVAL_GRANTS_PATH)
-_assistant_input_challenges = assistant_input_challenges.InputChallengeStore()
 _oauth_pkce_challenges = oauth_pkce_challenges.OAuthPKCEChallengeStore()
 _oauth_http = oauth_http_client.OAuthHTTPClient()
 _cloudflare_oauth_client_id = os.environ.get("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_ID")
@@ -298,18 +284,3 @@ def _commit_chat_terminal(team_id: str, token: str) -> bool:
             _active_chat_tokens.pop(team_id, None)
             _active_chat_container_ids.pop(team_id, None)
         return True
-
-
-def _revoke_assistant_approval_grants(team_id: str, assistant_id: str) -> None:
-    try:
-        _assistant_approval_grants.revoke_assistant(team_id, assistant_id)
-    except assistant_approval_grants.ApprovalGrantError as exc:
-        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Assistant approval state is unavailable") from exc
-
-
-def _teardown_team_approval_grants(team_id: str) -> bool:
-    try:
-        _assistant_approval_grants.revoke_team(team_id)
-    except assistant_approval_grants.ApprovalGrantError:
-        return False
-    return True

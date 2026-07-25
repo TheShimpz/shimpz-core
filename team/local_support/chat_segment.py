@@ -1,19 +1,14 @@
 """Local chat segment orchestration operations."""
 
 from dataclasses import dataclass
-from http import HTTPStatus
 
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
 import power_execution
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_flow as assistant_approval_flow
-from assistant_human import approval_grants as assistant_approval_grants
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import required_active_assistant as _required_active_assistant
-from local_support.errors import ApiProblemError as ApiProblem
 from local_support.validation import brain_thread_id as _brain_thread_id
 
 
@@ -28,7 +23,6 @@ class SegmentRequest:
     message: str | None = None
     continuation: chat_orchestrator.ChatContinuation | None = None
     expected_identity: tuple[object, ...] | None = None
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
 def _run_chat_segment(
@@ -44,13 +38,6 @@ def _run_chat_segment_with_metadata(
     request: SegmentRequest,
     metadata_connection,
 ) -> chat_turn_engine.SegmentResult:
-    answers_by_interrupt = dict(request.answer_logs)
-    if len(answers_by_interrupt) != len(request.answer_logs):
-        raise ApiProblem(
-            HTTPStatus.INTERNAL_SERVER_ERROR,
-            "invalid chat answer log",
-            code="internal-error",
-        )
     bindings: dict[str, _ActiveAssistant] = {}
     identity: tuple[object, ...] = ()
     network_id = ""
@@ -62,7 +49,6 @@ def _run_chat_segment_with_metadata(
             request.token,
             power_request,
             active.container_id,
-            answers_by_interrupt.get(power_request.interrupt_id, ()),
         )
 
     def prepare() -> chat_turn_engine.PreparedSegment:
@@ -137,77 +123,28 @@ def _run_chat_segment_with_metadata(
             metadata_connection,
         )
 
-    current_message = request.message
-    current_continuation = request.continuation
-    current_identity = request.expected_identity
-    while True:
-        team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
-            chat_turn_engine.SegmentStrategy(
-                runtime=self.brain_runtime,
-                prepare=prepare,
-                validate_power=lambda assistant_id, power, payload: self._validate_chat_power(
-                    bindings,
-                    assistant_id,
-                    power,
-                    payload,
-                ),
-                pause_for_private_inputs=private_inputs,
-                cancelled=lambda: self._chat_cancelled(request.token),
-                validate_context=validate_current_context,
-                raise_problem=self._raise_chat_problem,
+    team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
+        chat_turn_engine.SegmentStrategy(
+            runtime=self.brain_runtime,
+            prepare=prepare,
+            validate_power=lambda assistant_id, power, payload: self._validate_chat_power(
+                bindings,
+                assistant_id,
+                power,
+                payload,
             ),
-            message=current_message,
-            continuation=current_continuation,
-            expected_identity=current_identity,
-        )
-        approval_requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...] = ()
-        if requirements.approvals:
-            if len(requirements.approvals) != 1:
-                raise ApiProblem(
-                    HTTPStatus.BAD_GATEWAY,
-                    "Assistant human approval request is invalid",
-                    code="invalid-assistant-approval-request",
-                )
-            interaction = requirements.approvals[0]
-            answers = answers_by_interrupt.get(interaction.request.interrupt_id, ())
-            active = _required_active_assistant(bindings, interaction.request.assistant_id)
-            try:
-                requirement = assistant_approval_flow.requirement(
-                    interaction,
-                    active.spec.name,
-                    active.spec.image,
-                    len(answers),
-                )
-                granted = requirement.runs == "once" and self.approval_grants.is_granted(
-                    request.team_id,
-                    requirement.assistant_id,
-                    requirement.power_id,
-                    requirement.assistant_image,
-                    requirement.ordinal,
-                )
-            except assistant_approval_flow.ApprovalFlowError as exc:
-                raise ApiProblem(
-                    HTTPStatus.BAD_GATEWAY,
-                    "Assistant human approval request is invalid",
-                    code="invalid-assistant-approval-request",
-                ) from exc
-            except assistant_approval_grants.ApprovalGrantError as exc:
-                self._raise_approval_grant_problem(exc)
-            if granted:
-                answers_by_interrupt[requirement.interrupt_id] = (*answers, True)
-                if not isinstance(outcome, chat_orchestrator.ChatSuspension):
-                    raise AssertionError("approval requirement did not suspend")
-                current_message = None
-                current_continuation = outcome.continuation
-                current_identity = identity
-                continue
-            approval_requirements = (requirement,)
-        return chat_turn_engine.SegmentResult(
-            team_name,
-            identity,
-            outcome,
-            requirements.accounts,
-            requirements.inputs,
-            approval_requirements,
-            tuple(sorted(answers_by_interrupt.items())),
-        )
+            pause_for_private_inputs=private_inputs,
+            cancelled=lambda: self._chat_cancelled(request.token),
+            validate_context=validate_current_context,
+            raise_problem=self._raise_chat_problem,
+        ),
+        message=request.message,
+        continuation=request.continuation,
+        expected_identity=request.expected_identity,
+    )
+    return chat_turn_engine.SegmentResult(
+        team_name,
+        identity,
+        outcome,
+        requirements.accounts,
+    )

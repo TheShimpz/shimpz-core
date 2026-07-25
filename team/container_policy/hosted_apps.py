@@ -472,8 +472,6 @@ def _provision_app(
     owner: str,
     team_name: str,
 ) -> dict[str, object]:
-    if spec.assistant is not None:
-        runtime_state._revoke_assistant_approval_grants(team_id, app_id)
     if len(_team_app_containers(team_id)) >= runtime_state.MAX_APPS_PER_TEAM:
         raise runtime_state.ApiError(
             HTTPStatus.TOO_MANY_REQUESTS, f"app limit reached for {team_id!r} ({runtime_state.MAX_APPS_PER_TEAM})"
@@ -558,8 +556,6 @@ def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._Authoriza
         # Removal is a remediation operation and must remain available for a legacy blocked Team.
         hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
         runtime_state._assistant_account_challenges.cancel_team(team_id)
-        runtime_state._assistant_input_challenges.cancel_team(team_id)
-        runtime_state._assistant_approval_challenges.cancel_team(team_id)
         cleanup = _teardown_app(team_id, app_id)
         if not cleanup.complete:
             raise runtime_state.ApiError(
@@ -572,7 +568,6 @@ def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._Authoriza
             raise runtime_state.ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable"
             ) from exc
-        runtime_state._revoke_assistant_approval_grants(team_id, app_id)
         return {"team_id": team_id, "app": app_id, "uninstalled": True, "db_dropped": cleanup.db_dropped}
 
 

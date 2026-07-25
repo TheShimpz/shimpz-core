@@ -129,8 +129,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 assistant_accounts=injected_store,
                 account_challenges=injected_challenges,
                 oauth_service=SimpleNamespace(),
-                approval_challenges=SimpleNamespace(),
-                approval_grants=SimpleNamespace(),
             ),
         )
 
@@ -264,8 +262,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                     assistant_accounts=accounts,
                     account_challenges=SimpleNamespace(),
                     oauth_pkce=pkce,
-                    approval_challenges=SimpleNamespace(),
-                    approval_grants=SimpleNamespace(),
                 ),
             )
 
@@ -420,7 +416,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 Path(directory) / "state" / "accounts.json",
                 Path(directory) / "key" / "aes256.key",
             )
-            controller.approval_grants = SimpleNamespace()
             controller._wire_collaborators()
             active = ActiveAssistant(spec, "b" * 64)
             setup = (
@@ -453,7 +448,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
         self.assertIsInstance(result.outcome, chat_orchestrator.ChatSuspension)
         self.assertEqual(len(result.accounts), 1)
         self.assertEqual(result.accounts[0].accounts[0][0], "cloudflare")
-        self.assertEqual((result.inputs, result.approvals, result.answer_logs), ((), (), ()))
 
     def test_account_resume_is_one_use_and_returns_completed_turn(self) -> None:
         registry = self._registry()
@@ -521,9 +515,6 @@ class LocalOAuthAccountTests(unittest.TestCase):
                 "Team One",
                 identity,
                 chat_orchestrator.ChatOutcome("Done", ()),
-                (),
-                (),
-                (),
                 (),
             )
 

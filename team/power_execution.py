@@ -8,7 +8,7 @@ import select
 import socket
 import struct
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
@@ -164,9 +164,6 @@ class PowerBatch:
         if not decision.execute:
             return decision.result
         result = self._strategy.execute(request)
-        if isinstance(result, RpcSuspension):
-            self._journal.suspend(self._batch, operation)
-            return result
         self._journal.complete(self._batch, operation, result)
         return result
 
@@ -191,13 +188,6 @@ class RpcExchangeError(RuntimeError):
         self.kind = kind
 
 
-@dataclass(frozen=True, slots=True)
-class RpcSuspension:
-    """One SDK-requested deterministic replay suspension."""
-
-    payload: dict[str, object]
-
-
 class RpcSecretExposureError(ValueError):
     """An Assistant returned a literal private value."""
 
@@ -206,27 +196,16 @@ class RpcInvalidResultError(ValueError):
     """An Assistant result failed its reviewed Power schema."""
 
 
-@dataclass(frozen=True, slots=True)
-class RpcInvocationResult:
-    value: object
-    suspended: bool
-
-
 def project_rpc_result(
     raw_result: object,
     accounts_by_id: Mapping[str, Mapping[str, object]],
-    answers: tuple[object, ...],
     validate: Callable[[object], object],
-) -> RpcInvocationResult:
-    """Reject private echoes, retain suspensions, and validate one terminal Power result."""
-    private_values = protected_rpc_values(accounts_by_id, answers)
-    inspected = raw_result.payload if isinstance(raw_result, RpcSuspension) else raw_result
-    if contains_secret(inspected, private_values):
+) -> object:
+    """Reject private echoes and validate one terminal Spec v1 Power result."""
+    if contains_secret(raw_result, protected_rpc_values(accounts_by_id)):
         raise RpcSecretExposureError
-    if isinstance(raw_result, RpcSuspension):
-        return RpcInvocationResult(raw_result.payload, True)
     try:
-        return RpcInvocationResult(validate(raw_result), False)
+        return validate(raw_result)
     except ValueError as exc:
         raise RpcInvalidResultError from exc
 
@@ -397,16 +376,12 @@ def contains_secret(value: object, secrets_by_id: Mapping[str, str]) -> bool:
 
 def protected_rpc_values(
     accounts_by_id: Mapping[str, Mapping[str, object]],
-    answers: Iterable[object],
 ) -> dict[str, str]:
-    """Collect literal private strings that an Assistant must not return."""
+    """Collect literal account tokens that an Assistant must not return."""
     return {
-        **{
-            f"account:{account_id}": access_token
-            for account_id, envelope in accounts_by_id.items()
-            if isinstance((access_token := envelope.get("access_token")), str)
-        },
-        **{f"answer:{ordinal}": answer for ordinal, answer in enumerate(answers) if isinstance(answer, str)},
+        f"account:{account_id}": access_token
+        for account_id, envelope in accounts_by_id.items()
+        if isinstance((access_token := envelope.get("access_token")), str)
     }
 
 

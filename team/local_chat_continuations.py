@@ -13,11 +13,8 @@ import brain_runtime_client
 import chat_orchestrator
 import inference_config
 import local_chat_continuation_store
-from assistant_human import approval_challenges, input_challenges
 
 SCHEMA_VERSION = 1
-MAX_ANSWER_LOGS = 64
-MAX_ANSWERS_PER_POWER = 64
 MAX_JSON_DEPTH = 16
 MAX_JSON_NODES = 4096
 MAX_INVOKED_POWERS = 512
@@ -42,7 +39,6 @@ class PendingLocalChat:
     file_ids: tuple[str, ...]
     provider: str
     identity: tuple[object, ...]
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,13 +152,6 @@ def _pending_payload(pending: PendingLocalChat) -> dict[str, object]:
         "file_ids": list(pending.file_ids),
         "provider": pending.provider,
         "identity": identity,
-        "answer_logs": [
-            {
-                "interrupt_id": interrupt_id,
-                "answers": [_json_value(answer) for answer in answers],
-            }
-            for interrupt_id, answers in pending.answer_logs
-        ],
     }
 
 
@@ -184,12 +173,11 @@ def _identity_payload(identity: tuple[object, ...]) -> dict[str, object]:
 
 
 def _requirements_payload(kind: str, requirements: tuple[object, ...]) -> list[dict[str, object]]:
-    expected = {
-        "accounts": assistant_account_challenges.AccountRequirement,
-        "input": input_challenges.InputRequirement,
-        "approval": approval_challenges.ApprovalRequirement,
-    }.get(kind)
-    if expected is None or not requirements or any(not isinstance(item, expected) for item in requirements):
+    if (
+        kind != "accounts"
+        or not requirements
+        or any(not isinstance(item, assistant_account_challenges.AccountRequirement) for item in requirements)
+    ):
         raise ContinuationCodecError("continuation requirements are malformed")
     return [_json_value(asdict(item)) for item in requirements]  # type: ignore[list-item]
 
@@ -209,26 +197,18 @@ def _release_images(pending: PendingLocalChat) -> dict[str, str]:
 
 
 def _bindings(kind: str, requirements: tuple[object, ...], pending: PendingLocalChat) -> tuple[str, ...]:
+    if kind != "accounts":
+        raise ContinuationCodecError("continuation kind is malformed")
     images = _release_images(pending)
     bindings: set[str] = set()
-    if kind in {"input", "approval"}:
-        for requirement in requirements:
-            assistant = _component_id(requirement.assistant_id, "continuation binding Assistant")
-            power = _component_id(requirement.power_id, "continuation binding Power")
-            image = requirement.assistant_image
-            ordinal = requirement.ordinal
-            if image != images.get(assistant) or type(ordinal) is not int or not 0 <= ordinal <= 63:
-                raise ContinuationCodecError("continuation release binding is malformed")
-            bindings.add(f"{assistant}/{power}/{image}/{ordinal}")
-    else:
-        for requirement in requirements:
-            assistant = _component_id(requirement.assistant_id, "continuation binding Assistant")
-            image = images.get(assistant)
-            if image is None:
-                raise ContinuationCodecError("continuation release binding is malformed")
-            for power_id in requirement.power_ids:
-                power = _component_id(power_id, "continuation binding Power")
-                bindings.add(f"{assistant}/{power}/{image}/-")
+    for requirement in requirements:
+        assistant = _component_id(requirement.assistant_id, "continuation binding Assistant")
+        image = images.get(assistant)
+        if image is None:
+            raise ContinuationCodecError("continuation release binding is malformed")
+        for power_id in requirement.power_ids:
+            power = _component_id(power_id, "continuation binding Power")
+            bindings.add(f"{assistant}/{power}/{image}/-")
     return tuple(sorted(bindings))
 
 
@@ -413,7 +393,6 @@ def _pending(value: object) -> PendingLocalChat:
             "file_ids",
             "provider",
             "identity",
-            "answer_logs",
         },
         "pending continuation",
     )
@@ -432,20 +411,6 @@ def _pending(value: object) -> PendingLocalChat:
     provider = raw["provider"]
     if not isinstance(provider, str) or provider not in inference_config.PROVIDERS:
         raise ContinuationCodecError("pending provider is malformed")
-    answer_logs: list[tuple[str, tuple[object, ...]]] = []
-    for item in _sequence(raw["answer_logs"], MAX_ANSWER_LOGS, "human answer logs"):
-        entry = _mapping(item, {"interrupt_id", "answers"}, "human answer log")
-        answers = tuple(
-            _json_value(answer)
-            for answer in _sequence(
-                entry["answers"],
-                MAX_ANSWERS_PER_POWER,
-                "human answers",
-            )
-        )
-        answer_logs.append((_interrupt_id(entry["interrupt_id"]), answers))
-    if len({item[0] for item in answer_logs}) != len(answer_logs) or tuple(sorted(answer_logs)) != tuple(answer_logs):
-        raise ContinuationCodecError("human answer logs are malformed")
     identity = _identity(raw["identity"])
     if identity[4].provider != provider:
         raise ContinuationCodecError("pending provider binding is malformed")
@@ -455,7 +420,6 @@ def _pending(value: object) -> PendingLocalChat:
         file_ids=file_ids,
         provider=provider,
         identity=identity,
-        answer_logs=tuple(answer_logs),
     )
 
 
@@ -493,92 +457,6 @@ def _account_requirement(value: object) -> assistant_account_challenges.AccountR
     )
 
 
-def _input_requirement(value: object) -> input_challenges.InputRequirement:
-    raw = _mapping(
-        value,
-        {
-            "interrupt_id",
-            "assistant_id",
-            "power_id",
-            "assistant_image",
-            "ordinal",
-            "request_type",
-            "title",
-            "summary",
-            "docs",
-            "options",
-        },
-        "input requirement",
-    )
-    ordinal = raw["ordinal"]
-    request_type = raw["request_type"]
-    if (
-        type(ordinal) is not int
-        or not 0 <= ordinal <= 63
-        or request_type not in {"str", "int", "float", "bool", "choice", "choices"}
-        or not isinstance(raw["assistant_image"], str)
-        or _IMAGE.fullmatch(raw["assistant_image"]) is None
-    ):
-        raise ContinuationCodecError("input requirement is malformed")
-    options = tuple(str(_text(item, 200, "input option")) for item in _sequence(raw["options"], 64, "input options"))
-    if len(options) != len(set(options)):
-        raise ContinuationCodecError("input options are malformed")
-    if (request_type in {"choice", "choices"}) != bool(options):
-        raise ContinuationCodecError("input options are malformed")
-    return input_challenges.InputRequirement(
-        _interrupt_id(raw["interrupt_id"]),
-        _component_id(raw["assistant_id"], "input Assistant"),
-        _component_id(raw["power_id"], "input Power"),
-        raw["assistant_image"],
-        ordinal,
-        request_type,
-        str(_text(raw["title"], 80, "input title")),
-        str(_text(raw["summary"], 240, "input summary")),
-        _text(raw["docs"], 2048, "input docs", optional=True),
-        options,
-    )
-
-
-def _approval_requirement(value: object) -> approval_challenges.ApprovalRequirement:
-    raw = _mapping(
-        value,
-        {
-            "interrupt_id",
-            "assistant_id",
-            "assistant_name",
-            "power_id",
-            "assistant_image",
-            "ordinal",
-            "title",
-            "summary",
-            "docs",
-            "runs",
-        },
-        "approval requirement",
-    )
-    ordinal = raw["ordinal"]
-    if (
-        type(ordinal) is not int
-        or not 0 <= ordinal <= 63
-        or raw["runs"] not in {"always", "once"}
-        or not isinstance(raw["assistant_image"], str)
-        or _IMAGE.fullmatch(raw["assistant_image"]) is None
-    ):
-        raise ContinuationCodecError("approval requirement is malformed")
-    return approval_challenges.ApprovalRequirement(
-        _interrupt_id(raw["interrupt_id"]),
-        _component_id(raw["assistant_id"], "approval Assistant"),
-        str(_text(raw["assistant_name"], 80, "approval Assistant name")),
-        _component_id(raw["power_id"], "approval Power"),
-        raw["assistant_image"],
-        ordinal,
-        str(_text(raw["title"], 80, "approval title")),
-        str(_text(raw["summary"], 240, "approval summary")),
-        _text(raw["docs"], 2048, "approval docs", optional=True),
-        raw["runs"],
-    )
-
-
 def decode(
     stored: local_chat_continuation_store.StoredContinuation,
 ) -> DecodedContinuation:
@@ -588,15 +466,11 @@ def decode(
     body = _decode_payload(stored.payload)
     if body["schema"] != SCHEMA_VERSION or body["kind"] != stored.kind:
         raise ContinuationCodecError("stored continuation contract changed")
-    constructors = {
-        "accounts": _account_requirement,
-        "input": _input_requirement,
-        "approval": _approval_requirement,
-    }
-    constructor = constructors.get(stored.kind)
-    if constructor is None:
+    if stored.kind != "accounts":
         raise ContinuationCodecError("stored continuation kind is malformed")
-    requirements = tuple(constructor(item) for item in _sequence(body["requirements"], 64, "continuation requirements"))
+    requirements = tuple(
+        _account_requirement(item) for item in _sequence(body["requirements"], 64, "continuation requirements")
+    )
     if not requirements:
         raise ContinuationCodecError("continuation requirements are malformed")
     pending = _pending(body["pending"])

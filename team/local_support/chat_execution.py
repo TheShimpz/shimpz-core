@@ -9,7 +9,6 @@ import chat_orchestrator
 import chat_turn_engine
 import inference_config
 import oauth_account_store
-import power_execution
 import power_journal
 from local_registry import validate_power_input
 
@@ -24,7 +23,6 @@ def _invoke_chat_power(
     token: str,
     power_request: brain_runtime_client.PowerRequest,
     frozen_container_id: str,
-    answers: tuple[object, ...] = (),
 ) -> object:
     assistant_id = power_request.assistant_id
     with self._lock(team_id):
@@ -47,12 +45,11 @@ def _invoke_chat_power(
                 raise chat_orchestrator.ChatStoppedError("chat turn stopped")
             self._active_power_containers[team_id] = (token, container)
     try:
-        invocation = (
-            self.assistant_lifecycle.invoke(
-                team_id, assistant_id, power_request.power, power_request.input, answers=answers
-            )
-            if answers
-            else self.assistant_lifecycle.invoke(team_id, assistant_id, power_request.power, power_request.input)
+        invocation = self.assistant_lifecycle.invoke(
+            team_id,
+            assistant_id,
+            power_request.power,
+            power_request.input,
         )
     except ApiProblem:
         if self._chat_cancelled(token):
@@ -65,8 +62,6 @@ def _invoke_chat_power(
                 self._active_power_containers.pop(team_id, None)
     if self._chat_cancelled(token):
         raise chat_orchestrator.ChatStoppedError("chat turn stopped")
-    if "suspend" in invocation:
-        return power_execution.RpcSuspension(invocation["suspend"])
     return invocation["result"]
 
 

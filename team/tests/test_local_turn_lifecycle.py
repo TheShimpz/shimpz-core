@@ -13,8 +13,6 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 import brain_runtime_client
 import local_app
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import input_challenges as assistant_input_challenges
 from local_controller_harness import LocalContractCase
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}
@@ -38,10 +36,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
-        controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         controller.assistant_accounts = SimpleNamespace(
             delete_team=lambda team_id: events.append(("accounts-delete", team_id))
         )
@@ -137,8 +132,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.approval_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-approvals"))
-        controller.input_challenges = SimpleNamespace(cancel_all=lambda: events.append("cancel-inputs"))
         controller.chat_continuations = SimpleNamespace(clear=lambda: 0)
         controller._locks = (threading.RLock(),)
         controller.registry = {"shimpz-cloudflare": SimpleNamespace()}
@@ -159,7 +152,6 @@ class LocalTurnLifecycleTests(LocalContractCase):
             ("validate-network", team_id)
         )
         controller.chat_turn_service._delete_all_account_state = lambda: events.append("delete-accounts")
-        controller.chat_turn_service._revoke_all_approval_grants = lambda: events.append("revoke-approvals")
         controller.assistant_lifecycle._remove_egress_policy = lambda team_id, assistant_id: events.append(
             ("remove-policy", team_id, assistant_id)
         )
@@ -177,10 +169,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[str] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
-        controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,
@@ -224,10 +213,7 @@ class LocalTurnLifecycleTests(LocalContractCase):
         events: list[object] = []
         controller = object.__new__(local_app.LocalController)
         controller.space_id = "local-space"
-        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
-        controller.approval_grants = SimpleNamespace(revoke_team=lambda _team_id: 0)
         lock = threading.Lock()
         network = SimpleNamespace(
             id="a" * 64,

@@ -69,14 +69,13 @@ class _HostedAssistantBinding:
 
 @dataclass(frozen=True, slots=True)
 class _PendingHostedChat:
-    """Secret-free, process-local state for one paused hosted Team turn."""
+    """Process-local state for one account-gated hosted Team turn."""
 
     continuation: chat_orchestrator.ChatContinuation
     assistant_ids: tuple[str, ...]
     file_ids: tuple[str, ...]
     owner: str
     identity: tuple[object, ...]
-    answer_logs: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
 
 def _hosted_account_spec(active: _ActiveAssistant) -> _HostedAssistantSpec:
@@ -488,7 +487,6 @@ class PowerInvocationRequest:
     container: object
     power: object
     payload: object
-    answers: tuple[object, ...] = ()
     inspect_memo: dict[str, dict[str, dict]] | None = None
 
 
@@ -498,7 +496,6 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
     contract = request.contract
     container = request.container
     power = request.power
-    answers = request.answers
     if (
         not isinstance(power, str)
         or assistant_chat.POWER_ID_RE.fullmatch(power) is None
@@ -551,7 +548,6 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
         projected = power_execution.project_rpc_result(
             raw_result,
             account_values,
-            answers,
             lambda value: marketplace.validate_power_output(assistant_id, power, value),
         )
     except power_execution.RpcSecretExposureError:
@@ -574,16 +570,6 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
             reason="invalid-output",
         )
         raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "Assistant Power returned an invalid result") from exc
-    if projected.suspended:
-        audit.log(
-            "assistant_power",
-            team_id,
-            result="ok",
-            phase="suspended",
-            assistant=assistant_id,
-            power=power,
-        )
-        return {"assistant": assistant_id, "power": power, "suspend": projected.value}
     audit.log(
         "assistant_power",
         team_id,
@@ -592,7 +578,7 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
         assistant=assistant_id,
         power=power,
     )
-    return {"assistant": assistant_id, "power": power, "result": projected.value}
+    return {"assistant": assistant_id, "power": power, "result": projected}
 
 
 def _validate_assistant_power_input(bindings, assistant_id: str, power: str, power_input) -> object:

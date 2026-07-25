@@ -390,7 +390,6 @@ class HostedChatLifecycleTests(unittest.TestCase):
             )
 
         def invoke(request):
-            self.assertEqual(request.answers, ())
             invoked.append((request.assistant_id, request.power, request.payload))
             return {"result": {"ok": True}}
 

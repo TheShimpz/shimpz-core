@@ -11,7 +11,6 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 import local_app
-from assistant_human import approval_grants as assistant_approval_grants
 from local_controller_harness import LocalContractCase
 from local_support.egress import APP_EGRESS_PROXY_ALIAS
 
@@ -255,38 +254,6 @@ class LocalLifecycleTests(LocalContractCase):
 
                 self.assertEqual(caught.exception.code, "assistant-isolation-drift")
                 self.assertEqual(events, ["reload"])
-
-    def test_unready_same_release_recovery_preserves_once_approval(self) -> None:
-        controller, container, _events = self._lifecycle_controller()
-        spec = controller.registry["shimpz-cloudflare"]
-        controller.approval_grants.grant_many(
-            (
-                assistant_approval_grants.Grant(
-                    "team_1",
-                    "shimpz-cloudflare",
-                    "list-zones",
-                    CURRENT_ASSISTANT_IMAGE,
-                    0,
-                ),
-            )
-        )
-        controller.assistant_lifecycle._trusted_image = lambda _spec: object()
-        controller.assistant_lifecycle._validate_container = lambda *_args: None
-        controller.assistant_lifecycle._create_assistant_container = lambda *_args: None
-
-        controller.assistant_lifecycle._replace_unready_assistant(
-            "team_1", spec, SimpleNamespace(name="team-network"), container
-        )
-
-        self.assertTrue(
-            controller.approval_grants.is_granted(
-                "team_1",
-                "shimpz-cloudflare",
-                "list-zones",
-                CURRENT_ASSISTANT_IMAGE,
-                0,
-            )
-        )
 
     def test_new_assistant_is_admitted_before_egress_and_start(self) -> None:
         events: list[object] = []

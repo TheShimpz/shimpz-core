@@ -22,7 +22,6 @@ import inference_config
 import local_app
 import local_registry
 import marketplace
-import power_execution
 from local_support import chat_segment as local_chat_segment
 from local_support.chat_segment import SegmentRequest
 from local_support.chat_types import ActiveAssistant
@@ -84,20 +83,6 @@ class _Batch:
         raise AssertionError("a suspended batch must not be delivered")
 
 
-class _InteractionBatch:
-    @staticmethod
-    def prepare(_requests) -> None:
-        return None
-
-    @staticmethod
-    def invoke(_request):
-        return power_execution.RpcSuspension({"ordinal": 0, "kind": "request", "request_type": "str"})
-
-    @staticmethod
-    def delivered(_requests) -> None:
-        raise AssertionError("an interactive batch must not be delivered")
-
-
 def _local_controller(local_active, config, events: list[str], fail):
     controller = object.__new__(local_app.LocalController)
     controller.space_id = "local-space"
@@ -109,7 +94,6 @@ def _local_controller(local_active, config, events: list[str], fail):
         metadata_connection=lambda _team_id, _files: contextlib.nullcontext(None),
     )
     controller.inference_store = SimpleNamespace(load=lambda _team_id: config)
-    controller.approval_grants = SimpleNamespace()
     controller._wire_collaborators()
     controller.assistant_lifecycle._network = lambda _team_id: SimpleNamespace(id="a" * 64, name="team-network")
     controller.assistant_lifecycle._validate_network = lambda _network, _team_id, **_kwargs: "Team"
@@ -190,61 +174,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
         self.assertEqual(hosted[3].accounts, local[3].accounts)
         self.assertEqual(decisions, {"hosted": ["accounts"], "local": ["accounts"]})
 
-    def test_human_input_is_one_distinct_suspension_category(self) -> None:
-        requirements = chat_turn_engine.SegmentRequirements(inputs=("input-required",))
-
-        self.assertEqual(
-            requirements.groups(),
-            ((), ("input-required",), ()),
-        )
-        self.assertEqual(
-            chat_turn_engine.suspension_gate_count(*requirements.groups()),
-            1,
-        )
-
-        suspension = chat_orchestrator.ChatSuspension(
-            continuation=SimpleNamespace(),
-            requests=(),
-        )
-        dispatched = chat_turn_engine.dispatch(
-            suspension,
-            requirements.groups(),
-            lambda _outcome: "pending",
-            (
-                lambda *_args: "accounts",
-                lambda *_args: "inputs",
-                lambda *_args: "approvals",
-            ),
-            lambda _outcome: "complete",
-        )
-        self.assertEqual(dispatched, "inputs")
-
-    def test_segment_with_two_populated_gates_fails_closed(self) -> None:
-        base = self._strategy(decisions=[])
-
-        def conflicting_requirements(_requests, requirements) -> bool:
-            requirements.accounts = ("account-required",)
-            requirements.inputs = ("input-required",)
-            return True
-
-        strategy = chat_turn_engine.SegmentStrategy(
-            runtime=base.runtime,
-            prepare=base.prepare,
-            validate_power=base.validate_power,
-            pause_for_private_inputs=conflicting_requirements,
-            cancelled=base.cancelled,
-            validate_context=base.validate_context,
-            raise_problem=base.raise_problem,
-        )
-
-        with self.assertRaisesRegex(AssertionError, "invalid-suspension"):
-            chat_turn_engine.run_segment(
-                strategy,
-                message="look this up",
-                continuation=None,
-                expected_identity=("identity",),
-            )
-
     def test_matching_suspension_commits_without_rollback(self) -> None:
         decisions: list[str] = []
 
@@ -277,35 +206,6 @@ class SharedChatTurnEngineTest(unittest.TestCase):
 
         assert_rollback("stale", True, ["cancel", "cleanup"])
         assert_rollback("continuation", False, ["commit", "cancel", "cleanup"])
-
-    def test_rpc_request_suspension_populates_the_input_category(self) -> None:
-        strategy = self._strategy(decisions=[])
-        strategy = chat_turn_engine.SegmentStrategy(
-            runtime=strategy.runtime,
-            prepare=lambda: chat_turn_engine.PreparedSegment(
-                "Team",
-                ("identity",),
-                _context(),
-                [],
-                _InteractionBatch(),
-            ),
-            validate_power=strategy.validate_power,
-            pause_for_private_inputs=lambda _requests, _requirements: False,
-            cancelled=strategy.cancelled,
-            validate_context=strategy.validate_context,
-            raise_problem=strategy.raise_problem,
-        )
-
-        _, _, outcome, requirements = chat_turn_engine.run_segment(
-            strategy,
-            message="ask",
-            continuation=None,
-            expected_identity=("identity",),
-        )
-
-        self.assertIsInstance(outcome, chat_orchestrator.ChatSuspension)
-        self.assertEqual(requirements.inputs, (outcome.interaction,))
-        self.assertEqual(requirements.approvals, ())
 
     def test_hosted_context_validation_reuses_the_prepared_inventory(self) -> None:
         anchor = SimpleNamespace(id="a" * 64, labels={"team.name": "Team"})

@@ -27,18 +27,6 @@ class ControllerRoutingTests(unittest.TestCase):
                 "assistant-account-authorize",
                 {"team_id": "team_1", "challenge_id": "challenge-1"},
             ),
-            (
-                "GET",
-                "/v1/teams/team_1/chat/approval",
-                "chat-approval-pending",
-                {"team_id": "team_1"},
-            ),
-            (
-                "POST",
-                "/v1/teams/team_1/chat/input",
-                "chat-input-submit",
-                {"team_id": "team_1"},
-            ),
         )
         for method, path, operation, params in common:
             with self.subTest(method=method, path=path):

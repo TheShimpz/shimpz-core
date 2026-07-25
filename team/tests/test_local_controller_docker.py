@@ -76,7 +76,6 @@ class _DockerFlow:
     storage_volume: str
     inference_volume: str
     power_journal_volume: str
-    approval_state_volume: str
     continuation_state_volume: str
     continuation_key_volume: str
     egress_policy_volume: str
@@ -137,7 +136,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             storage_volume=f"shimpz-local-storage-{unique}",
             inference_volume=f"shimpz-local-inference-{unique}",
             power_journal_volume=f"shimpz-local-power-journal-{unique}",
-            approval_state_volume=f"shimpz-local-approval-state-{unique}",
             continuation_state_volume=f"shimpz-local-continuation-state-{unique}",
             continuation_key_volume=f"shimpz-local-continuation-key-{unique}",
             egress_policy_volume=f"shimpz-local-egress-policy-{unique}",
@@ -324,7 +322,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
         self._run("volume", "create", flow.storage_volume)
         self._run("volume", "create", flow.inference_volume)
         self._run("volume", "create", flow.power_journal_volume)
-        self._run("volume", "create", flow.approval_state_volume)
         self._run("volume", "create", flow.continuation_state_volume)
         self._run("volume", "create", flow.continuation_key_volume)
         self._run("volume", "create", flow.egress_policy_volume)
@@ -417,8 +414,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             "--volume",
             f"{flow.power_journal_volume}:/var/lib/shimpz-local/power-journal",
             "--volume",
-            f"{flow.approval_state_volume}:/var/lib/shimpz-local/assistant-approvals",
-            "--volume",
             f"{flow.continuation_state_volume}:/var/lib/shimpz-local/chat-continuations/state",
             "--volume",
             f"{flow.continuation_key_volume}:/var/lib/shimpz-local/chat-continuations/key",
@@ -446,15 +441,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             "print(oct(stat.S_IMODE(s.st_mode)),s.st_uid,s.st_gid,s.st_nlink)",
         ).stdout.strip()
         self.assertEqual(journal_mode, "0o600 10001 10001 1")
-        approval_mode = self._run(
-            "exec",
-            flow.controller,
-            "/opt/venv/bin/python",
-            "-c",
-            "import os,stat; s=os.stat('/var/lib/shimpz-local/assistant-approvals/grants.sqlite3'); "
-            "print(oct(stat.S_IMODE(s.st_mode)),s.st_uid,s.st_gid,s.st_nlink)",
-        ).stdout.strip()
-        self.assertEqual(approval_mode, "0o600 10001 10001 1")
         continuation_files = self._run(
             "exec",
             flow.controller,
@@ -462,7 +448,7 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             "-c",
             "import os,stat,time; from local_chat_continuation_store import EncryptedContinuationStore; "
             "s=EncryptedContinuationStore(); "
-            "s.put('demo_team','input','0'*32,int(time.time())+60,['thread:test'],b'opaque'); "
+            "s.put('demo_team','accounts','0'*32,int(time.time())+60,['thread:test'],b'opaque'); "
             "assert s.delete('demo_team'); "
             "paths=(s.state_path,s.key_path); "
             "print(' '.join(f'{oct(stat.S_IMODE(p.stat().st_mode))}:{p.stat().st_uid}:{p.stat().st_gid}' "
@@ -915,7 +901,6 @@ class DockerFlowTests(DockerHarnessMixin, unittest.TestCase):
             flow.storage_volume,
             flow.inference_volume,
             flow.power_journal_volume,
-            flow.approval_state_volume,
             flow.continuation_state_volume,
             flow.continuation_key_volume,
             flow.egress_policy_volume,

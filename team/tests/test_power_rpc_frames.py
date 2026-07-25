@@ -137,31 +137,20 @@ class PowerRpcFrameTests(unittest.TestCase):
         projected = power_execution.project_rpc_result(
             {"ok": True},
             {"cloud": {"access_token": "private"}},
-            (),
             lambda value: value,
         )
-        self.assertEqual(projected, power_execution.RpcInvocationResult({"ok": True}, False))
-
-        suspended = power_execution.project_rpc_result(
-            power_execution.RpcSuspension({"kind": "request"}),
-            {},
-            (),
-            lambda _value: self.fail("suspension reached output validation"),
-        )
-        self.assertEqual(suspended, power_execution.RpcInvocationResult({"kind": "request"}, True))
+        self.assertEqual(projected, {"ok": True})
 
         with self.assertRaises(power_execution.RpcSecretExposureError):
             power_execution.project_rpc_result(
                 {"echo": "private"},
                 {"cloud": {"access_token": "private"}},
-                (),
                 lambda value: value,
             )
         with self.assertRaises(power_execution.RpcInvalidResultError):
             power_execution.project_rpc_result(
                 {"invalid": True},
                 {},
-                (),
                 lambda _value: (_ for _ in ()).throw(ValueError("invalid")),
             )
 
@@ -236,38 +225,6 @@ class PowerRpcFrameTests(unittest.TestCase):
                     ):
                         batch.invoke(request)
         execute.assert_not_called()
-
-    def test_power_batch_replays_an_explicit_rpc_suspension(self) -> None:
-        request = brain_runtime_client.PowerRequest(
-            "interrupt-1",
-            "assistant",
-            "lookup",
-            {"query": "safe"},
-        )
-        suspension = power_execution.RpcSuspension({"ordinal": 0, "kind": "request"})
-        execute = mock.Mock(side_effect=(suspension, {"ok": True}))
-        binding = SimpleNamespace(container=SimpleNamespace(id="container-1"), image="image@sha256:" + "a" * 64)
-
-        with tempfile.TemporaryDirectory() as directory:
-            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
-            self.addCleanup(journal.close)
-            batch = power_execution.PowerBatch(
-                journal,
-                "generation-1",
-                "thread-1",
-                {"assistant": binding},
-                power_execution.PowerBatchStrategy(
-                    lambda item: (item.container.id, item.image),
-                    execute,
-                    lambda _request: None,
-                ),
-            )
-            batch.prepare((request,))
-
-            self.assertIs(batch.invoke(request), suspension)
-            self.assertEqual(batch.invoke(request), {"ok": True})
-
-        self.assertEqual(execute.call_count, 2)
 
     def test_power_resolution_failures_have_identical_statuses(self) -> None:
         local_spec = SimpleNamespace(assistant_id="assistant", name="Assistant", powers={}, accounts={})

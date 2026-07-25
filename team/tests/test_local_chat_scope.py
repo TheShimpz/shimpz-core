@@ -163,26 +163,6 @@ class LocalChatScopeTests(LocalContractCase):
         self.assertGreaterEqual(len(metadata_connections), 2)
         self.assertTrue(all(current is connection for current in metadata_connections))
 
-    def test_power_output_containing_a_human_answer_is_blocked_and_redacted(self) -> None:
-        answer = "human-submitted-private-value"
-        with tempfile.TemporaryDirectory() as directory:
-            controller = self._chat_controller(directory, object())
-            controller.assistant_lifecycle._rpc = lambda *_args: {"echo": answer}
-            with (
-                mock.patch.object(local_app.local_audit, "record", return_value="trace"),
-                self.assertRaises(local_app.ApiProblem) as leaked,
-            ):
-                controller.invoke(
-                    "team_1",
-                    "shimpz-cloudflare",
-                    "list-zones",
-                    LOOKUP_INPUT,
-                    answers=(answer,),
-                )
-
-        self.assertEqual(leaked.exception.code, "assistant-secret-exposure")
-        self.assertNotIn(answer, str(leaked.exception))
-
     def test_chat_exposes_every_active_assistant_to_the_team_brain(self) -> None:
         class Runtime:
             context = None

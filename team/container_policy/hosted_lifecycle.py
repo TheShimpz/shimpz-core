@@ -180,7 +180,7 @@ def _teardown_assistant_accounts(team_id: str) -> bool:
         runtime_state._assistant_accounts.delete_team(team_id)
     except oauth_account_store.OAuthAccountStoreError:
         return False
-    return runtime_state._teardown_team_approval_grants(team_id)
+    return True
 
 
 def _drop_teardown_database(team_id: str, record: cleanup_state.Record) -> cleanup_state.Record | None:

@@ -15,20 +15,8 @@ MAX_CHAT_MESSAGE_CHARS = 16_000
 
 def _pending_chat_continuation(self, team_id: str) -> dict[str, object] | None:
     existing_account = self.account_challenges.current(team_id)
-    existing_input = self.input_challenges.current(team_id)
-    existing_approval = self.approval_challenges.current(team_id)
-    if sum(item is not None for item in (existing_account, existing_input, existing_approval)) > 1:
-        raise ApiProblem(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            "Team chat continuation state is unavailable",
-            code="chat-state-unavailable",
-        )
     if existing_account is not None:
         return self._account_response(existing_account)
-    if existing_input is not None:
-        return self._input_response(existing_input)
-    if existing_approval is not None:
-        return self._approval_response(existing_approval)
     return None
 
 
@@ -48,7 +36,6 @@ def _segment_response(
             file_ids=file_ids,
             provider=provider,
             identity=segment.identity,
-            answer_logs=segment.answer_logs,
         )
 
     def complete(terminal: chat_orchestrator.ChatOutcome) -> dict[str, object]:
@@ -64,12 +51,6 @@ def _segment_response(
             pending,
             (
                 lambda suspension, requirements, state: self._pause_account(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: self._pause_input(
-                    team_id, token, suspension, requirements, state
-                ),
-                lambda suspension, requirements, state: self._pause_approval(
                     team_id, token, suspension, requirements, state
                 ),
             ),
@@ -205,7 +186,6 @@ def resume_chat_accounts(
                 token=token,
                 continuation=pending.continuation,
                 expected_identity=pending.identity,
-                answer_logs=pending.answer_logs,
             )
         )
         return self._segment_response(

@@ -319,7 +319,6 @@ class ControllerRouteMatch:
             ("file-", "file"),
             ("inference-", "inference"),
             ("chat-", "chat"),
-            ("assistant-approval-", "assistant-approval"),
             ("assistant-account-", "assistant-account"),
         ):
             if self.operation.startswith(prefix):
@@ -389,22 +388,6 @@ CONTROLLER_ROUTES = (
         "assistant-invoke",
         _LOCAL_CONTROLLER_ONLY,
     ),
-    _controller_route(
-        "GET",
-        "/v1/teams/:team_id/assistant-approvals",
-        "assistant-approval-list",
-        _LOCAL_CONTROLLER_ONLY,
-    ),
-    _controller_route(
-        "DELETE",
-        "/v1/teams/:team_id/assistant-approvals",
-        "assistant-approval-revoke",
-        _LOCAL_CONTROLLER_ONLY,
-    ),
-    _controller_route("GET", "/v1/teams/:team_id/chat/approval", "chat-approval-pending"),
-    _controller_route("POST", "/v1/teams/:team_id/chat/approval", "chat-approval-submit"),
-    _controller_route("GET", "/v1/teams/:team_id/chat/input", "chat-input-pending"),
-    _controller_route("POST", "/v1/teams/:team_id/chat/input", "chat-input-submit"),
 )
 
 

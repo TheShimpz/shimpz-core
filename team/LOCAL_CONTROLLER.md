@@ -84,27 +84,21 @@ into Admin, Brain runtime, or Assistants. Quota reservation and SQLite page limi
 | `POST` | `/v1/teams/{team_id}/chat` | start one bounded Brain turn |
 | `GET` | `/v1/teams/{team_id}/chat/accounts` | inspect the pending account gate |
 | `POST` | `/v1/teams/{team_id}/chat/accounts` | resume after the exact account challenge completes |
-| `GET` | `/v1/teams/{team_id}/chat/secrets` | inspect the pending secret gate |
-| `POST` | `/v1/teams/{team_id}/chat/secrets` | submit values for the exact pending secret challenge |
-| `GET` | `/v1/teams/{team_id}/chat/approval` | inspect the pending approval gate |
-| `POST` | `/v1/teams/{team_id}/chat/approval` | approve the exact pending Power challenge |
 | `POST` | `/v1/teams/{team_id}/chat/stop` | cancel active or challenge-paused work |
 
 Chat accepts only `message`, opaque file IDs, and selected installed Assistant IDs. A Team has at most
 one active/paused turn. Selection and workload identity are revalidated before provider start, each
-Power, resume, and completion. Brain runtime returns either a terminal reply or a bounded secret,
-account, or approval suspension; the controller alone executes Powers and resumes the checkpoint.
+Power, resume, and completion. Only a missing OAuth Account can pause a turn; the controller alone
+executes Powers and resumes the checkpoint.
 
 The former 1.2–1.6k twin-Controller LOC reduction target is intentionally dropped: security-sensitive
 decisions are now shared, while extracting the remaining runtime-preparation wiring would add more
 abstraction and total code without improving either Controller's safety contract.
 
-### Assistant approval and account administration
+### Assistant account administration
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/teams/{team_id}/assistant-approvals` | list remembered Assistant/Power grants |
-| `DELETE` | `/v1/teams/{team_id}/assistant-approvals` | revoke every remembered grant for the Team |
 | `GET` | `/v1/teams/{team_id}/assistant-accounts` | list redacted connected-account state |
 | `POST` | `/v1/teams/{team_id}/assistant-accounts/challenges/{challenge_id}/authorize` | start bounded OAuth authorization |
 | `DELETE` | `/v1/teams/{team_id}/assistant-accounts/{assistant_id}/{account_id}` | disconnect and delete one credential |

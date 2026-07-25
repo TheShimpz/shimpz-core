@@ -13,7 +13,6 @@ import chat_orchestrator
 import inference_config
 import local_chat_continuation_store
 import local_chat_continuations
-from assistant_human import approval_challenges, input_challenges
 
 IMAGE = "registry.example/assistant@sha256:" + "b" * 64
 TURN = brain_runtime_client.RuntimeTurn(
@@ -55,7 +54,6 @@ def pending() -> local_chat_continuations.PendingLocalChat:
             ],
             inference_config.normalize("openai", "gpt-5.5"),
         ),
-        answer_logs=(("power-1", ("private human answer", True)),),
     )
 
 
@@ -76,72 +74,34 @@ class LocalChatContinuationCodecTests(unittest.TestCase):
         self.assertEqual(decoded.requirements, requirements)
         self.assertEqual(decoded.pending, pending())
 
-    def test_round_trips_every_local_suspension_kind(self) -> None:
-        cases = {
-            "accounts": (
-                assistant_account_challenges.AccountRequirement(
-                    "demo-assistant",
-                    "Demo Assistant",
-                    ("publish",),
-                    (("cloudflare", "cloudflare", ("dns.read", "zone.read")),),
-                ),
+    def test_round_trips_the_account_suspension(self) -> None:
+        requirements = (
+            assistant_account_challenges.AccountRequirement(
+                "demo-assistant",
+                "Demo Assistant",
+                ("publish",),
+                (("cloudflare", "cloudflare", ("dns.read", "zone.read")),),
             ),
-            "input": (
-                input_challenges.InputRequirement(
-                    "power-1",
-                    "demo-assistant",
-                    "publish",
-                    IMAGE,
-                    2,
-                    "choice",
-                    "Audience",
-                    "Choose the publication audience.",
-                    "https://docs.example/audience",
-                    ("private", "public"),
-                ),
-            ),
-            "approval": (
-                approval_challenges.ApprovalRequirement(
-                    "power-1",
-                    "demo-assistant",
-                    "Demo Assistant",
-                    "publish",
-                    IMAGE,
-                    2,
-                    "Publish update",
-                    "Publish this update now?",
-                    None,
-                    "once",
-                ),
-            ),
-        }
-        for kind, requirements in cases.items():
-            with self.subTest(kind=kind):
-                self._round_trip(kind, requirements)
+        )
+        self._round_trip("accounts", requirements)
 
     def test_rejects_release_binding_and_decrypted_shape_drift(self) -> None:
         requirement = (
-            input_challenges.InputRequirement(
-                "power-1",
+            assistant_account_challenges.AccountRequirement(
                 "demo-assistant",
-                "publish",
-                IMAGE,
-                2,
-                "str",
-                "Message",
-                "Enter the message.",
-                None,
-                (),
+                "Demo Assistant",
+                ("publish",),
+                (("cloudflare", "cloudflare", ("dns.read", "zone.read")),),
             ),
         )
-        bindings, payload = local_chat_continuations.encode("input", requirement, pending())
+        bindings, payload = local_chat_continuations.encode("accounts", requirement, pending())
         drifted = local_chat_continuation_store.StoredContinuation(
             "team_1",
-            "input",
+            "accounts",
             "c" * 32,
             1_300,
             1,
-            ("demo-assistant/publish/" + IMAGE + "/3",),
+            ("demo-assistant/publish/" + IMAGE + "/changed",),
             payload,
         )
         with self.assertRaisesRegex(
@@ -152,12 +112,12 @@ class LocalChatContinuationCodecTests(unittest.TestCase):
 
         malformed = local_chat_continuation_store.StoredContinuation(
             "team_1",
-            "input",
+            "accounts",
             "c" * 32,
             1_300,
             1,
             bindings,
-            b'{"schema":1,"kind":"input","requirements":[],"pending":{}}',
+            b'{"schema":1,"kind":"accounts","requirements":[],"pending":{}}',
         )
         with self.assertRaises(local_chat_continuations.ContinuationCodecError):
             local_chat_continuations.decode(malformed)

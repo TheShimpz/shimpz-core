@@ -273,7 +273,6 @@ class LocalContractTests(LocalContractCase):
     def test_local_controller_accepts_an_injected_power_journal(self) -> None:
         image = "127.0.0.1:5000/shimpz/shimpz-cloudflare@sha256:" + "a" * 64
         injected = SimpleNamespace()
-        approval_grants = SimpleNamespace()
         client = SimpleNamespace(
             info=lambda: {"SecurityOptions": ["name=seccomp"], "NCPU": 2},
             networks=SimpleNamespace(list=lambda **_kwargs: []),
@@ -287,12 +286,10 @@ class LocalContractTests(LocalContractCase):
             local_app.LocalControllerDependencies(
                 brain_runtime=SimpleNamespace(),
                 power_state=injected,
-                approval_grants=approval_grants,
             ),
         )
 
         self.assertIs(controller.power_state, injected)
-        self.assertIs(controller.approval_grants, approval_grants)
         self.assertIsInstance(controller.assistant_lifecycle, local_app.AssistantLifecycle)
         self.assertIsInstance(controller.chat_turn_service, local_app.ChatTurnService)
         self.assertEqual(local_app.LocalController.__bases__, (object,))
@@ -323,7 +320,6 @@ class LocalContractTests(LocalContractCase):
             local_app.local_chat_resume,
             local_app.local_chat_segment,
             local_app.local_chat_state,
-            local_app.local_chat_submission,
             local_app.local_egress,
             local_app.local_team_lifecycle,
         ):

@@ -214,7 +214,6 @@ def _replace_outdated_assistant(self, team_id: str, spec: AssistantSpec, network
             "Docker could not replace the Assistant",
             code="docker-remove-failed",
         ) from exc
-    self.chat_turn_service._revoke_assistant_approval_grants(team_id, spec.assistant_id)
     if spec.allowed_hosts:
         self._release_assistant_egress(
             team_id,
@@ -258,7 +257,6 @@ def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object
             return {"assistant": assistant_id, "installed": False}
 
         image = self._trusted_image(spec)
-        self.chat_turn_service._revoke_assistant_approval_grants(team_id, spec.assistant_id)
         self._create_assistant_container(team_id, spec, network, image)
         return {"assistant": assistant_id, "installed": True}
 
@@ -266,12 +264,9 @@ def install_assistant(self, team_id: str, assistant_id: str) -> dict[str, object
 @_serialize_against_local_team_chat
 def uninstall_assistant(self, team_id: str, assistant_id: str) -> dict[str, object]:
     spec = self._resolve(assistant_id)
-    self.approval_challenges.cancel_team(team_id)
-    self.input_challenges.cancel_team(team_id)
     self.chat_turn_service._delete_chat_continuation(team_id)
     with self._lock(team_id):
         network = self._network(team_id)
-        self.chat_turn_service._revoke_assistant_approval_grants(team_id, assistant_id)
         container = self._assistant_container(team_id, assistant_id, required=False)
         if container is None:
             if self._egress_token(team_id, assistant_id, create=False) is not None:

@@ -22,10 +22,10 @@ class EncryptedContinuationStoreTests(unittest.TestCase):
             root / "continuations" / "key" / "aes256.key",
         )
 
-    def test_round_trip_survives_reopen_without_plaintext_answers(self) -> None:
+    def test_round_trip_survives_reopen_without_plaintext_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path, key_path = self._paths(directory)
-            payload = b'{"answers":["private human answer"],"turn":"paused"}'
+            payload = b'{"account":"private account state","turn":"paused"}'
             store = local_chat_continuation_store.EncryptedContinuationStore(
                 state_path,
                 key_path,
@@ -33,7 +33,7 @@ class EncryptedContinuationStoreTests(unittest.TestCase):
             )
             saved = store.put(
                 "team_1",
-                "input",
+                "accounts",
                 "a" * 32,
                 1_300,
                 ("assistant/power/image@sha256:" + "b" * 64 + "/0",),
@@ -46,7 +46,7 @@ class EncryptedContinuationStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(reopened.current("team_1"), saved)
-            self.assertNotIn(b"private human answer", state_path.read_bytes())
+            self.assertNotIn(b"private account state", state_path.read_bytes())
             self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(state_path.parent.stat().st_mode), 0o700)
@@ -62,19 +62,19 @@ class EncryptedContinuationStoreTests(unittest.TestCase):
             )
             first = store.put(
                 "team_1",
-                "approval",
+                "accounts",
                 "b" * 32,
                 2_300,
                 ("assistant/power/release/0",),
-                b'{"answer":true}',
+                b'{"account":"connected"}',
             )
             second = store.put(
                 "team_1",
-                "approval",
+                "accounts",
                 "c" * 32,
                 2_300,
                 ("assistant/power/release/1",),
-                b'{"answer":true}',
+                b'{"account":"connected"}',
             )
             self.assertEqual((first.generation, second.generation), (1, 2))
 
@@ -102,7 +102,7 @@ class EncryptedContinuationStoreTests(unittest.TestCase):
             )
             store.put(
                 "team_1",
-                "secrets",
+                "accounts",
                 "e" * 32,
                 3_001,
                 ("assistant/power/release/0",),

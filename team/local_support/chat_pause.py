@@ -6,9 +6,6 @@ import assistant_account_challenges
 import assistant_account_flow
 import chat_orchestrator
 import chat_turn_engine
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import input_challenges as assistant_input_challenges
-from assistant_human import input_flow as assistant_input_flow
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat
@@ -75,72 +72,3 @@ def _pause_account(
         raise
     self._commit_suspension(team_id, token, outcome, payload, self.account_challenges, challenge.id)
     return self._account_response(challenge)
-
-
-def _pause_approval(
-    self,
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[assistant_approval_challenges.ApprovalRequirement, ...],
-    payload: _PendingLocalChat,
-) -> dict[str, object]:
-    try:
-        challenge = self.approval_challenges.create(team_id, requirements, payload)
-    except assistant_approval_challenges.ApprovalChallengeError as exc:
-        raise ApiProblem(
-            HTTPStatus.CONFLICT,
-            "Assistant approval is already pending",
-            code="assistant-approval-challenge-conflict",
-        ) from exc
-    try:
-        self._persist_chat_continuation("approval", challenge, requirements, payload)
-    except ApiProblem:
-        self.approval_challenges.cancel_team(team_id)
-        raise
-    self._commit_suspension(team_id, token, outcome, payload, self.approval_challenges, challenge.id)
-    return self._approval_response(challenge)
-
-
-def _input_response(
-    challenge: assistant_input_challenges.PendingInputChallenge,
-) -> dict[str, object]:
-    return assistant_input_flow.challenge_payload(challenge)
-
-
-def _pause_input(
-    self,
-    team_id: str,
-    token: str,
-    outcome: chat_orchestrator.ChatSuspension,
-    requirements: tuple[chat_orchestrator.HumanInteraction, ...],
-    payload: _PendingLocalChat,
-) -> dict[str, object]:
-    if len(requirements) != 1:
-        raise ApiProblem(
-            HTTPStatus.INTERNAL_SERVER_ERROR,
-            "invalid human input suspension",
-            code="internal-error",
-        )
-    interaction = requirements[0]
-    answers = dict(payload.answer_logs).get(interaction.request.interrupt_id, ())
-    try:
-        spec = self.assistant_lifecycle._resolve(interaction.request.assistant_id)
-        requirement = assistant_input_flow.requirement(interaction, spec.image, len(answers))
-        challenge = self.input_challenges.create(team_id, requirement, payload)
-    except (
-        assistant_input_challenges.InputChallengeError,
-        assistant_input_flow.InputFlowError,
-    ) as exc:
-        raise ApiProblem(
-            HTTPStatus.BAD_GATEWAY,
-            "Assistant human input request is invalid",
-            code="invalid-assistant-input-request",
-        ) from exc
-    try:
-        self._persist_chat_continuation("input", challenge, (challenge.requirement,), payload)
-    except ApiProblem:
-        self.input_challenges.cancel_team(team_id)
-        raise
-    self._commit_suspension(team_id, token, outcome, payload, self.input_challenges, challenge.id)
-    return self._input_response(challenge)

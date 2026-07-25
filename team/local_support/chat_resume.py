@@ -1,77 +1,6 @@
-"""Local chat submission-resume and stop API operations."""
+"""Local chat stop API operation."""
 
-from local_support.chat_segment import SegmentRequest as _ChatSegmentRequest
 from local_support.validation import validate_team_id
-
-
-def submit_chat_input(
-    self,
-    team_id: str,
-    body: object,
-    provider: str,
-    api_key: str,
-) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    challenge_id = body.get("challenge_id") if isinstance(body, dict) else None
-    with self._exclusive_chat_turn(team_id) as token:
-        pending = self._store_chat_input(team_id, challenge_id, provider, body)
-        segment = self._run_chat_segment(
-            _ChatSegmentRequest(
-                team_id=team_id,
-                file_ids=list(pending.file_ids),
-                assistant_ids=pending.assistant_ids,
-                provider=provider,
-                api_key=api_key,
-                token=token,
-                continuation=pending.continuation,
-                expected_identity=pending.identity,
-                answer_logs=pending.answer_logs,
-            )
-        )
-        return self._segment_response(
-            team_id,
-            token,
-            segment,
-            pending.assistant_ids,
-            pending.file_ids,
-            provider,
-        )
-
-
-def submit_chat_approval(
-    self,
-    team_id: str,
-    body: object,
-    provider: str,
-    api_key: str,
-) -> dict[str, object]:
-    team_id = validate_team_id(team_id)
-    challenge_id = body.get("challenge_id") if isinstance(body, dict) else None
-    with self._exclusive_chat_turn(team_id) as token:
-        # Install the active-turn token before consuming the challenge. Stop can now always
-        # cancel either the pending challenge or this exact continuation; no unowned gap exists.
-        pending = self._store_chat_approval(team_id, challenge_id, provider, body)
-        segment = self._run_chat_segment(
-            _ChatSegmentRequest(
-                team_id=team_id,
-                file_ids=list(pending.file_ids),
-                assistant_ids=pending.assistant_ids,
-                provider=provider,
-                api_key=api_key,
-                token=token,
-                continuation=pending.continuation,
-                expected_identity=pending.identity,
-                answer_logs=pending.answer_logs,
-            )
-        )
-        return self._segment_response(
-            team_id,
-            token,
-            segment,
-            pending.assistant_ids,
-            pending.file_ids,
-            provider,
-        )
 
 
 def stop_chat(self, team_id: str) -> dict[str, object]:
@@ -79,8 +8,6 @@ def stop_chat(self, team_id: str) -> dict[str, object]:
     self.assistant_lifecycle._network(team_id)
     account_cancelled = self.account_challenges.cancel_team(team_id)
     self.oauth_pkce.cancel_team(team_id)
-    approval_cancelled = self.approval_challenges.cancel_team(team_id)
-    input_cancelled = self.input_challenges.cancel_team(team_id)
     continuation_cancelled = self._delete_chat_continuation(team_id)
     power_stopped = False
     with self._active_chat_guard:
@@ -91,7 +18,7 @@ def stop_chat(self, team_id: str) -> dict[str, object]:
         if token is not None and active is not None and active[0] == token:
             self.assistant_lifecycle._fail_stop_power(active[1])
             power_stopped = True
-    accepted = token is not None or account_cancelled or input_cancelled or approval_cancelled or continuation_cancelled
+    accepted = token is not None or account_cancelled or continuation_cancelled
     return {
         "team_id": team_id,
         "requested": accepted,

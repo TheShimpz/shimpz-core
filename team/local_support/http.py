@@ -20,7 +20,6 @@ from local_support.validation import (
 
 MAX_BODY_BYTES = 16 * 1024
 MAX_CHAT_BODY_BYTES = 24 * 1024
-MAX_SECRET_BODY_BYTES = 512 * 1024
 MAX_API_RESPONSE_BYTES = 128 * 1024
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_FILE_BODY_BYTES = MAX_UPLOAD_BYTES
@@ -262,8 +261,6 @@ class Handler(BaseHTTPRequestHandler):
     ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
         pending = {
             "accounts": ("pending_chat_accounts", "chat-account-pending"),
-            "approval": ("pending_chat_approval", "chat-approval-pending"),
-            "input": ("pending_chat_input", "chat-input-pending"),
         }.get(segment)
         if pending is None:
             return None
@@ -278,8 +275,6 @@ class Handler(BaseHTTPRequestHandler):
     ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
         submission = {
             "accounts": ("resume_chat_accounts", "chat-account-submit", MAX_BODY_BYTES),
-            "input": ("submit_chat_input", "chat-input-submit", MAX_SECRET_BODY_BYTES),
-            "approval": ("submit_chat_approval", "chat-approval-submit", MAX_SECRET_BODY_BYTES),
         }.get(segment)
         if submission is None:
             return None
@@ -322,31 +317,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "POST" and segment == "stop":
             return self._chat_stop(team_id)
         return self._chat_submit(team_id, segment) if self.command == "POST" else None
-
-    def _assistant_approval_route(
-        self,
-        parts: list[str],
-    ) -> tuple[HTTPStatus, dict[str, object], str, str | None, str | None] | None:
-        if len(parts) != 4 or parts[:2] != ["v1", "teams"] or parts[3] != "assistant-approvals":
-            return None
-        team_id = validate_team_id(parts[2])
-        if self.command == "GET":
-            return (
-                HTTPStatus.OK,
-                self.server.controller.chat_turn_service.list_assistant_approval_grants(team_id),
-                "assistant-approval-list",
-                team_id,
-                None,
-            )
-        if self.command == "DELETE":
-            return (
-                HTTPStatus.OK,
-                self.server.controller.chat_turn_service.revoke_assistant_approval_grants(team_id),
-                "assistant-approval-revoke",
-                team_id,
-                None,
-            )
-        return None
 
     def _assistant_account_route(
         self,
@@ -433,7 +403,6 @@ class Handler(BaseHTTPRequestHandler):
             "file": self._file_route,
             "inference": self._inference_route,
             "chat": self._chat_route,
-            "assistant-approval": self._assistant_approval_route,
             "assistant-account": self._assistant_account_route,
             "team": self._team_route,
         }.get(route.group)

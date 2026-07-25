@@ -19,9 +19,6 @@ import local_chat_continuation_store
 import local_registry
 import oauth_account_store
 import oauth_pkce_challenges
-from assistant_human import approval_challenges as assistant_approval_challenges
-from assistant_human import approval_grants as assistant_approval_grants
-from assistant_human import input_challenges as assistant_input_challenges
 from local_support import assistant_lifecycle
 from local_support.assistant_rpc import ASSISTANT_UID
 from local_support.chat_types import ActiveAssistant
@@ -86,16 +83,10 @@ class LocalContractCase(unittest.TestCase):
         )
         controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
-        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
         controller.chat_continuations = local_chat_continuation_store.EncryptedContinuationStore(
             Path(directory) / "chat-continuations" / "state" / "continuations.json",
             Path(directory) / "chat-continuations" / "key" / "aes256.key",
         )
-        controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
-            Path(directory) / "assistant-approvals" / "grants.sqlite3"
-        )
-        self.addCleanup(controller.approval_grants.close)
         account = controller.registry["shimpz-cloudflare"].accounts["cloudflare"]
         controller.assistant_accounts.put(
             "team_1",
@@ -148,12 +139,6 @@ class LocalContractCase(unittest.TestCase):
         controller.account_challenges = assistant_account_challenges.AccountChallengeStore()
         controller.chat_continuations = SimpleNamespace(delete=lambda *_args: False)
         controller.oauth_pkce = oauth_pkce_challenges.OAuthPKCEChallengeStore()
-        controller.approval_challenges = assistant_approval_challenges.ApprovalChallengeStore()
-        controller.input_challenges = assistant_input_challenges.InputChallengeStore()
-        controller.approval_grants = assistant_approval_grants.ApprovalGrantStore(
-            Path(state_directory.name) / "assistant-approvals" / "grants.sqlite3"
-        )
-        self.addCleanup(controller.approval_grants.close)
         spec = SimpleNamespace(
             assistant_id="shimpz-cloudflare",
             image=CURRENT_ASSISTANT_IMAGE,
