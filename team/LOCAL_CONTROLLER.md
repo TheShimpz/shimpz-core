@@ -3,8 +3,7 @@
 `Dockerfile.local` packages the single-owner controller installed by `install.shimpz.com`. It is a
 local projection of the shared Team controller domain, not a lifecycle-only Docker wrapper. It owns
 Team/Assistant containers, submits turns to the separate Brain runtime, mediates Assistant Powers,
-enforces egress policy, stores Team files and inference selection, and coordinates secrets, OAuth
-accounts, and approval challenges.
+enforces egress policy, stores Team files and inference selection, and coordinates OAuth Accounts.
 
 The Admin never receives the Docker socket or controller bearer. It mounts the token volume read-only
 and calls port `7077` over the private control network. Brain runtime receives only a separate runtime
@@ -38,9 +37,9 @@ failure. It does not remove shared images, the controller container, or unlabele
   `/run/shimpz-local/token`, `10001:10010`, mode `0440`, never environment/argv/log output.
 - Brain bearer/state: the controller writes the dedicated runtime token volume; Brain runtime mounts it
   read-only. Conversation checkpoints stay in the Brain runtime state volume.
-- Persistent controller state: audit, Team storage, inference selection, Power journal, Assistant secret
-  state/key, account state/key, remembered approvals, and egress policies each use dedicated paths or
-  volumes. Secrets and account tokens are encrypted at rest and never enter metadata-only audit JSONL.
+- Persistent controller state: audit, Team storage, inference selection, Power journal, Account
+  state/key, chat continuations, and egress policies each use dedicated paths or volumes. Account
+  tokens and continuations are encrypted at rest and never enter metadata-only audit JSONL.
 - Model credentials: Admin supplies `X-Shimpz-Model-Provider` and `X-Shimpz-Model-Api-Key` only on chat
   and challenge-resume requests. Strict HTTP parsing rejects duplicate/missing credentials. The key is
   used for that operation and is never persisted, echoed, or forwarded to Assistant containers.
