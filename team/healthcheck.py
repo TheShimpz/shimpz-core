@@ -17,7 +17,9 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
+import dynamic_assistants
 import marketplace
 from container_policy import network as network_policy
 
@@ -34,6 +36,14 @@ REQUIRED_BRAIN_IMAGES = {
 }
 REQUIRED_IMAGES = tuple(REQUIRED_BRAIN_IMAGES.values())
 LISTEN_PORT = int(os.environ.get("SHIMPZ_TEAMDRIVER_PORT", "7077"))
+DYNAMIC_ASSISTANTS = dynamic_assistants.DynamicAssistantStore(
+    Path(
+        os.environ.get(
+            "SHIMPZ_TEAM_DYNAMIC_ASSISTANT_PATH",
+            "/var/lib/team-driver/dynamic-assistants/bindings.json",
+        )
+    )
+)
 
 
 def _docker_json(path: str) -> tuple[int, object | None]:
@@ -92,7 +102,19 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
     elif labels.get("team.app.driver") == "1":
         app_id = labels.get("team.app")
         app_spec = marketplace.APPS.get(app_id) if isinstance(app_id, str) else None
-        image_ref = app_spec.image if app_spec is not None else None
+        if app_spec is not None:
+            image_ref = app_spec.image
+        else:
+            team_id = labels.get("team.id")
+            try:
+                binding = (
+                    DYNAMIC_ASSISTANTS.get(team_id, app_id)
+                    if isinstance(team_id, str) and isinstance(app_id, str)
+                    else None
+                )
+                image_ref = binding.resolution["image_reference"] if binding is not None else None
+            except KeyError, TypeError, dynamic_assistants.DynamicAssistantError:
+                return None
     else:
         return None
     if not isinstance(image_ref, str) or not image_ref:

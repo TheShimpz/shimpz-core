@@ -436,6 +436,33 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
         self.assertEqual(spec.image, resolution["image_reference"])
         self.assertEqual(spec.required_image_labels[1][1], resolution["source_digest"])
 
+    def test_dynamic_resolution_is_a_trusted_isolation_role(self) -> None:
+        resolution = self._resolution()
+        container = types.SimpleNamespace(
+            attrs={
+                "Config": {
+                    "Labels": {
+                        "team.id": "team_1",
+                        "team.app": "hello-world",
+                        "team.app.driver": "1",
+                        "team.app.dynamic": "1",
+                    }
+                }
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = dynamic_assistants.DynamicAssistantStore(Path(directory) / "bindings.json")
+            store.put("team_1", resolution)
+            with (
+                mock.patch.object(runtime_state, "_dynamic_assistants", store),
+                mock.patch.object(network_policy, "brain_identity_valid", return_value=False),
+                mock.patch.object(hosted_resources, "_trusted_image_id", return_value="sha256:image"),
+            ):
+                trusted = hosted_resources._trusted_workload_image(container, "team_1")
+
+        self.assertEqual(trusted, (resolution["image_reference"], "sha256:image"))
+
     def test_dynamic_install_persists_the_binding_and_returns_immutable_evidence(self) -> None:
         resolution = self._resolution()
         lease = types.SimpleNamespace(owner="creator_1")

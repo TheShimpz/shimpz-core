@@ -8,6 +8,7 @@ same stdlib policy used by team-driver admission and its shipping healthcheck.
 from __future__ import annotations
 
 import copy
+import types
 import unittest
 
 import healthcheck as team_healthcheck
@@ -324,6 +325,7 @@ def test_engine_29_capability_prefix_is_normalized() -> None:
 def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
     requested_refs: list[str] = []
     original_image_id = team_healthcheck._image_id
+    original_dynamic_assistants = team_healthcheck.DYNAMIC_ASSISTANTS
     team_healthcheck._image_id = lambda image_ref: requested_refs.append(image_ref) or f"sha256:{len(requested_refs)}"
     try:
         cache: dict[str, str] = {}
@@ -345,6 +347,28 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
             team_healthcheck._expected_workload_image(app, cache) == (app_spec.image, "sha256:2"),
             "health maps a registered App to its separately resolved immutable image ID",
         )
+        dynamic_ref = "ghcr.io/theshimpz/shimpz-assistants@sha256:" + ("a" * 64)
+        dynamic = {
+            "Config": {
+                "Labels": {
+                    "team.id": TEAM_ID,
+                    "team.app.driver": "1",
+                    "team.app": "hello-world",
+                    "team.app.dynamic": "1",
+                }
+            }
+        }
+        team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(
+            get=lambda team_id, app_id: (
+                types.SimpleNamespace(resolution={"image_reference": dynamic_ref})
+                if (team_id, app_id) == (TEAM_ID, "hello-world")
+                else None
+            )
+        )
+        check(
+            team_healthcheck._expected_workload_image(dynamic, cache) == (dynamic_ref, "sha256:3"),
+            "health resolves a dynamic App through its controller-owned binding",
+        )
         unknown = {"Config": {"Labels": {"team.driver": "1", "team.brain": "unknown-provider"}}}
         check(
             team_healthcheck._expected_workload_image(unknown, cache) is None,
@@ -352,6 +376,7 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
         )
     finally:
         team_healthcheck._image_id = original_image_id
+        team_healthcheck.DYNAMIC_ASSISTANTS = original_dynamic_assistants
 
 
 def test_health_tracks_running_brains_without_weakening_stopped_posture() -> None:

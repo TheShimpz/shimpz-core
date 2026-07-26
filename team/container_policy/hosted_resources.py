@@ -10,6 +10,7 @@ from http import HTTPStatus
 import cleanup_state
 import docker
 import docker.errors
+import dynamic_assistants
 import inference_config
 import manifests
 import marketplace
@@ -133,6 +134,15 @@ def _trusted_workload_image(container, team_id: str) -> tuple[str, str]:
     else:
         app_id = labels.get("team.app")
         app_spec = marketplace.APPS.get(app_id) if isinstance(app_id, str) else None
+        if app_spec is None and isinstance(app_id, str):
+            try:
+                binding = runtime_state._dynamic_assistants.get(team_id, app_id)
+                app_spec = dynamic_assistants.app_spec(binding) if binding is not None else None
+            except dynamic_assistants.DynamicAssistantError as exc:
+                raise runtime_state.ApiError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Team isolation is blocked: untrusted workload image role",
+                ) from exc
         image_ref = app_spec.image if app_spec is not None else None
     if not isinstance(image_ref, str) or not image_ref:
         raise runtime_state.ApiError(
