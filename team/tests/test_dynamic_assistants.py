@@ -14,10 +14,19 @@ from dynamic_assistants import (
     DynamicAssistantConflictError,
     DynamicAssistantError,
     DynamicAssistantStore,
+    app_spec,
 )
 
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 RESOLUTION = VECTORS["fixtures"]["resolve_response"]["value"]
+
+
+def runtime_resolution() -> dict[str, object]:
+    resolution = copy.deepcopy(RESOLUTION)
+    power = resolution["machine_contract"]["powers"][0]
+    power["input_schema"]["additionalProperties"] = False
+    power["output_schema"]["additionalProperties"] = False
+    return resolution
 
 
 class DynamicAssistantStoreTests(unittest.TestCase):
@@ -82,6 +91,31 @@ class DynamicAssistantStoreTests(unittest.TestCase):
         for assistant_id in ("Hello", "../hello", "héllo"):
             with self.subTest(assistant_id=assistant_id), self.assertRaises(DynamicAssistantError):
                 self.store.get("team_1", assistant_id)
+
+    def test_resolution_builds_a_digest_bound_assistant_spec(self) -> None:
+        binding = self.store.put("team_1", runtime_resolution())
+
+        spec = app_spec(binding)
+
+        self.assertEqual(spec.image, RESOLUTION["image_reference"])
+        self.assertFalse(spec.db)
+        self.assertFalse(spec.first_party)
+        self.assertEqual(spec.archs, ("amd64", "arm64"))
+        self.assertEqual(spec.allowed_hosts, ("api.cloudflare.com",))
+        self.assertEqual(tuple(spec.assistant.powers), ("hello",))
+        self.assertEqual(
+            spec.required_image_labels,
+            (
+                ("org.shimpz.assistant.id", "hello-world"),
+                ("org.shimpz.source.digest", RESOLUTION["source_digest"]),
+            ),
+        )
+
+    def test_noncanonical_machine_contract_fails_closed(self) -> None:
+        binding = self.store.put("team_1", copy.deepcopy(RESOLUTION))
+
+        with self.assertRaises(DynamicAssistantError):
+            app_spec(binding)
 
 
 if __name__ == "__main__":

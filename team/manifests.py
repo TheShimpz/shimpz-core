@@ -305,3 +305,54 @@ def build_team_app_kwargs(
         "log_config": TEAM_LOG_CONFIG,
         "detach": True,
     }
+
+
+def build_dynamic_assistant_kwargs(
+    team_id: str,
+    assistant_id: str,
+    spec: AppSpec,
+    *,
+    proxy_env: dict[str, str] | None = None,
+    owner: str,
+    source_digest: str,
+) -> dict:
+    """Exact direct-v1 runtime envelope for one digest-bound published Assistant."""
+    if spec.db or spec.assistant is None:
+        raise ValueError("a dynamic Assistant must use the direct runtime contract")
+    return {
+        "image": spec.image,
+        "name": team_app_container_name(team_id, assistant_id),
+        "runtime": RUNTIME,
+        "environment": {
+            "SHIMPZ_TEAM_ID": team_id,
+            "SHIMPZ_APP": assistant_id,
+            **(proxy_env or {}),
+        },
+        "user": power_execution.ASSISTANT_RPC_USER,
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true", "apparmor=docker-default"],
+        "privileged": False,
+        "ipc_mode": "private",
+        "cgroupns": "private",
+        "network": team_network_name(team_id),
+        "read_only": True,
+        "tmpfs": {CONTAINER_TMP: "size=64m,mode=1777"},
+        "mem_limit": APP_MEM_LIMIT,
+        "memswap_limit": APP_MEM_LIMIT,
+        "nano_cpus": APP_NANO_CPUS,
+        "pids_limit": APP_PIDS_LIMIT,
+        "ulimits": [docker.types.Ulimit(name="nofile", soft=4096, hard=4096)],
+        "restart_policy": {"Name": "no"},
+        "labels": {
+            "team.app.driver": "1",
+            "team.app.dynamic": "1",
+            "team.id": team_id,
+            "team.app": assistant_id,
+            "team.app.db": "0",
+            "team.owner": owner,
+            "team.app.source": source_digest,
+            "team.app.image": spec.image,
+        },
+        "log_config": TEAM_LOG_CONFIG,
+        "detach": True,
+    }

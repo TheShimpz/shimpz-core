@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import assistant_manifest
+import assistant_registry
+import marketplace
 from developers_controller_contract import ContractValidationError, ContractValidator
 
 _FORMAT_VERSION = 1
@@ -156,6 +159,66 @@ class DynamicAssistantStore:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+
+def app_spec(binding: DynamicAssistantBinding) -> marketplace.AppSpec:
+    """Convert one validated binding into the existing hosted Assistant contract."""
+    resolution = binding.resolution
+    try:
+        account_declarations = tuple(
+            assistant_manifest.AccountDeclaration(
+                id=account["id"],
+                provider=account["provider"],
+                scopes=tuple(account["scopes"]),
+            )
+            for account in resolution["accounts"]
+        )
+        canonical_contract = assistant_manifest.canonical_machine_contract(
+            resolution["machine_contract"],
+            account_declarations,
+        )
+        if canonical_contract != resolution["machine_contract"]:
+            raise assistant_manifest.ManifestError("machine contract is not canonical")
+        accounts = {
+            account.id: assistant_registry.AccountSpec(
+                provider=account.provider,
+                scopes=account.scopes,
+            )
+            for account in account_declarations
+        }
+        reviewed_manifest = assistant_manifest.reviewed_manifest_contract(
+            allowed_hosts=resolution["allowed_hosts"],
+            accounts=accounts,
+        )
+        powers = {
+            power["id"]: assistant_registry.PowerSpec(
+                summary=assistant_registry.power_summary(power["id"]),
+                input_schema=power["input_schema"],
+                output_schema=power["output_schema"],
+                accounts=tuple(power["accounts"]),
+            )
+            for power in canonical_contract["powers"]
+        }
+        platforms = tuple(platform.removeprefix("linux/") for platform in resolution["platforms"])
+    except (KeyError, TypeError, assistant_manifest.ManifestError) as exc:
+        raise DynamicAssistantError("the dynamic Assistant runtime contract is invalid") from exc
+    return marketplace.AppSpec(
+        image=resolution["image_reference"],
+        port=1,
+        db=False,
+        allowed_hosts=reviewed_manifest.allowed_hosts,
+        first_party=False,
+        archs=platforms,
+        required_image_labels=(
+            ("org.shimpz.assistant.id", binding.assistant_id),
+            ("org.shimpz.source.digest", resolution["source_digest"]),
+        ),
+        assistant=marketplace.AssistantContract(
+            powers=powers,
+            accounts=accounts,
+            machine_contract=canonical_contract,
+        ),
+    )
 
 
 class _FileLock:
