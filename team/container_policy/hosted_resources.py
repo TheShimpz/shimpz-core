@@ -124,9 +124,10 @@ def _prepare_marketplace_image(spec: marketplace.AppSpec) -> None:
         raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
-def _trusted_workload_image(container, team_id: str) -> tuple[str, str]:
+def _trusted_workload_image(container, team_id: str) -> tuple[str, str, bool]:
     """Resolve this exact workload role's configured ref to the currently trusted immutable ID."""
     labels = container.attrs.get("Config", {}).get("Labels", {})
+    compact_app_runtime = False
     if network_policy.brain_identity_valid(container.attrs, team_id):
         provider = labels.get("team.brain")
         provider_spec = manifests.BRAINS.get(provider) if isinstance(provider, str) else None
@@ -138,6 +139,7 @@ def _trusted_workload_image(container, team_id: str) -> tuple[str, str]:
             try:
                 binding = runtime_state._dynamic_assistants.get(team_id, app_id)
                 app_spec = dynamic_assistants.app_spec(binding) if binding is not None else None
+                compact_app_runtime = binding is not None
             except dynamic_assistants.DynamicAssistantError as exc:
                 raise runtime_state.ApiError(
                     HTTPStatus.SERVICE_UNAVAILABLE,
@@ -148,7 +150,7 @@ def _trusted_workload_image(container, team_id: str) -> tuple[str, str]:
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE, "Team isolation is blocked: untrusted workload image role"
         )
-    return image_ref, _trusted_image_id(image_ref)
+    return image_ref, _trusted_image_id(image_ref), compact_app_runtime
 
 
 def _require_team_isolation_mode(
@@ -178,13 +180,14 @@ def _require_team_isolation_mode(
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE, "Team isolation is blocked: invalid workload identity"
         )
-    image_ref, image_id = _trusted_workload_image(container, team_id)
+    image_ref, image_id, compact_app_runtime = _trusted_workload_image(container, team_id)
     if not network_policy.workload_security_valid(
         container.attrs,
         team_id,
         manifests.RUNTIME,
         expected_image_ref=image_ref,
         expected_image_id=image_id,
+        compact_app_runtime=compact_app_runtime,
     ):
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE,

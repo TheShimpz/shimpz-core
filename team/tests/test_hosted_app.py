@@ -461,7 +461,7 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
             ):
                 trusted = hosted_resources._trusted_workload_image(container, "team_1")
 
-        self.assertEqual(trusted, (resolution["image_reference"], "sha256:image"))
+        self.assertEqual(trusted, (resolution["image_reference"], "sha256:image", True))
 
     def test_dynamic_install_persists_the_binding_and_returns_immutable_evidence(self) -> None:
         resolution = self._resolution()

@@ -91,7 +91,7 @@ def images_ready() -> bool:
     return all(_image_id(image_ref) is not None for image_ref in REQUIRED_IMAGES)
 
 
-def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple[str, str] | None:
+def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple[str, str, bool] | None:
     config = metadata.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     if not isinstance(labels, dict):
@@ -99,11 +99,13 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
     if labels.get("team.driver") == "1":
         provider = labels.get("team.brain")
         image_ref = REQUIRED_BRAIN_IMAGES.get(provider) if isinstance(provider, str) else None
+        compact_app_runtime = False
     elif labels.get("team.app.driver") == "1":
         app_id = labels.get("team.app")
         app_spec = marketplace.APPS.get(app_id) if isinstance(app_id, str) else None
         if app_spec is not None:
             image_ref = app_spec.image
+            compact_app_runtime = False
         else:
             team_id = labels.get("team.id")
             try:
@@ -113,6 +115,7 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
                     else None
                 )
                 image_ref = binding.resolution["image_reference"] if binding is not None else None
+                compact_app_runtime = binding is not None
             except KeyError, TypeError, dynamic_assistants.DynamicAssistantError:
                 return None
     else:
@@ -124,7 +127,7 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
         if resolved is None:
             return None
         image_ids[image_ref] = resolved
-    return image_ref, image_ids[image_ref]
+    return image_ref, image_ids[image_ref], compact_app_runtime
 
 
 def workloads_isolated() -> bool:
@@ -162,6 +165,7 @@ def _workload_network_kinds(
         REQUIRED_RUNTIME,
         expected_image_ref=expected_image[0],
         expected_image_id=expected_image[1],
+        compact_app_runtime=expected_image[2],
     ):
         return None
     return network_policy.workload_network_kinds(metadata, team_id)

@@ -562,7 +562,12 @@ def _log_config_valid(host_config: Mapping) -> bool:
     }
 
 
-def _resource_and_namespace_posture_reason(host_config: Mapping, role: str) -> str | None:
+def _resource_and_namespace_posture_reason(
+    host_config: Mapping,
+    role: str,
+    *,
+    compact_app_runtime: bool = False,
+) -> str | None:
     if role == "brain":
         expected = (
             BRAIN_MEMORY_BYTES,
@@ -574,7 +579,7 @@ def _resource_and_namespace_posture_reason(host_config: Mapping, role: str) -> s
         nofile = 256
     else:
         expected = (APP_MEMORY_BYTES, 0, APP_NANO_CPUS, APP_PIDS_LIMIT)
-        tmpfs_size = 256 * 1024**2
+        tmpfs_size = (64 if compact_app_runtime else 256) * 1024**2
         nofile = 4096
     memory_reservation = host_config.get("MemoryReservation")
     if memory_reservation is None:
@@ -603,8 +608,20 @@ def _resource_and_namespace_posture_reason(host_config: Mapping, role: str) -> s
     return next((reason for reason, valid in checks if not valid()), None)
 
 
-def _resource_and_namespace_posture_valid(host_config: Mapping, role: str) -> bool:
-    return _resource_and_namespace_posture_reason(host_config, role) is None
+def _resource_and_namespace_posture_valid(
+    host_config: Mapping,
+    role: str,
+    *,
+    compact_app_runtime: bool = False,
+) -> bool:
+    return (
+        _resource_and_namespace_posture_reason(
+            host_config,
+            role,
+            compact_app_runtime=compact_app_runtime,
+        )
+        is None
+    )
 
 
 def workload_security_valid(
@@ -614,6 +631,7 @@ def workload_security_valid(
     *,
     expected_image_ref: str,
     expected_image_id: str,
+    compact_app_runtime: bool = False,
 ) -> bool:
     """Validate immutable hostile-workload posture plus its exact core attachment."""
     role = _workload_role(metadata, team_id)
@@ -630,7 +648,11 @@ def workload_security_valid(
         or bool(host_config.get("Privileged"))
         or host_config.get("NetworkMode") != network_name(team_id, CORE_KIND)
         or not _security_options_valid(host_config)
-        or not _resource_and_namespace_posture_valid(host_config, role[0])
+        or not _resource_and_namespace_posture_valid(
+            host_config,
+            role[0],
+            compact_app_runtime=compact_app_runtime,
+        )
         or metadata.get("AppArmorProfile") != "docker-default"
     ):
         return False

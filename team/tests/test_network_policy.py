@@ -322,6 +322,28 @@ def test_engine_29_capability_prefix_is_normalized() -> None:
     )
 
 
+def test_compact_dynamic_app_tmpfs_requires_trusted_runtime_selection() -> None:
+    _core, containers = _valid_topology()
+    app = containers["app-id"]
+    app["HostConfig"]["Tmpfs"] = {policy.TMPFS_MOUNT_PATH: "size=64m,mode=1777"}
+
+    check(
+        not _workload_valid(app),
+        "a static App cannot self-select the compact dynamic runtime posture",
+    )
+    check(
+        policy.workload_security_valid(
+            app,
+            TEAM_ID,
+            "runsc",
+            expected_image_ref=APP_IMAGE_REF,
+            expected_image_id=APP_IMAGE_ID,
+            compact_app_runtime=True,
+        ),
+        "a trusted dynamic binding admits the tighter 64 MiB tmpfs posture",
+    )
+
+
 def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
     requested_refs: list[str] = []
     original_image_id = team_healthcheck._image_id
@@ -332,11 +354,11 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
         brain_ref = team_healthcheck.REQUIRED_BRAIN_IMAGES["runtime"]
         brain = {"Config": {"Labels": {"team.driver": "1", "team.brain": "runtime"}}}
         check(
-            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1"),
+            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1", False),
             "health maps the registered Brain provider to its resolved immutable image ID",
         )
         check(
-            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1")
+            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1", False)
             and requested_refs == [brain_ref],
             "health caches one immutable resolution consistently across its inspection pass",
         )
@@ -344,7 +366,7 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
         app_id, app_spec = next(iter(team_healthcheck.marketplace.APPS.items()))
         app = {"Config": {"Labels": {"team.app.driver": "1", "team.app": app_id}}}
         check(
-            team_healthcheck._expected_workload_image(app, cache) == (app_spec.image, "sha256:2"),
+            team_healthcheck._expected_workload_image(app, cache) == (app_spec.image, "sha256:2", False),
             "health maps a registered App to its separately resolved immutable image ID",
         )
         dynamic_ref = "ghcr.io/theshimpz/shimpz-assistants@sha256:" + ("a" * 64)
@@ -366,7 +388,7 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
             )
         )
         check(
-            team_healthcheck._expected_workload_image(dynamic, cache) == (dynamic_ref, "sha256:3"),
+            team_healthcheck._expected_workload_image(dynamic, cache) == (dynamic_ref, "sha256:3", True),
             "health resolves a dynamic App through its controller-owned binding",
         )
         unknown = {"Config": {"Labels": {"team.driver": "1", "team.brain": "unknown-provider"}}}
