@@ -35,7 +35,7 @@ def _signature(resolution: dict[str, object]) -> list[dict[str, object]]:
 
 def _attestation(resolution: dict[str, object]) -> list[dict[str, str]]:
     statement = {
-        "_type": "https://in-toto.io/Statement/v1",
+        "_type": "https://in-toto.io/Statement/v0.1",
         "subject": [
             {
                 "name": "ghcr.io/theshimpz/shimpz-assistants",
@@ -57,12 +57,10 @@ def _attestation(resolution: dict[str, object]) -> list[dict[str, str]]:
             "runDetails": {"builder": {"id": SIGNER_IDENTITY}},
         },
     }
-    return [
-        {
-            "payloadType": "application/vnd.in-toto+json",
-            "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
-        }
-    ]
+    return {
+        "payloadType": "application/vnd.in-toto+json",
+        "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+    }
 
 
 class ArtifactTrustTests(unittest.TestCase):

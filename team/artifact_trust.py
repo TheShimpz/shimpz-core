@@ -194,7 +194,7 @@ def _signature_digest(record: object) -> object:
 
 
 def _verify_provenance(value: object, resolution: dict[str, Any]) -> None:
-    envelopes = value if isinstance(value, list) else []
+    envelopes = (value,) if isinstance(value, dict) else ()
     if not any(_provenance_matches(envelope, resolution) for envelope in envelopes):
         raise ArtifactTrustError("signed provenance does not match the Assistant publication")
 
@@ -214,7 +214,7 @@ def _provenance_matches(envelope: object, resolution: dict[str, Any]) -> bool:
         isinstance(subjects, list)
         and isinstance(predicate, dict)
         and _subject_matches(subjects, resolution["oci_digest"])
-        and statement.get("_type") == "https://in-toto.io/Statement/v1"
+        and statement.get("_type") == "https://in-toto.io/Statement/v0.1"
         and statement.get("predicateType") == "https://slsa.dev/provenance/v1"
         and _predicate_matches(predicate, resolution)
     )
