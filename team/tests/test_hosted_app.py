@@ -408,7 +408,8 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
 
 
 class HostedDynamicAssistantResolutionTests(unittest.TestCase):
-    def test_dynamic_resolution_is_team_scoped_and_digest_bound(self) -> None:
+    @staticmethod
+    def _resolution() -> dict[str, object]:
         vectors = json.loads(
             (
                 Path(__file__).resolve().parents[1]
@@ -422,6 +423,10 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
         power = resolution["machine_contract"]["powers"][0]
         power["input_schema"]["additionalProperties"] = False
         power["output_schema"]["additionalProperties"] = False
+        return resolution
+
+    def test_dynamic_resolution_is_team_scoped_and_digest_bound(self) -> None:
+        resolution = self._resolution()
 
         with tempfile.TemporaryDirectory() as directory:
             store = dynamic_assistants.DynamicAssistantStore(Path(directory) / "bindings.json")
@@ -434,3 +439,64 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
         self.assertEqual(assistant_id, "hello-world")
         self.assertEqual(spec.image, resolution["image_reference"])
         self.assertEqual(spec.required_image_labels[1][1], resolution["source_digest"])
+
+    def test_dynamic_install_persists_the_binding_and_returns_immutable_evidence(self) -> None:
+        resolution = self._resolution()
+        lease = types.SimpleNamespace(owner="creator_1")
+        installed = {"team_id": "team_1", "app": "hello-world", "status": "running", "installed": True}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incoming = dynamic_assistants.DynamicAssistantStore(root / "incoming.json").put(
+                "team_1",
+                resolution,
+            )
+            retained = dynamic_assistants.DynamicAssistantStore(root / "retained.json")
+            with (
+                mock.patch.object(runtime_state, "_dynamic_assistants", retained),
+                mock.patch.object(hosted_apps, "_install_app_locked", return_value=installed),
+            ):
+                result = hosted_apps._install_dynamic_assistant(
+                    "team_1",
+                    incoming,
+                    "creator_1",
+                    lease,
+                )
+
+            self.assertIsNotNone(retained.get("team_1", "hello-world"))
+
+        self.assertEqual(result["source_digest"], resolution["source_digest"])
+        self.assertEqual(result["oci_digest"], resolution["oci_digest"])
+        self.assertEqual(result["binding_digest"], incoming.binding_digest)
+
+    def test_failed_dynamic_install_removes_a_new_binding(self) -> None:
+        resolution = self._resolution()
+        lease = types.SimpleNamespace(owner="creator_1")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incoming = dynamic_assistants.DynamicAssistantStore(root / "incoming.json").put(
+                "team_1",
+                resolution,
+            )
+            retained = dynamic_assistants.DynamicAssistantStore(root / "retained.json")
+            with (
+                mock.patch.object(runtime_state, "_dynamic_assistants", retained),
+                mock.patch.object(
+                    hosted_apps,
+                    "_install_app_locked",
+                    side_effect=runtime_state.ApiError(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "rolled back",
+                    ),
+                ),
+                self.assertRaises(runtime_state.ApiError),
+            ):
+                hosted_apps._install_dynamic_assistant(
+                    "team_1",
+                    incoming,
+                    "creator_1",
+                    lease,
+                )
+
+            self.assertIsNone(retained.get("team_1", "hello-world"))

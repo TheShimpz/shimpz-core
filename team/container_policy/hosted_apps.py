@@ -433,15 +433,93 @@ def _install_app(
     lease: hosted_resources._AuthorizationLease,
 ) -> dict:
     with runtime_state._lock_for(team_id):
-        team = hosted_resources._require_current_authorization(team_id, lease)
-        if owner != lease.owner:
-            raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"team {team_id!r} not found")
-        hosted_resources._prepare_marketplace_image(spec)
-        team_name = team.labels.get("team.name", "")
-        existing = hosted_resources._get_container(manifests.team_app_container_name(team_id, app_id))
-        if existing is not None:  # idempotent only for this exact, still-isolated installed App
-            return _admit_existing_app(team_id, app_id, spec, owner, existing)
-        return _provision_app(team_id, app_id, spec, owner, team_name)
+        return _install_app_locked(team_id, app_id, spec, owner, lease)
+
+
+@runtime_state._serialize_against_team_chat
+def _install_dynamic_assistant(
+    team_id: str,
+    binding: dynamic_assistants.DynamicAssistantBinding,
+    owner: str,
+    lease: hosted_resources._AuthorizationLease,
+) -> dict[str, object]:
+    """Install one validated published artifact and atomically retain its Team binding."""
+    if team_id != binding.team_id:
+        raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"team {team_id!r} not found")
+    app_id = binding.assistant_id
+    if app_id in marketplace.APPS:
+        raise runtime_state.ApiError(
+            HTTPStatus.CONFLICT,
+            "a published Assistant cannot replace a built-in app",
+        )
+    with runtime_state._lock_for(team_id):
+        try:
+            previous = runtime_state._dynamic_assistants.get(team_id, app_id)
+            retained = runtime_state._dynamic_assistants.put(team_id, binding.resolution)
+        except dynamic_assistants.DynamicAssistantConflictError as exc:
+            raise runtime_state.ApiError(
+                HTTPStatus.CONFLICT,
+                "this Assistant id is already installed from another publication",
+            ) from exc
+        except dynamic_assistants.DynamicAssistantError as exc:
+            raise runtime_state.ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "dynamic Assistant metadata is unavailable",
+            ) from exc
+        try:
+            result = _install_app_locked(
+                team_id,
+                app_id,
+                dynamic_assistants.app_spec(retained),
+                owner,
+                lease,
+                binding=retained,
+            )
+        except Exception:
+            if previous is None:
+                with contextlib.suppress(dynamic_assistants.DynamicAssistantError):
+                    runtime_state._dynamic_assistants.delete(team_id, app_id)
+            raise
+    return {
+        **result,
+        "source_digest": retained.resolution["source_digest"],
+        "oci_digest": retained.resolution["oci_digest"],
+        "binding_digest": retained.binding_digest,
+    }
+
+
+def _install_app_locked(
+    team_id: str,
+    app_id: str,
+    spec: marketplace.AppSpec,
+    owner: str,
+    lease: hosted_resources._AuthorizationLease,
+    *,
+    binding: dynamic_assistants.DynamicAssistantBinding | None = None,
+) -> dict[str, object]:
+    team = hosted_resources._require_current_authorization(team_id, lease)
+    if owner != lease.owner:
+        raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"team {team_id!r} not found")
+    hosted_resources._prepare_marketplace_image(spec)
+    team_name = team.labels.get("team.name", "")
+    existing = hosted_resources._get_container(manifests.team_app_container_name(team_id, app_id))
+    if existing is not None:
+        return _admit_existing_app(
+            team_id,
+            app_id,
+            spec,
+            owner,
+            existing,
+            binding=binding,
+        )
+    return _provision_app(
+        team_id,
+        app_id,
+        spec,
+        owner,
+        team_name,
+        binding=binding,
+    )
 
 
 def _admit_existing_app(
@@ -450,6 +528,8 @@ def _admit_existing_app(
     spec: marketplace.AppSpec,
     owner: str,
     existing,
+    *,
+    binding: dynamic_assistants.DynamicAssistantBinding | None = None,
 ) -> dict[str, object]:
     egress_store = _egress_store()
     try:
@@ -464,6 +544,15 @@ def _admit_existing_app(
         "team.id": team_id,
         "team.app": app_id,
         "team.owner": owner,
+        **(
+            {
+                "team.app.dynamic": "1",
+                "team.app.source": binding.resolution["source_digest"],
+                "team.app.image": spec.image,
+            }
+            if binding is not None
+            else {}
+        ),
     }
     if any(str(existing.labels.get(key, "")) != value for key, value in expected_labels.items()):
         raise runtime_state.ApiError(
@@ -496,6 +585,8 @@ def _provision_app(
     spec: marketplace.AppSpec,
     owner: str,
     team_name: str,
+    *,
+    binding: dynamic_assistants.DynamicAssistantBinding | None = None,
 ) -> dict[str, object]:
     if len(_team_app_containers(team_id)) >= runtime_state.MAX_APPS_PER_TEAM:
         raise runtime_state.ApiError(
@@ -503,7 +594,14 @@ def _provision_app(
         )
     key = f"app:{team_id}:{app_id}"
     with hosted_resources._reserve_capacity(key, owner, manifests.APP_MEM_LIMIT_BYTES, team_slot=False):
-        committed_status = _provision_app_transaction(team_id, app_id, spec, owner, team_name)
+        committed_status = _provision_app_transaction(
+            team_id,
+            app_id,
+            spec,
+            owner,
+            team_name,
+            binding=binding,
+        )
     return {
         "team_id": team_id,
         "app": app_id,
@@ -519,6 +617,8 @@ def _provision_app_transaction(
     spec: marketplace.AppSpec,
     owner: str,
     team_name: str,
+    *,
+    binding: dynamic_assistants.DynamicAssistantBinding | None = None,
 ) -> str:
     # Return the same explicit admission error as Team create instead of relying on a
     # lower-level Docker create failure when the hostile-tenant runtime is unavailable.
@@ -528,15 +628,25 @@ def _provision_app_transaction(
         database_url = pgdriver_client.create_app_db(team_id, app_id)["database_url"] if spec.db else ""
         network = hosted_resources._ensure_team_network(team_id)
         token, proxy_env = _reserve_egress_environment(team_id, app_id, spec.allowed_hosts, egress_store)
-        kwargs = manifests.build_team_app_kwargs(
-            team_id,
-            app_id,
-            spec,
-            database_url=database_url,
-            proxy_env=proxy_env,
-            owner=owner,
-            team_name=team_name,
-        )
+        if binding is None:
+            kwargs = manifests.build_team_app_kwargs(
+                team_id,
+                app_id,
+                spec,
+                database_url=database_url,
+                proxy_env=proxy_env,
+                owner=owner,
+                team_name=team_name,
+            )
+        else:
+            kwargs = manifests.build_dynamic_assistant_kwargs(
+                team_id,
+                app_id,
+                spec,
+                proxy_env=proxy_env,
+                owner=owner,
+                source_digest=binding.resolution["source_digest"],
+            )
         hosted_resources._require_team_runtime()
         container = runtime_state._docker.containers.create(**kwargs)
         network.disconnect(container)
