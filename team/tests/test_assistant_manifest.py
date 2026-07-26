@@ -24,6 +24,7 @@ def manifest(
     hosts = ", ".join(f'"{host}"' for host in allowed_hosts)
     return (
         "spec = 1\n"
+        'id = "fixture-assistant"\n'
         'version = "0.1.0"\n'
         f'name = "{name}"\n'
         f'summary = "{summary}"\n'
@@ -155,6 +156,7 @@ class AssistantManifestTests(unittest.TestCase):
         invalid = (
             b'name = "Only a name"\n',
             manifest().replace(b"spec = 1", b"spec = 4"),
+            manifest().replace(b'id = "fixture-assistant"', b'id = "Invalid"'),
             manifest().replace(b'version = "0.1.0"', b'version = "v1"'),
             manifest().replace(b'genesis = "Use the available Powers."', b'genesis = ""'),
             manifest(name=" Leading"),

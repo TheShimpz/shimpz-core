@@ -1,4 +1,5 @@
 spec = 1
+id = "shimpz-cloudflare"
 version = "0.1.0"
 name = "Shimpz Cloudflare"
 summary = "List Cloudflare zones and inspect their DNS records through OAuth."

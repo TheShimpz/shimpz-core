@@ -459,6 +459,7 @@ def _manifest_table(raw: bytes) -> dict[str, object]:
         raise ManifestError("Assistant manifest is invalid")
     required = {
         "spec",
+        "id",
         "version",
         "name",
         "summary",
@@ -478,6 +479,7 @@ def parse_manifest_contract(raw: bytes) -> ManifestContract:
     manifest = _manifest_table(raw)
     if manifest["spec"] != 1:
         raise ManifestError("Assistant spec is unsupported")
+    _identifier(manifest["id"], kind="id")
     version = manifest["version"]
     if not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None:
         raise ManifestError("Assistant version is invalid")
