@@ -73,6 +73,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py marketplace.py marketplace_image.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
+     developers_controller_contract.py dynamic_assistants.py \
      assistant_chat.py \
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
@@ -80,6 +81,7 @@ COPY app.py validate.py manifests.py marketplace.py marketplace_image.py assista
      model_catalog.json egress_policy.py power_execution.py power_journal.py strict_json.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
 COPY assistant_human ./assistant_human
 COPY container_policy ./container_policy
+COPY contracts ./contracts
 COPY http_boundary ./http_boundary
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
@@ -92,6 +94,7 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/power-journal \
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
+        /var/lib/team-driver/dynamic-assistants \
         /app-egress-policy /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
         /run/shimpz-brain-runtime \
     && chown teamdriver:shimpzteamdriver-token /run/shimpz-teamdriver && chmod 750 /run/shimpz-teamdriver \
@@ -108,6 +111,7 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/power-journal \
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
+        /var/lib/team-driver/dynamic-assistants \
     && chown teamdriver:shimpzapp-egress-policy /app-egress-policy \
     && chmod 0770 /app-egress-policy
 

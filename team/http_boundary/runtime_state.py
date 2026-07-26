@@ -18,6 +18,7 @@ import assistant_genesis
 import assistant_manifest
 import brain_runtime_client
 import docker
+import dynamic_assistants
 import inference_config
 import manifests
 import oauth_account_service
@@ -91,6 +92,12 @@ ASSISTANT_ACCOUNT_KEY_PATH = Path(
         "/var/lib/team-driver/assistant-accounts/key/aes256.key",
     )
 )
+DYNAMIC_ASSISTANT_PATH = Path(
+    os.environ.get(
+        "SHIMPZ_TEAM_DYNAMIC_ASSISTANT_PATH",
+        "/var/lib/team-driver/dynamic-assistants/bindings.json",
+    )
+)
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
@@ -125,6 +132,7 @@ _assistant_accounts = oauth_account_store.OAuthAccountStore(
     ASSISTANT_ACCOUNT_KEY_PATH,
 )
 _assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
+_dynamic_assistants = dynamic_assistants.DynamicAssistantStore(DYNAMIC_ASSISTANT_PATH)
 _oauth_pkce_challenges = oauth_pkce_challenges.OAuthPKCEChallengeStore()
 _oauth_http = oauth_http_client.OAuthHTTPClient()
 _cloudflare_oauth_client_id = os.environ.get("SHIMPZ_CLOUDFLARE_OAUTH_CLIENT_ID")
