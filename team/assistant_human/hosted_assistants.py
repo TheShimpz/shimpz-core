@@ -8,6 +8,7 @@ from http import HTTPStatus
 
 import assistant_account_flow
 import assistant_chat
+import assistant_manifest
 import audit
 import brain_credentials_client
 import brain_runtime_client
@@ -25,6 +26,7 @@ import team_storage
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
 from http_boundary import runtime_state
+from jsonschema import Draft202012Validator
 
 # ── Controller-owned Assistant chat ─────────────────────────────────────────────────────────────
 CHAT_OUTPUT_CAP = 60000
@@ -40,6 +42,7 @@ class _ActiveAssistant:
     assistant_id: str
     contract: marketplace.AssistantContract
     container: object
+    image: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,8 +105,8 @@ def _hosted_power_identity(active: _ActiveAssistant) -> tuple[object, object]:
     config = getattr(active.container, "attrs", {}).get("Config", {})
     image = config.get("Image") if isinstance(config, dict) else None
     if not isinstance(image, str) or not image:
-        spec = marketplace.APPS.get(active.assistant_id)
-        image = spec.image if spec is not None else ""
+        static = marketplace.APPS.get(active.assistant_id)
+        image = active.image or (static.image if static is not None else "")
     return active.container.id, image
 
 
@@ -117,7 +120,7 @@ def _installed_assistant(
     inspect_memo: dict[str, dict[str, dict]] | None = None,
     candidate=None,
 ):
-    assistant_id, spec = marketplace.resolve(assistant_id)
+    assistant_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id)
     contract = spec.assistant
     if contract is None:
         raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"{assistant_id!r} is not an Assistant")
@@ -164,8 +167,13 @@ def _active_team_assistants(team_id: str) -> tuple[_ActiveAssistant, ...]:
         ) from exc
     for candidate in installed:
         assistant_id = (candidate.labels or {}).get("team.app")
-        spec = marketplace.APPS.get(assistant_id) if isinstance(assistant_id, str) else None
-        if spec is None or spec.assistant is None:
+        if not isinstance(assistant_id, str):
+            continue
+        try:
+            _resolved_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id)
+        except marketplace.MarketplaceError:
+            continue
+        if spec.assistant is None:
             continue
         try:
             candidate.reload()
@@ -184,7 +192,7 @@ def _active_team_assistants(team_id: str) -> tuple[_ActiveAssistant, ...]:
             candidate,
         )
         seen.add(current_id)
-        active.append(_ActiveAssistant(current_id, contract, container))
+        active.append(_ActiveAssistant(current_id, contract, container, spec.image))
     active.sort(key=lambda item: item.assistant_id)
     return tuple(active)
 
@@ -436,8 +444,13 @@ def _installed_assistant_specs(team_id: str) -> tuple[_HostedAssistantSpec, ...]
         ) from exc
     for container in containers:
         assistant_id = (container.labels or {}).get("team.app")
-        app_spec = marketplace.APPS.get(assistant_id) if isinstance(assistant_id, str) else None
-        if app_spec is None or app_spec.assistant is None:
+        if not isinstance(assistant_id, str):
+            continue
+        try:
+            _resolved_id, app_spec = hosted_apps._resolve_team_app(team_id, assistant_id)
+        except marketplace.MarketplaceError:
+            continue
+        if app_spec.assistant is None:
             continue
         if assistant_id in seen:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "duplicate installed Assistant identity")
@@ -471,7 +484,7 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
     ):
         raise runtime_state.ApiError(power_execution.UNDECLARED_POWER_STATUS, "Assistant requested an undeclared Power")
     try:
-        safe_input = marketplace.validate_power_input(assistant_id, power, request.payload)
+        safe_input = _validate_power_payload(contract, power, request.payload, output=False)
     except ValueError as exc:
         raise runtime_state.ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc)) from exc
     _current_id, _current_contract, current_container = _installed_assistant(
@@ -516,7 +529,7 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
         projected = power_execution.project_rpc_result(
             raw_result,
             account_values,
-            lambda value: marketplace.validate_power_output(assistant_id, power, value),
+            lambda value: _validate_power_payload(contract, power, value, output=True),
         )
     except power_execution.RpcSecretExposureError:
         audit.log(
@@ -551,12 +564,30 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
 
 def _validate_assistant_power_input(bindings, assistant_id: str, power: str, power_input) -> object:
     """Normalize one hosted Power input without touching Docker or another external system."""
-    if assistant_id not in bindings:
+    active = bindings.get(assistant_id)
+    if active is None:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Brain requested an unavailable Assistant")
     try:
-        return marketplace.validate_power_input(assistant_id, power, power_input)
+        return _validate_power_payload(active.contract, power, power_input, output=False)
     except ValueError as exc:
         raise runtime_state.ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+def _validate_power_payload(
+    contract: marketplace.AssistantContract,
+    power_id: str,
+    payload: object,
+    *,
+    output: bool,
+) -> dict[str, object]:
+    power = contract.powers.get(power_id)
+    if power is None:
+        raise ValueError("the Power has no declared contract")
+    schema = power.output_schema if output else power.input_schema
+    return assistant_manifest.validate_schema_payload(
+        Draft202012Validator(schema),
+        payload,
+    )
 
 
 def _chat_file_metadata(team_id: str, file_ids: object) -> list[dict[str, object]]:

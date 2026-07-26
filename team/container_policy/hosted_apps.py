@@ -12,6 +12,7 @@ import assistant_genesis
 import assistant_manifest
 import docker
 import docker.errors
+import dynamic_assistants
 import egress_policy
 import manifests
 import marketplace
@@ -80,6 +81,30 @@ def _admit_app_contract(spec: marketplace.AppSpec, container) -> tuple[str, ...]
 def _team_app_containers(team_id: str) -> list:
     """Every installed-app container of team `team_id` (its OWN label set — never `team.driver`)."""
     return runtime_state._docker.containers.list(all=True, filters={"label": ["team.app.driver", f"team.id={team_id}"]})
+
+
+def _resolve_team_app(team_id: str, app_id: object) -> tuple[str, marketplace.AppSpec]:
+    """Resolve a static catalog entry or this Team's exact durable dynamic binding."""
+    assistant_id = marketplace.validate_app_id(app_id)
+    if assistant_id in marketplace.RESERVED_APP_IDS:
+        raise marketplace.MarketplaceError(
+            f"app id {assistant_id!r} is reserved for Team infrastructure"
+        )
+    static = marketplace.APPS.get(assistant_id)
+    if static is not None:
+        return assistant_id, static
+    try:
+        binding = runtime_state._dynamic_assistants.get(team_id, assistant_id)
+        if binding is None:
+            raise marketplace.MarketplaceError(
+                f"app {assistant_id!r} is not deployable in this Team"
+            )
+        return assistant_id, dynamic_assistants.app_spec(binding)
+    except dynamic_assistants.DynamicAssistantError as exc:
+        raise runtime_state.ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "dynamic Assistant metadata is unavailable",
+        ) from exc
 
 
 def _app_egress_token(
@@ -568,6 +593,14 @@ def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._Authoriza
             raise runtime_state.ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE, "Assistant account state is unavailable"
             ) from exc
+        if app_id not in marketplace.APPS:
+            try:
+                runtime_state._dynamic_assistants.delete(team_id, app_id)
+            except dynamic_assistants.DynamicAssistantError as exc:
+                raise runtime_state.ApiError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "dynamic Assistant metadata could not be removed",
+                ) from exc
         return {"team_id": team_id, "app": app_id, "uninstalled": True, "db_dropped": cleanup.db_dropped}
 
 
@@ -584,6 +617,8 @@ def _list_apps(team_id: str, lease: hosted_resources._AuthorizationLease) -> dic
             }
             for c in _team_app_containers(team_id)
             for app_id in [c.labels.get("team.app")]
-            for spec in [marketplace.APPS.get(app_id) if isinstance(app_id, str) else None]
+            for spec in [
+                _resolve_team_app(team_id, app_id)[1] if isinstance(app_id, str) else None
+            ]
         ]
         return {"team_id": team_id, "apps": apps}

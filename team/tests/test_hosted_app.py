@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import json
 import os
 import tempfile
 import types
@@ -32,6 +34,7 @@ oauth_account_store = runtime_state.oauth_account_store
 oauth_http_client = runtime_state.oauth_http_client
 power_journal = runtime_state.power_journal
 hosted_egress_policy = hosted_apps.egress_policy
+dynamic_assistants = hosted_apps.dynamic_assistants
 
 
 class _RouteHarness:
@@ -402,3 +405,32 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
         environment = kwargs["environment"]
 
         self.assertFalse({key for key in environment if key.upper().endswith("_PROXY")})
+
+
+class HostedDynamicAssistantResolutionTests(unittest.TestCase):
+    def test_dynamic_resolution_is_team_scoped_and_digest_bound(self) -> None:
+        vectors = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "contracts"
+                / "developers-controller"
+                / "v1"
+                / "vectors.json"
+            ).read_bytes()
+        )
+        resolution = copy.deepcopy(vectors["fixtures"]["resolve_response"]["value"])
+        power = resolution["machine_contract"]["powers"][0]
+        power["input_schema"]["additionalProperties"] = False
+        power["output_schema"]["additionalProperties"] = False
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = dynamic_assistants.DynamicAssistantStore(Path(directory) / "bindings.json")
+            store.put("team_1", resolution)
+            with mock.patch.object(runtime_state, "_dynamic_assistants", store):
+                assistant_id, spec = hosted_apps._resolve_team_app("team_1", "hello-world")
+                with self.assertRaises(marketplace.MarketplaceError):
+                    hosted_apps._resolve_team_app("team_2", "hello-world")
+
+        self.assertEqual(assistant_id, "hello-world")
+        self.assertEqual(spec.image, resolution["image_reference"])
+        self.assertEqual(spec.required_image_labels[1][1], resolution["source_digest"])
