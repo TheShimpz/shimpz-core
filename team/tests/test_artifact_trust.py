@@ -7,6 +7,7 @@ import copy
 import json
 import types
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 
 from artifact_trust import SIGNER_IDENTITY, ArtifactTrustError, ArtifactTrustVerifier
@@ -14,6 +15,10 @@ from developers_controller_contract import CONTRACT_ROOT
 
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 RESOLUTION = VECTORS["fixtures"]["resolve_response"]["value"]
+AUTH = types.SimpleNamespace(
+    docker_auth_config=lambda: {"username": "registry-reader", "password": "x" * 20},
+    docker_config=lambda: nullcontext("/run/shimpz-test-registry"),
+)
 
 
 def _signature(resolution: dict[str, object]) -> list[dict[str, object]]:
@@ -73,11 +78,14 @@ class ArtifactTrustTests(unittest.TestCase):
             )
         )
         images = types.SimpleNamespace(
-            get_registry_data=lambda _tag: types.SimpleNamespace(id=next(digests))
+            get_registry_data=lambda _tag, *, auth_config: types.SimpleNamespace(
+                id=next(digests)
+            )
         )
         return ArtifactTrustVerifier(
             types.SimpleNamespace(images=images),
             container_id="a" * 64,
+            credentials=AUTH,
         )
 
     def test_accepts_signature_provenance_and_exact_attachment_digests(self) -> None:

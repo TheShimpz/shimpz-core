@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import docker
 import marketplace
+import registry_auth
 
 
 class ImageTrustError(RuntimeError):
@@ -19,7 +20,11 @@ def _get(images, image_ref: str):
         raise ImageTrustError("trusted marketplace artifact is unavailable") from exc
 
 
-def ensure_digest_artifact(images, spec: marketplace.AppSpec) -> str:
+def ensure_digest_artifact(
+    images,
+    spec: marketplace.AppSpec,
+    credentials: registry_auth.RegistryAuth,
+) -> str:
     """Get or pull one registry-owned digest, then prove its digest and declared OCI identity."""
     image_ref = spec.image
     if not marketplace.is_digest_image(image_ref):
@@ -30,7 +35,10 @@ def ensure_digest_artifact(images, spec: marketplace.AppSpec) -> str:
         try:
             # image_ref is the exact reviewed registry digest from AppSpec. No request field can
             # influence this pull, and tags are deliberately rejected above.
-            images.pull(image_ref)
+            images.pull(
+                image_ref,
+                auth_config=credentials.docker_auth_config(),
+            )
         except docker.errors.DockerException as exc:
             raise ImageTrustError("trusted marketplace artifact is unavailable") from exc
         image = _get(images, image_ref)

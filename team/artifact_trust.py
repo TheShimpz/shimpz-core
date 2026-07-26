@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import docker
+import registry_auth
 
 SIGNER_IDENTITY = (
     "https://github.com/TheShimpz/shimpz-developers/"
@@ -34,10 +35,12 @@ class ArtifactTrustVerifier:
         binary: str = "/usr/local/bin/cosign",
         *,
         container_id: str | None = None,
+        credentials: registry_auth.RegistryAuth,
     ) -> None:
         self._docker = docker_client
         self._binary = binary
         self._container_id = _self_container_id() if container_id is None else container_id
+        self._credentials = credentials
 
     def verify(self, resolution: dict[str, Any]) -> None:
         if resolution["trust"]["signer_identity"] != SIGNER_IDENTITY:
@@ -89,7 +92,10 @@ class ArtifactTrustVerifier:
         if not tag.startswith(f"{TRUST_REPOSITORY}:") or "\n" in tag:
             raise ArtifactTrustError("Sigstore attachment location is invalid")
         try:
-            registry_data = self._docker.images.get_registry_data(tag)
+            registry_data = self._docker.images.get_registry_data(
+                tag,
+                auth_config=self._credentials.docker_auth_config(),
+            )
             digest = registry_data.id
         except (AttributeError, docker.errors.DockerException) as exc:
             raise ArtifactTrustError("Sigstore attachment digest is unavailable") from exc
@@ -114,7 +120,10 @@ class ArtifactTrustVerifier:
         return value
 
     def _run_cosign(self, arguments: tuple[str, ...]) -> bytes:
-        with tempfile.TemporaryDirectory(prefix="shimpz-cosign-") as directory:
+        with (
+            tempfile.TemporaryDirectory(prefix="shimpz-cosign-") as directory,
+            self._credentials.docker_config() as docker_config,
+        ):
             try:
                 execution = self._docker.api.exec_create(
                     container=self._container_id,
@@ -128,6 +137,7 @@ class ArtifactTrustVerifier:
                         f"HOME={directory}",
                         f"PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
                         f"COSIGN_REPOSITORY={TRUST_REPOSITORY}",
+                        f"DOCKER_CONFIG={docker_config}",
                     ],
                 )
                 execution_id = execution["Id"]

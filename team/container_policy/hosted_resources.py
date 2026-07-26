@@ -114,7 +114,11 @@ def _prepare_marketplace_image(spec: marketplace.AppSpec) -> None:
     if not marketplace.is_digest_image(spec.image):
         return
     try:
-        marketplace_image.ensure_digest_artifact(runtime_state._docker.images, spec)
+        marketplace_image.ensure_digest_artifact(
+            runtime_state._docker.images,
+            spec,
+            runtime_state._registry_auth,
+        )
     except marketplace_image.ImageTrustError as exc:
         raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
 

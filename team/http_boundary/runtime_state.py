@@ -29,6 +29,7 @@ import oauth_account_store
 import oauth_http_client
 import oauth_pkce_challenges
 import power_journal
+import registry_auth
 import team_storage
 import token_store
 
@@ -104,6 +105,12 @@ DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH = Path(
 CONTROLLER_DEVELOPERS_TOKEN_PATH = Path(
     "/run/shimpz-developers-controller/controller-to-developers-token"
 )
+REGISTRY_USERNAME_PATH = Path(
+    "/run/shimpz-developers-controller/assistant-registry-username"
+)
+REGISTRY_TOKEN_PATH = Path(
+    "/run/shimpz-developers-controller/assistant-registry-token"
+)
 DYNAMIC_ASSISTANT_PATH = Path(
     os.environ.get(
         "SHIMPZ_TEAM_DYNAMIC_ASSISTANT_PATH",
@@ -114,6 +121,7 @@ HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
 _docker = docker.from_env()
+_registry_auth: registry_auth.RegistryAuth | None = None
 _token = token_store.ensure_token()
 # Weak maps retain one per-Team lock while a holder or waiter references it, without leaking entries
 # after terminal operations or allowing an old locked object and a new unlocked object to coexist.
@@ -248,7 +256,7 @@ def _power_execution_journal() -> power_journal.PowerJournal:
 
 def _initialize_developers_integration() -> None:
     """Load both directional service identities before the public server starts."""
-    global _developers_delegation, _developers_client, _artifact_trust
+    global _developers_delegation, _developers_client, _artifact_trust, _registry_auth
     _developers_delegation = developers_delegation.DevelopersDelegationVerifier(
         DEVELOPERS_CONTROLLER_TOKEN_PATH,
         DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH,
@@ -256,7 +264,14 @@ def _initialize_developers_integration() -> None:
     _developers_client = developers_client.DevelopersClient(
         CONTROLLER_DEVELOPERS_TOKEN_PATH
     )
-    _artifact_trust = artifact_trust.ArtifactTrustVerifier(_docker)
+    _registry_auth = registry_auth.RegistryAuth.from_files(
+        REGISTRY_USERNAME_PATH,
+        REGISTRY_TOKEN_PATH,
+    )
+    _artifact_trust = artifact_trust.ArtifactTrustVerifier(
+        _docker,
+        credentials=_registry_auth,
+    )
 
 
 def _lock_for(team_id: str) -> threading.Lock:

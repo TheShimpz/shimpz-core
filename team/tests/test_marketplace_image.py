@@ -6,6 +6,9 @@ import docker
 import marketplace
 import marketplace_image
 
+AUTH_CONFIG = {"username": "registry-reader", "password": "x" * 20}
+AUTH = type("_Auth", (), {"docker_auth_config": lambda self: AUTH_CONFIG})()
+
 
 class _Image:
     def __init__(
@@ -35,7 +38,14 @@ class _Images:
             raise docker.errors.ImageNotFound("missing")
         return self.image
 
-    def pull(self, image_ref: str) -> _Image | None:
+    def pull(
+        self,
+        image_ref: str,
+        *,
+        auth_config: dict[str, str],
+    ) -> _Image | None:
+        if auth_config != AUTH_CONFIG:
+            raise AssertionError("private registry credentials were not forwarded")
         self.pulls.append(image_ref)
         return self.image
 
@@ -81,7 +91,10 @@ class MarketplaceImageTests(unittest.TestCase):
     def test_missing_digest_is_pulled_by_the_exact_registry_reference_then_rechecked(self) -> None:
         spec = marketplace.APPS["shimpz-cloudflare"]
         images = _Images(_assistant_image(), missing_once=True)
-        self.assertEqual(marketplace_image.ensure_digest_artifact(images, spec), "sha256:" + "b" * 64)
+        self.assertEqual(
+            marketplace_image.ensure_digest_artifact(images, spec, AUTH),
+            "sha256:" + "b" * 64,
+        )
         self.assertEqual(images.gets, [spec.image, spec.image])
         self.assertEqual(images.pulls, [spec.image])
 
@@ -96,7 +109,7 @@ class MarketplaceImageTests(unittest.TestCase):
             with self.subTest(attrs=image.attrs):
                 images = _Images(image)
                 with self.assertRaises(marketplace_image.ImageTrustError):
-                    marketplace_image.ensure_digest_artifact(images, spec)
+                    marketplace_image.ensure_digest_artifact(images, spec, AUTH)
                 self.assertEqual(images.pulls, [])
 
     def test_tag_backed_notification_center_is_not_eligible_for_registry_pull(self) -> None:
@@ -104,7 +117,7 @@ class MarketplaceImageTests(unittest.TestCase):
         images = _Images(_assistant_image())
         self.assertFalse(marketplace.is_digest_image(spec.image))
         with self.assertRaises(marketplace_image.ImageTrustError):
-            marketplace_image.ensure_digest_artifact(images, spec)
+            marketplace_image.ensure_digest_artifact(images, spec, AUTH)
         self.assertEqual(images.gets, [])
         self.assertEqual(images.pulls, [])
 
