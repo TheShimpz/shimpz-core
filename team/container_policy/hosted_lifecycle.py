@@ -388,22 +388,23 @@ def _destroy(team_id: str, lease: hosted_resources._AuthorizationLease) -> dict:
         if not chat_lock.acquire(timeout=30):
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "the active chat turn did not stop in time")
         try:
-            try:
-                runtime_state._brain_runtime.delete_thread(
-                    hosted_resources._brain_thread_id(team_id, lease.container_id)
-                )
-            except brain_runtime_client.BrainRuntimeError as exc:
-                raise runtime_state.ApiError(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "Team conversation state could not be deleted",
-                ) from exc
-            try:
-                runtime_state._power_execution_journal().purge(lease.container_id)
-            except power_journal.PowerJournalError as exc:
-                raise runtime_state.ApiError(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    "Team Power execution state could not be deleted",
-                ) from exc
+            if lease.container_id:
+                try:
+                    runtime_state._brain_runtime.delete_thread(
+                        hosted_resources._brain_thread_id(team_id, lease.container_id)
+                    )
+                except brain_runtime_client.BrainRuntimeError as exc:
+                    raise runtime_state.ApiError(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "Team conversation state could not be deleted",
+                    ) from exc
+                try:
+                    runtime_state._power_execution_journal().purge(lease.container_id)
+                except power_journal.PowerJournalError as exc:
+                    raise runtime_state.ApiError(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "Team Power execution state could not be deleted",
+                    ) from exc
             cleanup = _teardown(team_id, owner=lease.owner, brain_id=lease.container_id)
             runtime_state._clear_team_id_runtime_state(team_id)
             if not cleanup.complete:

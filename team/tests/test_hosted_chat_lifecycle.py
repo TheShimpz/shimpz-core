@@ -630,6 +630,62 @@ class HostedChatLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(result, {"team_id": "team_1", "destroyed": True, "db_dropped": True})
 
+    def test_destroy_skips_runtime_state_when_creation_failed_before_container(self) -> None:
+        events: list[object] = []
+        lease = hosted_resources._AuthorizationLease(
+            team_id="team_1",
+            container_id="",
+            owner="account_1",
+            principal=("account", "account_1"),
+            cleanup_nonce="retry-nonce",
+        )
+        chat_lock = types.SimpleNamespace(
+            acquire=lambda *, timeout: events.append(("chat-drained", timeout)) or True,
+            release=lambda: events.append("chat-released"),
+        )
+        runtime = types.SimpleNamespace(
+            delete_thread=lambda _thread: self.fail("no Brain generation exists"),
+        )
+        journal = types.SimpleNamespace(
+            purge=lambda _generation: self.fail("no Power generation exists"),
+        )
+
+        with (
+            mock.patch.multiple(
+                runtime_state,
+                _lock_for=lambda _team_id: contextlib.nullcontext(),
+                _chat_lock_for=lambda _team_id: chat_lock,
+                _brain_runtime=runtime,
+                _power_execution_journal=lambda: journal,
+                _clear_team_id_runtime_state=lambda team_id: events.append(("runtime-cleared", team_id)),
+            ),
+            mock.patch.object(
+                hosted_resources,
+                "_require_cleanup_authorization",
+                side_effect=lambda _team_id, _lease: events.append("authorized"),
+            ),
+            mock.patch.object(
+                hosted_lifecycle,
+                "_teardown",
+                side_effect=lambda team_id, *, owner, brain_id: (
+                    events.append(("teardown", team_id, owner, brain_id)) or hosted_resources._CleanupResult(True, True)
+                ),
+            ),
+        ):
+            result = hosted_lifecycle._destroy("team_1", lease)
+
+        self.assertEqual(
+            events,
+            [
+                "authorized",
+                ("chat-drained", 30),
+                ("teardown", "team_1", "account_1", ""),
+                ("runtime-cleared", "team_1"),
+                "chat-released",
+            ],
+        )
+        self.assertEqual(result, {"team_id": "team_1", "destroyed": True, "db_dropped": True})
+
     def test_destroy_retries_thread_delete_without_teardown_after_redacted_failure(self) -> None:
         delete_calls: list[str] = []
         teardown = mock.Mock(return_value=hosted_resources._CleanupResult(True, True))
