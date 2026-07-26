@@ -88,7 +88,7 @@ RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py marketplace.py marketplace_image.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
-     developers_controller_contract.py dynamic_assistants.py \
+     artifact_trust.py developers_client.py developers_controller_contract.py developers_delegation.py dynamic_assistants.py \
      assistant_chat.py \
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \

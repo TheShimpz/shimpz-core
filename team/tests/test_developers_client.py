@@ -110,6 +110,15 @@ class DevelopersClientTests(unittest.TestCase):
         ):
             self.client.resolve(RESOLUTION["source_digest"])
 
+        mismatched = copy.deepcopy(RESOLUTION)
+        mismatched["source_digest"] = "sha256:" + "9" * 64
+        _Connection.response = _Response(200, mismatched)
+        with (
+            mock.patch("developers_client.http.client.HTTPConnection", _Connection),
+            self.assertRaises(DevelopersClientError),
+        ):
+            self.client.resolve(RESOLUTION["source_digest"])
+
 
 if __name__ == "__main__":
     unittest.main()

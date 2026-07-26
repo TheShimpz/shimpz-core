@@ -42,7 +42,10 @@ class DevelopersClient:
             raise AssistantNotInstallableError("Assistant is not installable")
         if status != 200:
             raise DevelopersClientError("Developers resolution is unavailable")
-        return _validated("resolve-response.schema.json", value)
+        resolution = _validated("resolve-response.schema.json", value)
+        if resolution["source_digest"] != source_digest:
+            raise DevelopersClientError("Developers resolution does not match the requested digest")
+        return resolution
 
     def authorize_install(self, request: dict[str, object]) -> dict[str, Any]:
         try:

@@ -6,14 +6,20 @@ import contextlib
 import functools
 import json
 import threading
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts_client
+import artifact_trust
 import audit
 import brain_runtime_token_store
+import developers_client
+import developers_controller_contract
+import developers_delegation
 import docker
+import dynamic_assistants
 import marketplace
 import validate
 from assistant_human import hosted_assistants, hosted_chat_api, hosted_chat_segment
@@ -21,6 +27,10 @@ from container_policy import hosted_apps, hosted_lifecycle, hosted_resources
 
 from http_boundary import hosted, runtime_state, stdlib
 from http_boundary import strict as strict_http
+
+_DEVELOPERS_TEAMS_PATH = "/internal/v1/developers/teams"
+_DEVELOPERS_INSTALL_PATH = "/internal/v1/developers/install"
+_CONTROLLER_CONTRACTS = developers_controller_contract.ContractValidator()
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        if self.path in {_DEVELOPERS_TEAMS_PATH, _DEVELOPERS_INSTALL_PATH}:
+            self._dispatch_developers(method)
+            return
         principal = self._principal()
         if principal is None:
             if self.client_address[0] == "127.0.0.1":
@@ -235,6 +248,132 @@ class Handler(BaseHTTPRequestHandler):
             emit=lambda failure: self._emit_failure(method, failure),
             unexpected_message="internal driver error",
         )
+
+    def _dispatch_developers(self, method: str) -> None:
+        try:
+            if method == "GET" and self.path == _DEVELOPERS_TEAMS_PATH:
+                self._route_developers_teams()
+                return
+            if method == "POST" and self.path == _DEVELOPERS_INSTALL_PATH:
+                self._route_developers_install()
+                return
+            raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, "operation not found")
+        except developers_delegation.DevelopersDelegationError:
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid Developers delegation"})
+        except developers_client.AssistantNotInstallableError:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Assistant is not installable"})
+        except developers_client.InstallAuthorizationDeniedError:
+            self._send_json(HTTPStatus.CONFLICT, {"error": "Assistant installation is no longer authorized"})
+        except developers_client.DevelopersClientError:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Developers is unavailable"})
+        except artifact_trust.ArtifactTrustError:
+            self._send_json(HTTPStatus.CONFLICT, {"error": "Assistant artifact trust failed"})
+        except runtime_state.ApiError as exc:
+            self._send_json(exc.status, {"error": exc.message})
+        except (docker.errors.DockerException, OSError):
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Controller dependency is unavailable"})
+        except (developers_controller_contract.ContractValidationError, dynamic_assistants.DynamicAssistantError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "installation request is invalid"})
+
+    def _developers_dependencies(self):
+        dependencies = (
+            runtime_state._developers_delegation,
+            runtime_state._developers_client,
+            runtime_state._artifact_trust,
+        )
+        if any(dependency is None for dependency in dependencies):
+            raise runtime_state.ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Developers integration is unavailable",
+            )
+        return dependencies
+
+    def _route_developers_teams(self) -> None:
+        try:
+            strict_http.reject_body(self.headers)
+        except strict_http.HttpContractError as exc:
+            raise runtime_state.ApiError(exc.status, exc.message) from exc
+        delegation, _client, _trust = self._developers_dependencies()
+        claims = delegation.verify(self.headers, action="teams:list")
+        listing = hosted_lifecycle._list(owner=claims["account_id"])
+        response = {
+            "version": 1,
+            "teams": [
+                {"id": team["team_id"], "name": team["team_name"]}
+                for team in listing["teams"]
+            ],
+        }
+        _CONTROLLER_CONTRACTS.validate("team-list-response.schema.json", response)
+        self._send_json(HTTPStatus.OK, response, no_store=True)
+
+    def _route_developers_install(self) -> None:
+        body = self._read_driver_body(
+            {"version", "team_id", "source_digest", "request_id", "idempotency_key"}
+        )
+        _CONTROLLER_CONTRACTS.validate("controller-install-request.schema.json", body)
+        delegation, client, trust = self._developers_dependencies()
+        claims = delegation.verify(
+            self.headers,
+            action="assistant:install",
+            request=body,
+        )
+        principal = ("account", claims["account_id"])
+        runtime_state._enforce_rate("install", principal)
+        lease = hosted_resources._authorize(body["team_id"], principal)
+        resolution = client.resolve(body["source_digest"])
+        trust.verify(resolution)
+        binding = dynamic_assistants.binding_from_resolution(body["team_id"], resolution)
+
+        def authorize_start() -> None:
+            request = {
+                "version": 1,
+                "account_id": claims["account_id"],
+                "team_id": body["team_id"],
+                "source_digest": body["source_digest"],
+                "oci_digest": resolution["oci_digest"],
+                "delegation_jti": claims["jti"],
+                "request_id": body["request_id"],
+                "idempotency_key": body["idempotency_key"],
+            }
+            receipt = client.authorize_install(request)
+            expected = {key: value for key, value in request.items() if key != "version"}
+            mismatched = any(
+                receipt.get(key) != value for key, value in expected.items()
+            )
+            now = int(time.time())
+            if mismatched or not receipt["issued_at"] <= now <= receipt["expires_at"]:
+                raise developers_client.InstallAuthorizationDeniedError(
+                    "installation authorization does not match"
+                )
+
+        installed = hosted_apps._install_dynamic_assistant(
+            body["team_id"],
+            binding,
+            claims["account_id"],
+            lease,
+            authorize_start=authorize_start,
+        )
+        response = {
+            "version": 1,
+            "status": "installed",
+            "team_id": body["team_id"],
+            "assistant_id": binding.assistant_id,
+            "source_digest": installed["source_digest"],
+            "oci_digest": installed["oci_digest"],
+            "binding_digest": installed["binding_digest"],
+        }
+        _CONTROLLER_CONTRACTS.validate(
+            "controller-install-response.schema.json",
+            response,
+        )
+        audit.log(
+            "developers_install",
+            body["team_id"],
+            result="ok",
+            assistant=binding.assistant_id,
+            source_digest=body["source_digest"],
+        )
+        self._send_json(HTTPStatus.OK, response, no_store=True)
 
     def _emit_failure(self, method: str, failure: stdlib.HttpFailure) -> None:
         audit.log(method.lower(), self.path, result=failure.result, reason=failure.audit_reason)
@@ -585,4 +724,5 @@ def main() -> None:
     # The Controller owns this bearer. The runtime receives the same named volume read-only and
     # cannot rotate or replace its authority.
     brain_runtime_token_store.ensure()
+    runtime_state._initialize_developers_integration()
     _BoundedThreadingHTTPServer((runtime_state.ALL_INTERFACES, runtime_state.LISTEN_PORT), Handler).serve_forever()

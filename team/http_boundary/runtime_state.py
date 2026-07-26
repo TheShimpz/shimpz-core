@@ -13,10 +13,13 @@ from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 
+import artifact_trust
 import assistant_account_challenges
 import assistant_genesis
 import assistant_manifest
 import brain_runtime_client
+import developers_client
+import developers_delegation
 import docker
 import dynamic_assistants
 import inference_config
@@ -92,6 +95,15 @@ ASSISTANT_ACCOUNT_KEY_PATH = Path(
         "/var/lib/team-driver/assistant-accounts/key/aes256.key",
     )
 )
+DEVELOPERS_CONTROLLER_TOKEN_PATH = Path(
+    "/run/shimpz-developers-controller/developers-to-controller-token"
+)
+DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH = Path(
+    "/run/shimpz-developers-controller/delegation-public.pem"
+)
+CONTROLLER_DEVELOPERS_TOKEN_PATH = Path(
+    "/run/shimpz-developers-controller/controller-to-developers-token"
+)
 DYNAMIC_ASSISTANT_PATH = Path(
     os.environ.get(
         "SHIMPZ_TEAM_DYNAMIC_ASSISTANT_PATH",
@@ -146,6 +158,9 @@ _oauth_accounts = oauth_account_service.OAuthAccountService(
     http=_oauth_http,
 )
 _inference_store = inference_config.InferenceConfigStore()
+_developers_delegation: developers_delegation.DevelopersDelegationVerifier | None = None
+_developers_client: developers_client.DevelopersClient | None = None
+_artifact_trust: artifact_trust.ArtifactTrustVerifier | None = None
 
 
 class ApiError(Exception):
@@ -229,6 +244,19 @@ def _power_execution_journal() -> power_journal.PowerJournal:
         if _power_journal_instance is None:
             _power_journal_instance = power_journal.PowerJournal(POWER_JOURNAL_PATH)
         return _power_journal_instance
+
+
+def _initialize_developers_integration() -> None:
+    """Load both directional service identities before the public server starts."""
+    global _developers_delegation, _developers_client, _artifact_trust
+    _developers_delegation = developers_delegation.DevelopersDelegationVerifier(
+        DEVELOPERS_CONTROLLER_TOKEN_PATH,
+        DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH,
+    )
+    _developers_client = developers_client.DevelopersClient(
+        CONTROLLER_DEVELOPERS_TOKEN_PATH
+    )
+    _artifact_trust = artifact_trust.ArtifactTrustVerifier(_docker)
 
 
 def _lock_for(team_id: str) -> threading.Lock:
