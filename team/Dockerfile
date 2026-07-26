@@ -29,6 +29,10 @@ RUN set -eux; \
 ARG UV_VERSION=0.11.25
 # Same version AND hash as drivers/apps/Dockerfile (astral.sh serves an immutable versioned artifact).
 ARG UV_INSTALL_SHA256=ca2de1bca2913ba30ce88658b6d90a663c627ecac378803aa58084a9adb35a46
+ARG COSIGN_VERSION=3.0.6
+ARG COSIGN_AMD64_SHA256=c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+ARG COSIGN_ARM64_SHA256=bedac92e8c3729864e13d4a17048007cfafa79d5deca993a43a90ffe018ef2b8
+ARG TARGETARCH
 # Must match the GID that owns /var/run/docker.sock on the host (stat -c '%g' /var/run/docker.sock).
 ARG DOCKER_GID=989
 # Fixed GID for THIS driver's token group — the caller (admin, uid 1000) joins it to read the token.
@@ -53,6 +57,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* /var/lib/apt/periodic/* /var/cache/apt/* /var/cache/fontconfig/* \
         /var/cache/ldconfig/aux-cache /var/cache/man/* /var/log/apt/* \
         /var/log/alternatives.log /var/log/dpkg.log /root/.cache/uv
+
+RUN case "${TARGETARCH}" in \
+        amd64) cosign_sha256="${COSIGN_AMD64_SHA256}" ;; \
+        arm64) cosign_sha256="${COSIGN_ARM64_SHA256}" ;; \
+        *) echo "unsupported Cosign architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -LsSf "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${TARGETARCH}" \
+        -o /tmp/cosign \
+    && echo "${cosign_sha256}  /tmp/cosign" | sha256sum -c - \
+    && install -m 0755 /tmp/cosign /usr/local/bin/cosign \
+    && rm -f /tmp/cosign
 
 # Every shared capability has a distinct supplementary group.
 RUN groupadd -g "${DOCKER_GID}" dockersock \
