@@ -96,21 +96,11 @@ ASSISTANT_ACCOUNT_KEY_PATH = Path(
         "/var/lib/team-driver/assistant-accounts/key/aes256.key",
     )
 )
-DEVELOPERS_CONTROLLER_TOKEN_PATH = Path(
-    "/run/shimpz-developers-controller/developers-to-controller-token"
-)
-DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH = Path(
-    "/run/shimpz-developers-controller/delegation-public.pem"
-)
-CONTROLLER_DEVELOPERS_TOKEN_PATH = Path(
-    "/run/shimpz-developers-controller/controller-to-developers-token"
-)
-REGISTRY_USERNAME_PATH = Path(
-    "/run/shimpz-developers-controller/assistant-registry-username"
-)
-REGISTRY_TOKEN_PATH = Path(
-    "/run/shimpz-developers-controller/assistant-registry-token"
-)
+DEVELOPERS_CONTROLLER_TOKEN_PATH = Path("/run/shimpz-developers-controller/developers-to-controller-token")
+DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH = Path("/run/shimpz-developers-controller/delegation-public.pem")
+CONTROLLER_DEVELOPERS_TOKEN_PATH = Path("/run/shimpz-developers-controller/controller-to-developers-token")
+REGISTRY_USERNAME_PATH = Path("/run/shimpz-developers-controller/assistant-registry-username")
+REGISTRY_TOKEN_PATH = Path("/run/shimpz-developers-controller/assistant-registry-token")
 DYNAMIC_ASSISTANT_PATH = Path(
     os.environ.get(
         "SHIMPZ_TEAM_DYNAMIC_ASSISTANT_PATH",
@@ -261,9 +251,7 @@ def _initialize_developers_integration() -> None:
         DEVELOPERS_CONTROLLER_TOKEN_PATH,
         DEVELOPERS_DELEGATION_PUBLIC_KEY_PATH,
     )
-    _developers_client = developers_client.DevelopersClient(
-        CONTROLLER_DEVELOPERS_TOKEN_PATH
-    )
+    _developers_client = developers_client.DevelopersClient(CONTROLLER_DEVELOPERS_TOKEN_PATH)
     _registry_auth = registry_auth.RegistryAuth.from_files(
         REGISTRY_USERNAME_PATH,
         REGISTRY_TOKEN_PATH,

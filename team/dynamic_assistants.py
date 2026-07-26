@@ -61,9 +61,7 @@ class DynamicAssistantStore:
             if existing is not None:
                 if existing == binding:
                     return existing
-                raise DynamicAssistantConflictError(
-                    "the Team already binds this Assistant id to another artifact"
-                )
+                raise DynamicAssistantConflictError("the Team already binds this Assistant id to another artifact")
             if len(bindings) >= _MAX_BINDINGS:
                 raise DynamicAssistantError("the dynamic Assistant registry is full")
             bindings.append(binding)
@@ -86,9 +84,7 @@ class DynamicAssistantStore:
         with self._exclusive_lock():
             bindings = self._read()
             retained = [
-                binding
-                for binding in bindings
-                if (binding.team_id, binding.assistant_id) != (team_id, assistant_id)
+                binding for binding in bindings if (binding.team_id, binding.assistant_id) != (team_id, assistant_id)
             ]
             if len(retained) == len(bindings):
                 return False
@@ -306,11 +302,7 @@ def _find(
     assistant_id: str,
 ) -> DynamicAssistantBinding | None:
     return next(
-        (
-            binding
-            for binding in bindings
-            if binding.team_id == team_id and binding.assistant_id == assistant_id
-        ),
+        (binding for binding in bindings if binding.team_id == team_id and binding.assistant_id == assistant_id),
         None,
     )
 
@@ -322,11 +314,7 @@ def _validate_team_id(team_id: object) -> None:
 
 def _validate_identity(team_id: object, assistant_id: object) -> None:
     _validate_team_id(team_id)
-    if (
-        not isinstance(assistant_id, str)
-        or len(assistant_id) > 40
-        or _ASSISTANT_ID_RE.fullmatch(assistant_id) is None
-    ):
+    if not isinstance(assistant_id, str) or len(assistant_id) > 40 or _ASSISTANT_ID_RE.fullmatch(assistant_id) is None:
         raise DynamicAssistantError("the Assistant id is invalid")
 
 

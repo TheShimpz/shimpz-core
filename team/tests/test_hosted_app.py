@@ -412,11 +412,7 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
     def _resolution() -> dict[str, object]:
         vectors = json.loads(
             (
-                Path(__file__).resolve().parents[1]
-                / "contracts"
-                / "developers-controller"
-                / "v1"
-                / "vectors.json"
+                Path(__file__).resolve().parents[1] / "contracts" / "developers-controller" / "v1" / "vectors.json"
             ).read_bytes()
         )
         resolution = copy.deepcopy(vectors["fixtures"]["resolve_response"]["value"])

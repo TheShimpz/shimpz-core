@@ -14,10 +14,7 @@ from typing import Any
 import docker
 import registry_auth
 
-SIGNER_IDENTITY = (
-    "https://github.com/TheShimpz/shimpz-developers/"
-    ".github/workflows/build-assistant.yml@refs/heads/main"
-)
+SIGNER_IDENTITY = "https://github.com/TheShimpz/shimpz-developers/.github/workflows/build-assistant.yml@refs/heads/main"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 TRUST_REPOSITORY = "ghcr.io/theshimpz/shimpz-assistant-trust"
 _MAX_OUTPUT_BYTES = 2 * 1024 * 1024
@@ -168,9 +165,7 @@ def _self_container_id() -> str:
         value = Path("/etc/hostname").read_text(encoding="ascii").strip()
     except (OSError, UnicodeError) as exc:
         raise RuntimeError("Team Controller container identity is unavailable") from exc
-    if not 12 <= len(value) <= 64 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
+    if not 12 <= len(value) <= 64 or any(character not in "0123456789abcdef" for character in value):
         raise RuntimeError("Team Controller container identity is invalid")
     return value
 
@@ -223,7 +218,7 @@ def _provenance_matches(envelope: object, resolution: dict[str, Any]) -> bool:
 def _decode_statement(payload: str) -> dict[str, Any] | None:
     try:
         statement = json.loads(base64.b64decode(payload, validate=True))
-    except (ValueError, binascii.Error, UnicodeError, json.JSONDecodeError):
+    except ValueError, binascii.Error, UnicodeError, json.JSONDecodeError:
         return None
     return statement if isinstance(statement, dict) else None
 

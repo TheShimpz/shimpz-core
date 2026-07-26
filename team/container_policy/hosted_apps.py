@@ -88,18 +88,14 @@ def _resolve_team_app(team_id: str, app_id: object) -> tuple[str, marketplace.Ap
     """Resolve a static catalog entry or this Team's exact durable dynamic binding."""
     assistant_id = marketplace.validate_app_id(app_id)
     if assistant_id in marketplace.RESERVED_APP_IDS:
-        raise marketplace.MarketplaceError(
-            f"app id {assistant_id!r} is reserved for Team infrastructure"
-        )
+        raise marketplace.MarketplaceError(f"app id {assistant_id!r} is reserved for Team infrastructure")
     static = marketplace.APPS.get(assistant_id)
     if static is not None:
         return assistant_id, static
     try:
         binding = runtime_state._dynamic_assistants.get(team_id, assistant_id)
         if binding is None:
-            raise marketplace.MarketplaceError(
-                f"app {assistant_id!r} is not deployable in this Team"
-            )
+            raise marketplace.MarketplaceError(f"app {assistant_id!r} is not deployable in this Team")
         return assistant_id, dynamic_assistants.app_spec(binding)
     except dynamic_assistants.DynamicAssistantError as exc:
         raise runtime_state.ApiError(
@@ -743,8 +739,6 @@ def _list_apps(team_id: str, lease: hosted_resources._AuthorizationLease) -> dic
             }
             for c in _team_app_containers(team_id)
             for app_id in [c.labels.get("team.app")]
-            for spec in [
-                _resolve_team_app(team_id, app_id)[1] if isinstance(app_id, str) else None
-            ]
+            for spec in [_resolve_team_app(team_id, app_id)[1] if isinstance(app_id, str) else None]
         ]
         return {"team_id": team_id, "apps": apps}

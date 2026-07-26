@@ -37,9 +37,7 @@ class ReplayGuard:
     def consume(self, jti: str, expires_at: int, *, now: int) -> None:
         with self._lock:
             self._seen = {
-                stored_jti: stored_expiry
-                for stored_jti, stored_expiry in self._seen.items()
-                if stored_expiry >= now
+                stored_jti: stored_expiry for stored_jti, stored_expiry in self._seen.items() if stored_expiry >= now
             }
             if jti in self._seen:
                 raise DevelopersDelegationError("delegation replayed")

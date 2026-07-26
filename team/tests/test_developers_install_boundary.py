@@ -12,12 +12,7 @@ from unittest import mock
 
 from hosted_app_fixture import hosted_apps, hosted_controller, hosted_lifecycle, hosted_resources, runtime_state
 
-CONTRACT_ROOT = (
-    __import__("pathlib").Path(__file__).resolve().parents[1]
-    / "contracts"
-    / "developers-controller"
-    / "v1"
-)
+CONTRACT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1] / "contracts" / "developers-controller" / "v1"
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 REQUEST = VECTORS["fixtures"]["controller_install_request"]["value"]
 CLAIMS = VECTORS["fixtures"]["assistant_install_delegation"]["value"]

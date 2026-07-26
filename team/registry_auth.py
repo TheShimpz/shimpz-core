@@ -51,9 +51,7 @@ class RegistryAuth:
     @contextmanager
     def docker_config(self) -> Iterator[str]:
         with tempfile.TemporaryDirectory(prefix="shimpz-registry-") as directory:
-            encoded = base64.b64encode(
-                f"{self._username}:{self._token}".encode("ascii")
-            ).decode("ascii")
+            encoded = base64.b64encode(f"{self._username}:{self._token}".encode("ascii")).decode("ascii")
             document = json.dumps(
                 {"auths": {"ghcr.io": {"auth": encoded}}},
                 separators=(",", ":"),

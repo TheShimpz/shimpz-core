@@ -22,15 +22,7 @@ AUTH = types.SimpleNamespace(
 
 
 def _signature(resolution: dict[str, object]) -> list[dict[str, object]]:
-    return [
-        {
-            "critical": {
-                "image": {
-                    "docker-manifest-digest": resolution["oci_digest"]
-                }
-            }
-        }
-    ]
+    return [{"critical": {"image": {"docker-manifest-digest": resolution["oci_digest"]}}}]
 
 
 def _attestation(resolution: dict[str, object]) -> list[dict[str, str]]:
@@ -67,18 +59,12 @@ class ArtifactTrustTests(unittest.TestCase):
     def _verifier(self, resolution: dict[str, object]) -> ArtifactTrustVerifier:
         digests = iter(
             (
-                resolution["trust"]["signature_reference"].removeprefix(
-                    "ghcr.io/theshimpz/shimpz-assistant-trust@"
-                ),
-                resolution["trust"]["provenance_reference"].removeprefix(
-                    "ghcr.io/theshimpz/shimpz-assistant-trust@"
-                ),
+                resolution["trust"]["signature_reference"].removeprefix("ghcr.io/theshimpz/shimpz-assistant-trust@"),
+                resolution["trust"]["provenance_reference"].removeprefix("ghcr.io/theshimpz/shimpz-assistant-trust@"),
             )
         )
         images = types.SimpleNamespace(
-            get_registry_data=lambda _tag, *, auth_config: types.SimpleNamespace(
-                id=next(digests)
-            )
+            get_registry_data=lambda _tag, *, auth_config: types.SimpleNamespace(id=next(digests))
         )
         return ArtifactTrustVerifier(
             types.SimpleNamespace(images=images),

@@ -270,9 +270,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.CONFLICT, {"error": "Assistant artifact trust failed"})
         except runtime_state.ApiError as exc:
             self._send_json(exc.status, {"error": exc.message})
-        except (docker.errors.DockerException, OSError):
+        except docker.errors.DockerException, OSError:
             self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Controller dependency is unavailable"})
-        except (developers_controller_contract.ContractValidationError, dynamic_assistants.DynamicAssistantError):
+        except developers_controller_contract.ContractValidationError, dynamic_assistants.DynamicAssistantError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "installation request is invalid"})
 
     def _developers_dependencies(self):
@@ -298,18 +298,13 @@ class Handler(BaseHTTPRequestHandler):
         listing = hosted_lifecycle._list(owner=claims["account_id"])
         response = {
             "version": 1,
-            "teams": [
-                {"id": team["team_id"], "name": team["team_name"]}
-                for team in listing["teams"]
-            ],
+            "teams": [{"id": team["team_id"], "name": team["team_name"]} for team in listing["teams"]],
         }
         _CONTROLLER_CONTRACTS.validate("team-list-response.schema.json", response)
         self._send_json(HTTPStatus.OK, response, no_store=True)
 
     def _route_developers_install(self) -> None:
-        body = self._read_driver_body(
-            {"version", "team_id", "source_digest", "request_id", "idempotency_key"}
-        )
+        body = self._read_driver_body({"version", "team_id", "source_digest", "request_id", "idempotency_key"})
         _CONTROLLER_CONTRACTS.validate("controller-install-request.schema.json", body)
         delegation, client, trust = self._developers_dependencies()
         claims = delegation.verify(
@@ -337,14 +332,10 @@ class Handler(BaseHTTPRequestHandler):
             }
             receipt = client.authorize_install(request)
             expected = {key: value for key, value in request.items() if key != "version"}
-            mismatched = any(
-                receipt.get(key) != value for key, value in expected.items()
-            )
+            mismatched = any(receipt.get(key) != value for key, value in expected.items())
             now = int(time.time())
             if mismatched or not receipt["issued_at"] <= now <= receipt["expires_at"]:
-                raise developers_client.InstallAuthorizationDeniedError(
-                    "installation authorization does not match"
-                )
+                raise developers_client.InstallAuthorizationDeniedError("installation authorization does not match")
 
         installed = hosted_apps._install_dynamic_assistant(
             body["team_id"],
