@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import http.client
 import time
+from collections.abc import Callable
 from http import HTTPStatus
 from typing import NoReturn
 
@@ -442,6 +443,8 @@ def _install_dynamic_assistant(
     binding: dynamic_assistants.DynamicAssistantBinding,
     owner: str,
     lease: hosted_resources._AuthorizationLease,
+    *,
+    authorize_start: Callable[[], None],
 ) -> dict[str, object]:
     """Install one validated published artifact and atomically retain its Team binding."""
     if team_id != binding.team_id:
@@ -474,6 +477,7 @@ def _install_dynamic_assistant(
                 owner,
                 lease,
                 binding=retained,
+                authorize_start=authorize_start,
             )
         except Exception:
             if previous is None:
@@ -496,6 +500,7 @@ def _install_app_locked(
     lease: hosted_resources._AuthorizationLease,
     *,
     binding: dynamic_assistants.DynamicAssistantBinding | None = None,
+    authorize_start: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     team = hosted_resources._require_current_authorization(team_id, lease)
     if owner != lease.owner:
@@ -519,6 +524,7 @@ def _install_app_locked(
         owner,
         team_name,
         binding=binding,
+        authorize_start=authorize_start,
     )
 
 
@@ -587,6 +593,7 @@ def _provision_app(
     team_name: str,
     *,
     binding: dynamic_assistants.DynamicAssistantBinding | None = None,
+    authorize_start: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     if len(_team_app_containers(team_id)) >= runtime_state.MAX_APPS_PER_TEAM:
         raise runtime_state.ApiError(
@@ -601,6 +608,7 @@ def _provision_app(
             owner,
             team_name,
             binding=binding,
+            authorize_start=authorize_start,
         )
     return {
         "team_id": team_id,
@@ -619,6 +627,7 @@ def _provision_app_transaction(
     team_name: str,
     *,
     binding: dynamic_assistants.DynamicAssistantBinding | None = None,
+    authorize_start: Callable[[], None] | None = None,
 ) -> str:
     # Return the same explicit admission error as Team create instead of relying on a
     # lower-level Docker create failure when the hostile-tenant runtime is unavailable.
@@ -654,6 +663,13 @@ def _provision_app_transaction(
         admitted_hosts = _admit_app_contract(spec, container)
         _validate_assistant_proxy_environment(container, token, admitted_hosts, egress_store)
         _activate_admitted_egress(network, token, admitted_hosts, egress_store)
+        if binding is not None:
+            if authorize_start is None:
+                raise runtime_state.ApiError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "dynamic Assistant start authorization is unavailable",
+                )
+            authorize_start()
         hosted_resources._start_team_with_isolation(container)
         healthy, reason = _wait_registered_app_ready(container, spec)
         if not healthy:

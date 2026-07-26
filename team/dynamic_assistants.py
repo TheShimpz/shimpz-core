@@ -54,7 +54,7 @@ class DynamicAssistantStore:
         self._thread_lock = threading.RLock()
 
     def put(self, team_id: str, resolution: dict[str, Any]) -> DynamicAssistantBinding:
-        binding = _binding(team_id, resolution)
+        binding = binding_from_resolution(team_id, resolution)
         with self._exclusive_lock():
             bindings = self._read()
             existing = _find(bindings, team_id, binding.assistant_id)
@@ -254,7 +254,10 @@ class _FileLock:
             self._thread_lock.release()
 
 
-def _binding(team_id: str, resolution: dict[str, Any]) -> DynamicAssistantBinding:
+def binding_from_resolution(
+    team_id: str,
+    resolution: dict[str, Any],
+) -> DynamicAssistantBinding:
     _validate_team_id(team_id)
     try:
         _CONTRACTS.validate("resolve-response.schema.json", resolution)
@@ -279,7 +282,7 @@ def _decode_binding(value: object) -> DynamicAssistantBinding:
     resolution = value["resolution"]
     if not isinstance(resolution, dict):
         raise DynamicAssistantError("the dynamic Assistant registry binding is malformed")
-    expected = _binding(value["team_id"], resolution)
+    expected = binding_from_resolution(value["team_id"], resolution)
     if value["binding_digest"] != expected.binding_digest:
         raise DynamicAssistantError("the dynamic Assistant registry binding digest is invalid")
     return expected

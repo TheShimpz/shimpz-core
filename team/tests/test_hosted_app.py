@@ -461,6 +461,7 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
                     incoming,
                     "creator_1",
                     lease,
+                    authorize_start=lambda: None,
                 )
 
             self.assertIsNotNone(retained.get("team_1", "hello-world"))
@@ -497,6 +498,7 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
                     incoming,
                     "creator_1",
                     lease,
+                    authorize_start=lambda: None,
                 )
 
             self.assertIsNone(retained.get("team_1", "hello-world"))
