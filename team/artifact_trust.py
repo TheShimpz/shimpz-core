@@ -177,8 +177,7 @@ def _self_container_id() -> str:
 
 def _verify_signature_payload(value: object, oci_digest: str) -> None:
     records = value if isinstance(value, list) else []
-    expected = oci_digest.removeprefix("sha256:")
-    if not any(_signature_digest(record) == expected for record in records):
+    if not any(_signature_digest(record) == oci_digest for record in records):
         raise ArtifactTrustError("Cosign signature does not bind the Assistant digest")
 
 

@@ -26,7 +26,7 @@ def _signature(resolution: dict[str, object]) -> list[dict[str, object]]:
         {
             "critical": {
                 "image": {
-                    "docker-manifest-digest": resolution["oci_digest"].removeprefix("sha256:")
+                    "docker-manifest-digest": resolution["oci_digest"]
                 }
             }
         }
