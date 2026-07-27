@@ -25,6 +25,10 @@ from container_policy import hosted_resources
 from container_policy import network as network_policy
 
 
+class _IncompleteInstallRollback(runtime_state.ApiError):
+    """An install failed while retryable resources still require their durable binding."""
+
+
 def _egress_store() -> egress_policy.EgressPolicyStore:
     return egress_policy.EgressPolicyStore(
         runtime_state.APP_EGRESS_POLICY_DIR,
@@ -475,8 +479,8 @@ def _install_dynamic_assistant(
                 binding=retained,
                 authorize_start=authorize_start,
             )
-        except Exception:
-            if previous is None:
+        except Exception as exc:
+            if previous is None and not isinstance(exc, _IncompleteInstallRollback):
                 with contextlib.suppress(dynamic_assistants.DynamicAssistantError):
                     runtime_state._dynamic_assistants.delete(team_id, app_id)
             raise
@@ -684,7 +688,7 @@ def _provision_app_transaction(
     except Exception as exc:
         cleanup = _teardown_app(team_id, app_id, drop_db=spec.db)
         if not cleanup.complete:
-            raise runtime_state.ApiError(
+            raise _IncompleteInstallRollback(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "app install failed and rollback is incomplete; retry uninstall or contact the operator",
             ) from exc

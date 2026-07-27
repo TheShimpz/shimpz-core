@@ -8,8 +8,10 @@ same stdlib policy used by team-driver admission and its shipping healthcheck.
 from __future__ import annotations
 
 import copy
+import tempfile
 import types
 import unittest
+from pathlib import Path
 
 import healthcheck as team_healthcheck
 from container_policy import network as policy
@@ -448,6 +450,132 @@ def test_health_tracks_running_brains_without_weakening_stopped_posture() -> Non
     finally:
         team_healthcheck._docker_json = original_docker_json
         team_healthcheck._image_id = original_image_id
+
+
+def test_health_tolerates_only_stopped_unbound_dynamic_apps() -> None:
+    orphan = _container(
+        "orphan-id",
+        "orphan",
+        labels={
+            "team.id": TEAM_ID,
+            "team.app.driver": "1",
+            "team.app": "orphan",
+            "team.app.dynamic": "1",
+        },
+        host_config={"RestartPolicy": {"Name": "no"}},
+        running=False,
+    )
+    summaries = [{"Id": "orphan-id", "Labels": orphan["Config"]["Labels"]}]
+    original_docker_json = team_healthcheck._docker_json
+    original_dynamic_assistants = team_healthcheck.DYNAMIC_ASSISTANTS
+    team_healthcheck._docker_json = lambda _path: (200, orphan)
+    team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(get=lambda _team_id, _app_id: None)
+    try:
+        check(
+            team_healthcheck._inspect_workloads(summaries)
+            == ({}, set(), {}, set(), {}),
+            "a stopped unbound dynamic App remains cleanup drift without failing global readiness",
+        )
+        orphan["State"]["Running"] = True
+        check(
+            team_healthcheck._inspect_workloads(summaries) is None,
+            "a running unbound dynamic App still fails closed",
+        )
+        orphan["State"]["Running"] = False
+        orphan["HostConfig"]["RestartPolicy"]["Name"] = "always"
+        check(
+            team_healthcheck._inspect_workloads(summaries) is None,
+            "a stopped orphan that can restart automatically still fails closed",
+        )
+        orphan["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(
+            get=lambda _team_id, _app_id: (_ for _ in ()).throw(
+                team_healthcheck.dynamic_assistants.DynamicAssistantError("unavailable")
+            )
+        )
+        check(
+            team_healthcheck._inspect_workloads(summaries) is None,
+            "an unavailable binding store still fails closed",
+        )
+    finally:
+        team_healthcheck._docker_json = original_docker_json
+        team_healthcheck.DYNAMIC_ASSISTANTS = original_dynamic_assistants
+
+
+def test_health_main_stays_ready_after_a_stopped_incomplete_rollback() -> None:
+    core, containers = _valid_topology()
+    containers["brain-id"]["Config"]["Image"] = team_healthcheck.REQUIRED_BRAIN_IMAGES["runtime"]
+    containers["app-id"]["Config"]["Image"] = team_healthcheck.marketplace.APPS["notification-center"].image
+    orphan = _container(
+        "orphan-id",
+        "orphan",
+        labels={
+            "team.id": TEAM_ID,
+            "team.app.driver": "1",
+            "team.app": "orphan",
+            "team.app.dynamic": "1",
+        },
+        host_config={"RestartPolicy": {"Name": "no"}},
+        running=False,
+    )
+    containers["orphan-id"] = orphan
+    summaries = [
+        {"Id": container_id, "Labels": metadata["Config"]["Labels"]}
+        for container_id, metadata in containers.items()
+        if {"team.driver", "team.app.driver"} & set(metadata["Config"]["Labels"])
+    ]
+    original_checks = (
+        team_healthcheck.daemon_isolation_ready,
+        team_healthcheck.images_ready,
+        team_healthcheck.workloads_isolated,
+        team_healthcheck.auth_gate_ready,
+        team_healthcheck._docker_json,
+        team_healthcheck._image_id,
+        team_healthcheck.DYNAMIC_ASSISTANTS,
+    )
+
+    def docker_json(path: str) -> tuple[int, object]:
+        if path == "/containers/json?all=1":
+            return 200, summaries
+        if path.startswith("/containers/"):
+            return 200, containers[path.split("/")[2]]
+        if path.startswith("/networks/"):
+            return 200, core
+        return 404, None
+
+    with tempfile.TemporaryDirectory() as directory:
+        team_healthcheck.daemon_isolation_ready = lambda: True
+        team_healthcheck.images_ready = lambda: True
+        team_healthcheck.workloads_isolated = lambda: True
+        team_healthcheck.auth_gate_ready = lambda: True
+        team_healthcheck._docker_json = docker_json
+        team_healthcheck._image_id = lambda image_ref: {
+            team_healthcheck.REQUIRED_BRAIN_IMAGES["runtime"]: BRAIN_IMAGE_ID,
+            team_healthcheck.marketplace.APPS["notification-center"].image: APP_IMAGE_ID,
+        }.get(image_ref)
+        team_healthcheck.DYNAMIC_ASSISTANTS = team_healthcheck.dynamic_assistants.DynamicAssistantStore(
+            Path(directory) / "bindings.json"
+        )
+        try:
+            check(
+                team_healthcheck.main() == 0,
+                "a stopped residual container does not make the whole controller unready",
+            )
+            orphan["State"]["Running"] = True
+            check(
+                team_healthcheck.main() == 1,
+                "the same residual container fails global readiness if it is running",
+            )
+        finally:
+            (
+                team_healthcheck.daemon_isolation_ready,
+                team_healthcheck.images_ready,
+                team_healthcheck.workloads_isolated,
+                team_healthcheck.auth_gate_ready,
+                team_healthcheck._docker_json,
+                team_healthcheck._image_id,
+                team_healthcheck.DYNAMIC_ASSISTANTS,
+            ) = original_checks
 
 
 def test_foreign_services_and_extra_app_networks_fail_closed() -> None:

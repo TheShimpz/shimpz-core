@@ -493,7 +493,7 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
         self.assertEqual(result["oci_digest"], resolution["oci_digest"])
         self.assertEqual(result["binding_digest"], incoming.binding_digest)
 
-    def test_failed_dynamic_install_removes_a_new_binding(self) -> None:
+    def test_failed_dynamic_install_removes_binding_after_complete_rollback(self) -> None:
         resolution = self._resolution()
         lease = types.SimpleNamespace(owner="creator_1")
 
@@ -525,3 +525,36 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
                 )
 
             self.assertIsNone(retained.get("team_1", "hello-world"))
+
+    def test_failed_dynamic_install_retains_binding_for_incomplete_rollback(self) -> None:
+        resolution = self._resolution()
+        lease = types.SimpleNamespace(owner="creator_1")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incoming = dynamic_assistants.DynamicAssistantStore(root / "incoming.json").put(
+                "team_1",
+                resolution,
+            )
+            retained = dynamic_assistants.DynamicAssistantStore(root / "retained.json")
+            with (
+                mock.patch.object(runtime_state, "_dynamic_assistants", retained),
+                mock.patch.object(
+                    hosted_apps,
+                    "_install_app_locked",
+                    side_effect=hosted_apps._IncompleteInstallRollback(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "rollback is incomplete",
+                    ),
+                ),
+                self.assertRaises(hosted_apps._IncompleteInstallRollback),
+            ):
+                hosted_apps._install_dynamic_assistant(
+                    "team_1",
+                    incoming,
+                    "creator_1",
+                    lease,
+                    authorize_start=lambda: None,
+                )
+
+            self.assertIsNotNone(retained.get("team_1", "hello-world"))

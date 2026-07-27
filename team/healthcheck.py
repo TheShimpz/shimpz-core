@@ -171,6 +171,32 @@ def _workload_network_kinds(
     return network_policy.workload_network_kinds(metadata, team_id)
 
 
+def _stopped_unbound_dynamic_app(metadata: dict, running: bool) -> bool:
+    if running:
+        return False
+    config = metadata.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if (
+        not isinstance(labels, dict)
+        or labels.get("team.app.driver") != "1"
+        or labels.get("team.app.dynamic") != "1"
+        or "team.driver" in labels
+    ):
+        return False
+    host_config = metadata.get("HostConfig")
+    restart_policy = host_config.get("RestartPolicy") if isinstance(host_config, dict) else None
+    if not isinstance(restart_policy, dict) or restart_policy.get("Name") != "no":
+        return False
+    team_id = labels.get("team.id")
+    app_id = labels.get("team.app")
+    if not isinstance(team_id, str) or not team_id or not isinstance(app_id, str) or not app_id:
+        return False
+    try:
+        return DYNAMIC_ASSISTANTS.get(team_id, app_id) is None
+    except dynamic_assistants.DynamicAssistantError:
+        return False
+
+
 def _inspect_workloads(
     summaries: list,
 ) -> (
@@ -206,15 +232,20 @@ def _inspect_workloads(
         running = state.get("Running") if isinstance(state, dict) else None
         if not isinstance(running, bool):
             return None
+        expected_kinds = _workload_network_kinds(metadata, team_id, image_ids)
+        if expected_kinds is None:
+            # An incomplete rollback from an older controller can leave a stopped, labeled
+            # container after its binding was deleted. It cannot execute and remains visible
+            # to uninstall/operator cleanup; a running or ambiguous orphan still fails closed.
+            if _stopped_unbound_dynamic_app(metadata, running):
+                continue
+            return None
         inspections[container_id] = metadata
         team_ids.add(team_id)
         if labels.get("team.driver") == "1":
             brains_by_team_id[team_id] = brains_by_team_id.get(team_id, 0) + 1
             if running:
                 running_brains.add(team_id)
-        expected_kinds = _workload_network_kinds(metadata, team_id, image_ids)
-        if expected_kinds is None:
-            return None
         workloads[container_id] = (team_id, expected_kinds, running)
     return inspections, team_ids, brains_by_team_id, running_brains, workloads
 
