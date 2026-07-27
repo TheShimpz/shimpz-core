@@ -30,6 +30,7 @@ from http_boundary import strict as strict_http
 
 _DEVELOPERS_TEAMS_PATH = "/internal/v1/developers/teams"
 _DEVELOPERS_INSTALL_PATH = "/internal/v1/developers/install"
+_INSTALL_AUTHORIZATION_CLOCK_SKEW_SECONDS = 5
 _CONTROLLER_CONTRACTS = developers_controller_contract.ContractValidator()
 
 
@@ -72,6 +73,14 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._request_slots.release()
+
+
+def _install_authorization_matches(receipt: dict, expected: dict, now: int) -> bool:
+    return (
+        all(receipt.get(key) == value for key, value in expected.items())
+        and receipt["issued_at"] <= now + _INSTALL_AUTHORIZATION_CLOCK_SKEW_SECONDS
+        and now <= receipt["expires_at"]
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -332,9 +341,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             receipt = client.authorize_install(request)
             expected = {key: value for key, value in request.items() if key != "version"}
-            mismatched = any(receipt.get(key) != value for key, value in expected.items())
             now = int(time.time())
-            if mismatched or not receipt["issued_at"] <= now <= receipt["expires_at"]:
+            if not _install_authorization_matches(receipt, expected, now):
                 raise developers_client.InstallAuthorizationDeniedError("installation authorization does not match")
 
         installed = hosted_apps._install_dynamic_assistant(

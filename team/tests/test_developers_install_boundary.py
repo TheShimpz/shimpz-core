@@ -130,6 +130,27 @@ class DevelopersInstallBoundaryTests(unittest.TestCase):
             (HTTPStatus.OK, {"version": 1, "teams": [{"id": "team_1", "name": "First Team"}]}),
         )
 
+    def test_install_authorization_allows_only_bounded_future_clock_skew(self) -> None:
+        expected = {
+            "account_id": CLAIMS["account_id"],
+            "team_id": REQUEST["team_id"],
+        }
+        receipt = {
+            **expected,
+            "issued_at": 1_005,
+            "expires_at": 1_060,
+        }
+
+        self.assertTrue(hosted_controller._install_authorization_matches(receipt, expected, 1_000))
+        receipt["issued_at"] = 1_006
+        self.assertFalse(hosted_controller._install_authorization_matches(receipt, expected, 1_000))
+        receipt["issued_at"] = 1_000
+        receipt["expires_at"] = 999
+        self.assertFalse(hosted_controller._install_authorization_matches(receipt, expected, 1_000))
+        receipt["expires_at"] = 1_060
+        receipt["team_id"] = "other_team"
+        self.assertFalse(hosted_controller._install_authorization_matches(receipt, expected, 1_000))
+
 
 if __name__ == "__main__":
     unittest.main()
