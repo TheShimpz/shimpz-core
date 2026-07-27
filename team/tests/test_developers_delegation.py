@@ -25,6 +25,14 @@ def _segment(value: object) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
+def _tamper_signature(token: str) -> str:
+    header, payload, encoded_signature = token.removeprefix("Bearer ").split(".")
+    signature = bytearray(base64.urlsafe_b64decode(encoded_signature + "=="))
+    signature[0] ^= 1
+    tampered_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+    return f"Bearer {header}.{payload}.{tampered_signature}"
+
+
 class DevelopersDelegationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -75,7 +83,7 @@ class DevelopersDelegationTests(unittest.TestCase):
         wrong_bearer.replace_header("Authorization", "Bearer " + "x" * 48)
         wrong_signature = self._headers(copy.deepcopy(INSTALL))
         token = wrong_signature["X-Shimpz-Delegation"]
-        wrong_signature.replace_header("X-Shimpz-Delegation", f"{token[:-1]}A")
+        wrong_signature.replace_header("X-Shimpz-Delegation", _tamper_signature(token))
         mismatched_request = {**REQUEST, "team_id": "team_2"}
 
         for name, headers, request in (
