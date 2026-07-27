@@ -45,6 +45,8 @@ import validate
 WORKSPACE_PROJECTS_ROOT = Path(os.environ.get("SHIMPZ_WORKSPACE_PROJECTS_ROOT", "/workspace-root/projects"))
 LISTEN_PORT = int(os.environ.get("SHIMPZ_DRIVER_PORT", "7070"))
 MAX_BODY_BYTES = 96 * 1024
+MAX_HTTP_CONCURRENCY = 32
+HTTP_CONNECTION_TIMEOUT_SECONDS = 10
 
 # Per-app network isolation: shimpz-caddy is connected to EVERY app's own network (it's the only
 # thing that needs to reach every app); PostgreSQL is connected only when the app declares a database.
@@ -78,6 +80,45 @@ RETIRING_SUFFIX = "__retiring"
 # exit EARLY on success or a definitive crash (exited/restarting), so the wider window only costs
 # time on a genuinely slow start — never on a healthy or a crashed candidate.
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Bound thread creation and expire slow control-plane connections."""
+
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(
+        self,
+        *args,
+        max_concurrency: int = MAX_HTTP_CONCURRENCY,
+        connection_timeout: int = HTTP_CONNECTION_TIMEOUT_SECONDS,
+        **kwargs,
+    ) -> None:
+        self._request_slots = threading.BoundedSemaphore(max_concurrency)
+        self._connection_timeout = connection_timeout
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(self._connection_timeout)
+        return request, client_address
+
+    def process_request(self, request, client_address) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
 _APP_ROUTES = (
@@ -670,7 +711,7 @@ def main() -> None:
     n = reconcile_caddy_networks()
     print(f"shimpz-driver: startup caddy-reconcile connected {n} app network(s)", file=sys.stderr)
     threading.Thread(target=_caddy_reconcile_loop, daemon=True).start()
-    server = ThreadingHTTPServer((str(ipaddress.IPv4Address(0)), LISTEN_PORT), Handler)
+    server = BoundedThreadingHTTPServer((str(ipaddress.IPv4Address(0)), LISTEN_PORT), Handler)
     print(f"shimpz-driver listening on :{LISTEN_PORT}", file=sys.stderr)
     server.serve_forever()
 

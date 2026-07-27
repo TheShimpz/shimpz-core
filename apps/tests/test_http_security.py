@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -40,6 +41,23 @@ def _load_app():
 
 
 class HttpSecurityStaticTests(unittest.TestCase):
+    def test_rejects_excess_connections_without_starting_threads(self) -> None:
+        module = _load_app()
+        server = module.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            module.Handler,
+            max_concurrency=1,
+        )
+        accepted, peer = socket.socketpair()
+        try:
+            self.assertTrue(server._request_slots.acquire(blocking=False))
+            server.process_request(accepted, ("127.0.0.1", 1))
+            self.assertEqual(peer.recv(1), b"")
+        finally:
+            peer.close()
+            server._request_slots.release()
+            server.server_close()
+
     def test_bearer_authorization_uses_constant_time_comparison(self) -> None:
         authorized = _handler_method("_authed")
         returned = next(node for node in authorized.body if isinstance(node, ast.Return))
