@@ -48,6 +48,7 @@ class DynamicAssistantStoreTests(unittest.TestCase):
         self.assertNotEqual(first.binding_digest, other_team.binding_digest)
         self.assertEqual(DynamicAssistantStore(self.path).get("team_1", "hello-world"), first)
         self.assertEqual(self.store.list("team_1"), (first,))
+        self.assertEqual(self.store.snapshot(), (first, other_team))
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
 
     def test_different_artifact_for_same_identity_requires_removal(self) -> None:

@@ -79,6 +79,11 @@ class DynamicAssistantStore:
             bindings = tuple(binding for binding in self._read() if binding.team_id == team_id)
         return tuple(sorted(bindings, key=lambda binding: binding.assistant_id))
 
+    def snapshot(self) -> tuple[DynamicAssistantBinding, ...]:
+        """Read and validate one immutable point-in-time view of every binding."""
+        with self._exclusive_lock():
+            return tuple(self._read())
+
     def delete(self, team_id: str, assistant_id: str) -> bool:
         _validate_identity(team_id, assistant_id)
         with self._exclusive_lock():

@@ -60,7 +60,6 @@ class HostedHealthcheckTests(unittest.TestCase):
         stages = (
             "daemon_isolation_ready",
             "images_ready",
-            "workloads_isolated",
             "network_topology_ready",
             "auth_gate_ready",
         )

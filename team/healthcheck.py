@@ -91,7 +91,11 @@ def images_ready() -> bool:
     return all(_image_id(image_ref) is not None for image_ref in REQUIRED_IMAGES)
 
 
-def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple[str, str, bool] | None:
+def _expected_workload_image(
+    metadata: dict,
+    image_ids: dict[str, str],
+    bindings: dict[tuple[str, str], dynamic_assistants.DynamicAssistantBinding],
+) -> tuple[str, str, bool] | None:
     config = metadata.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     if not isinstance(labels, dict):
@@ -108,15 +112,15 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
             compact_app_runtime = False
         else:
             team_id = labels.get("team.id")
+            binding = (
+                bindings.get((team_id, app_id))
+                if isinstance(team_id, str) and isinstance(app_id, str)
+                else None
+            )
             try:
-                binding = (
-                    DYNAMIC_ASSISTANTS.get(team_id, app_id)
-                    if isinstance(team_id, str) and isinstance(app_id, str)
-                    else None
-                )
                 image_ref = binding.resolution["image_reference"] if binding is not None else None
                 compact_app_runtime = binding is not None
-            except KeyError, TypeError, dynamic_assistants.DynamicAssistantError:
+            except KeyError, TypeError:
                 return None
     else:
         return None
@@ -130,35 +134,13 @@ def _expected_workload_image(metadata: dict, image_ids: dict[str, str]) -> tuple
     return image_ref, image_ids[image_ref], compact_app_runtime
 
 
-def workloads_isolated() -> bool:
-    """Reject deployment while any existing Team Brain or App uses a different runtime."""
-    status, containers = _docker_json("/containers/json?all=1")
-    if status != 200 or not isinstance(containers, list):
-        return False
-    for summary in containers:
-        if not isinstance(summary, dict):
-            return False
-        labels = summary.get("Labels")
-        if not isinstance(labels, dict) or not ({"team.driver", "team.app.driver"} & set(labels)):
-            continue
-        container_id = summary.get("Id")
-        if not isinstance(container_id, str) or not container_id:
-            return False
-        inspect_status, metadata = _docker_json(f"/containers/{container_id}/json")
-        if inspect_status != 200 or not isinstance(metadata, dict):
-            return False
-        host_config = metadata.get("HostConfig")
-        if not isinstance(host_config, dict) or str(host_config.get("Runtime") or "runc") != REQUIRED_RUNTIME:
-            return False
-    return True
-
-
 def _workload_network_kinds(
     metadata: dict,
     team_id: str,
     image_ids: dict[str, str],
+    bindings: dict[tuple[str, str], dynamic_assistants.DynamicAssistantBinding],
 ) -> frozenset[str] | None:
-    expected_image = _expected_workload_image(metadata, image_ids)
+    expected_image = _expected_workload_image(metadata, image_ids, bindings)
     if expected_image is None or not network_policy.workload_security_valid(
         metadata,
         team_id,
@@ -171,7 +153,11 @@ def _workload_network_kinds(
     return network_policy.workload_network_kinds(metadata, team_id)
 
 
-def _stopped_unbound_dynamic_app(metadata: dict, running: bool) -> bool:
+def _stopped_unbound_dynamic_app(
+    metadata: dict,
+    running: bool,
+    bindings: dict[tuple[str, str], dynamic_assistants.DynamicAssistantBinding],
+) -> bool:
     if running:
         return False
     config = metadata.get("Config")
@@ -191,10 +177,7 @@ def _stopped_unbound_dynamic_app(metadata: dict, running: bool) -> bool:
     app_id = labels.get("team.app")
     if not isinstance(team_id, str) or not team_id or not isinstance(app_id, str) or not app_id:
         return False
-    try:
-        return DYNAMIC_ASSISTANTS.get(team_id, app_id) is None
-    except dynamic_assistants.DynamicAssistantError:
-        return False
+    return (team_id, app_id) not in bindings
 
 
 def _inspect_workloads(
@@ -215,6 +198,8 @@ def _inspect_workloads(
     running_brains: set[str] = set()
     workloads: dict[str, tuple[str, frozenset[str], bool]] = {}
     image_ids: dict[str, str] = {}
+    bindings: dict[tuple[str, str], dynamic_assistants.DynamicAssistantBinding] = {}
+    bindings_loaded = False
     for summary in summaries:
         if not isinstance(summary, dict):
             return None
@@ -225,6 +210,18 @@ def _inspect_workloads(
         team_id = labels.get("team.id")
         if not isinstance(container_id, str) or not container_id or not isinstance(team_id, str) or not team_id:
             return None
+        app_id = labels.get("team.app")
+        if (
+            not bindings_loaded
+            and labels.get("team.app.driver") == "1"
+            and isinstance(app_id, str)
+            and app_id not in marketplace.APPS
+        ):
+            bindings = {
+                (binding.team_id, binding.assistant_id): binding
+                for binding in DYNAMIC_ASSISTANTS.snapshot()
+            }
+            bindings_loaded = True
         inspect_status, metadata = _docker_json(f"/containers/{container_id}/json")
         if inspect_status != 200 or not isinstance(metadata, dict):
             return None
@@ -232,12 +229,12 @@ def _inspect_workloads(
         running = state.get("Running") if isinstance(state, dict) else None
         if not isinstance(running, bool):
             return None
-        expected_kinds = _workload_network_kinds(metadata, team_id, image_ids)
+        expected_kinds = _workload_network_kinds(metadata, team_id, image_ids, bindings)
         if expected_kinds is None:
             # An incomplete rollback from an older controller can leave a stopped, labeled
             # container after its binding was deleted. It cannot execute and remains visible
             # to uninstall/operator cleanup; a running or ambiguous orphan still fails closed.
-            if _stopped_unbound_dynamic_app(metadata, running):
+            if _stopped_unbound_dynamic_app(metadata, running, bindings):
                 continue
             return None
         inspections[container_id] = metadata
@@ -318,7 +315,10 @@ def network_topology_ready() -> bool:
     status, summaries = _docker_json("/containers/json?all=1")
     if status != 200 or not isinstance(summaries, list):
         return False
-    inspected = _inspect_workloads(summaries)
+    try:
+        inspected = _inspect_workloads(summaries)
+    except dynamic_assistants.DynamicAssistantError:
+        return False
     if inspected is None:
         return False
     inspections, team_ids, brains_by_team_id, running_brains, workloads = inspected
@@ -342,7 +342,6 @@ def main() -> int:
     ready = (
         daemon_isolation_ready()
         and images_ready()
-        and workloads_isolated()
         and network_topology_ready()
         and auth_gate_ready()
     )

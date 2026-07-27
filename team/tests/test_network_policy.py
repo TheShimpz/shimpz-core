@@ -356,11 +356,11 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
         brain_ref = team_healthcheck.REQUIRED_BRAIN_IMAGES["runtime"]
         brain = {"Config": {"Labels": {"team.driver": "1", "team.brain": "runtime"}}}
         check(
-            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1", False),
+            team_healthcheck._expected_workload_image(brain, cache, {}) == (brain_ref, "sha256:1", False),
             "health maps the registered Brain provider to its resolved immutable image ID",
         )
         check(
-            team_healthcheck._expected_workload_image(brain, cache) == (brain_ref, "sha256:1", False)
+            team_healthcheck._expected_workload_image(brain, cache, {}) == (brain_ref, "sha256:1", False)
             and requested_refs == [brain_ref],
             "health caches one immutable resolution consistently across its inspection pass",
         )
@@ -368,7 +368,7 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
         app_id, app_spec = next(iter(team_healthcheck.marketplace.APPS.items()))
         app = {"Config": {"Labels": {"team.app.driver": "1", "team.app": app_id}}}
         check(
-            team_healthcheck._expected_workload_image(app, cache) == (app_spec.image, "sha256:2", False),
+            team_healthcheck._expected_workload_image(app, cache, {}) == (app_spec.image, "sha256:2", False),
             "health maps a registered App to its separately resolved immutable image ID",
         )
         dynamic_ref = "ghcr.io/theshimpz/shimpz-assistants@sha256:" + ("a" * 64)
@@ -382,20 +382,23 @@ def test_health_resolves_each_workload_role_to_its_trusted_image_id() -> None:
                 }
             }
         }
-        team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(
-            get=lambda team_id, app_id: (
-                types.SimpleNamespace(resolution={"image_reference": dynamic_ref})
-                if (team_id, app_id) == (TEAM_ID, "hello-world")
-                else None
-            )
+        binding = types.SimpleNamespace(
+            team_id=TEAM_ID,
+            assistant_id="hello-world",
+            resolution={"image_reference": dynamic_ref},
         )
         check(
-            team_healthcheck._expected_workload_image(dynamic, cache) == (dynamic_ref, "sha256:3", True),
+            team_healthcheck._expected_workload_image(
+                dynamic,
+                cache,
+                {(TEAM_ID, "hello-world"): binding},
+            )
+            == (dynamic_ref, "sha256:3", True),
             "health resolves a dynamic App through its controller-owned binding",
         )
         unknown = {"Config": {"Labels": {"team.driver": "1", "team.brain": "unknown-provider"}}}
         check(
-            team_healthcheck._expected_workload_image(unknown, cache) is None,
+            team_healthcheck._expected_workload_image(unknown, cache, {}) is None,
             "health fails closed for an unregistered Brain provider",
         )
     finally:
@@ -469,7 +472,7 @@ def test_health_tolerates_only_stopped_unbound_dynamic_apps() -> None:
     original_docker_json = team_healthcheck._docker_json
     original_dynamic_assistants = team_healthcheck.DYNAMIC_ASSISTANTS
     team_healthcheck._docker_json = lambda _path: (200, orphan)
-    team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(get=lambda _team_id, _app_id: None)
+    team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(snapshot=lambda: ())
     try:
         check(
             team_healthcheck._inspect_workloads(summaries)
@@ -489,14 +492,15 @@ def test_health_tolerates_only_stopped_unbound_dynamic_apps() -> None:
         )
         orphan["HostConfig"]["RestartPolicy"]["Name"] = "no"
         team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(
-            get=lambda _team_id, _app_id: (_ for _ in ()).throw(
+            snapshot=lambda: (_ for _ in ()).throw(
                 team_healthcheck.dynamic_assistants.DynamicAssistantError("unavailable")
             )
         )
-        check(
-            team_healthcheck._inspect_workloads(summaries) is None,
-            "an unavailable binding store still fails closed",
-        )
+        try:
+            team_healthcheck._inspect_workloads(summaries)
+            check(False, "an unavailable binding store must fail closed")
+        except team_healthcheck.dynamic_assistants.DynamicAssistantError:
+            check(True, "an unavailable binding store fails closed")
     finally:
         team_healthcheck._docker_json = original_docker_json
         team_healthcheck.DYNAMIC_ASSISTANTS = original_dynamic_assistants
@@ -527,7 +531,6 @@ def test_health_main_stays_ready_after_a_stopped_incomplete_rollback() -> None:
     original_checks = (
         team_healthcheck.daemon_isolation_ready,
         team_healthcheck.images_ready,
-        team_healthcheck.workloads_isolated,
         team_healthcheck.auth_gate_ready,
         team_healthcheck._docker_json,
         team_healthcheck._image_id,
@@ -546,7 +549,6 @@ def test_health_main_stays_ready_after_a_stopped_incomplete_rollback() -> None:
     with tempfile.TemporaryDirectory() as directory:
         team_healthcheck.daemon_isolation_ready = lambda: True
         team_healthcheck.images_ready = lambda: True
-        team_healthcheck.workloads_isolated = lambda: True
         team_healthcheck.auth_gate_ready = lambda: True
         team_healthcheck._docker_json = docker_json
         team_healthcheck._image_id = lambda image_ref: {
@@ -570,7 +572,6 @@ def test_health_main_stays_ready_after_a_stopped_incomplete_rollback() -> None:
             (
                 team_healthcheck.daemon_isolation_ready,
                 team_healthcheck.images_ready,
-                team_healthcheck.workloads_isolated,
                 team_healthcheck.auth_gate_ready,
                 team_healthcheck._docker_json,
                 team_healthcheck._image_id,
