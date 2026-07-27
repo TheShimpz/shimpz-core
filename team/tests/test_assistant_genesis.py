@@ -10,6 +10,7 @@ import assistant_genesis
 def manifest(genesis: str = "Use only the declared Powers.") -> bytes:
     return f"""
 spec = 1
+id = "fixture"
 version = "0.1.0"
 name = "Fixture"
 summary = "Exercise Genesis admission."
