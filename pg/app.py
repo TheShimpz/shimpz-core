@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -22,6 +23,8 @@ DRIVER = driver_manifest.load()
 LISTEN_HOST = os.environ.get("SHIMPZ_PGDRIVER_HOST", "")
 LISTEN_PORT = DRIVER.port
 MAX_BODY_BYTES = int(os.environ.get("SHIMPZ_PGDRIVER_MAX_BODY_BYTES", str(64 * 1024)))
+MAX_HTTP_CONCURRENCY = 32
+HTTP_CONNECTION_TIMEOUT_SECONDS = 10
 _provisioner_token = token_store.ensure_token()
 
 
@@ -36,6 +39,45 @@ _ROUTES = (
     stdlib_http.Route("POST", re.compile(r"^/v1/teams/apps/drop$"), "team.app.drop"),
     stdlib_http.Route("POST", re.compile(r"^/v1/teams/drop$"), "team.drop"),
 )
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Bound thread creation and expire slow database-control connections."""
+
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(
+        self,
+        *args,
+        max_concurrency: int = MAX_HTTP_CONCURRENCY,
+        connection_timeout: int = HTTP_CONNECTION_TIMEOUT_SECONDS,
+        **kwargs,
+    ) -> None:
+        self._request_slots = threading.BoundedSemaphore(max_concurrency)
+        self._connection_timeout = connection_timeout
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(self._connection_timeout)
+        return request, client_address
+
+    def process_request(self, request, client_address) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 def _provision_team(body: dict) -> dict:
@@ -231,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     pg_client.revoke_legacy_global_reader()
-    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
+    server = BoundedThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     print(f"pg-driver listening on :{LISTEN_PORT}; tenant principals only", file=sys.stderr)
     server.serve_forever()
 

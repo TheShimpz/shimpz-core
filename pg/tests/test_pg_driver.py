@@ -5,6 +5,7 @@ import hmac
 import http.client
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -32,6 +33,22 @@ import validate
 
 
 class PgDriverTests(unittest.TestCase):
+    def test_rejects_excess_connections_without_starting_threads(self) -> None:
+        server = app.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            app.Handler,
+            max_concurrency=1,
+        )
+        accepted, peer = socket.socketpair()
+        try:
+            self.assertTrue(server._request_slots.acquire(blocking=False))
+            server.process_request(accepted, ("127.0.0.1", 1))
+            self.assertEqual(peer.recv(1), b"")
+        finally:
+            peer.close()
+            server._request_slots.release()
+            server.server_close()
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="pg-driver-test-")
         principal_store.STATE_PATH = Path(self.temporary.name) / "principals.json"
