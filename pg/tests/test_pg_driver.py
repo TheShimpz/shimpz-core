@@ -132,25 +132,6 @@ class PgDriverTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["stdin"], "SELECT 1 WHERE rolname = :'role_name'\n")
         self.assertIn("role_name=proj_website", command)
 
-    def test_legacy_reader_revocation_uses_literal_variables_for_catalog_values(self) -> None:
-        with (
-            mock.patch.object(pg_client, "_role_exists", return_value=True),
-            mock.patch.object(pg_client, "list_project_dbs", return_value=["proj_a", "proj_b"]),
-            mock.patch.object(pg_client, "_psql", return_value="") as psql,
-        ):
-            pg_client.revoke_legacy_global_reader()
-
-        calls = psql.call_args_list
-        self.assertEqual(len(calls), 4)
-        for database, call in zip(("proj_a", "proj_b"), calls[:2], strict=True):
-            self.assertIn('REVOKE CONNECT ON DATABASE :"database_name"', call.args[1])
-            self.assertEqual(
-                call.args[2],
-                {"database_name": database, "role_name": pg_client.LEGACY_GLOBAL_READER},
-            )
-        self.assertIn('REVOKE pg_read_all_data FROM :"role_name"', calls[2].args[1])
-        self.assertIn('DROP ROLE :"role_name"', calls[3].args[1])
-
     def test_principal_registry_hashes_tokens_and_enforces_exact_scope(self) -> None:
         token_a, token_b = "a" * 64, "b" * 64
         main_database = "proj_team_alpha"

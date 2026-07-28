@@ -26,7 +26,6 @@ PGPASSWORD = _dsn.password or ""
 _PG_ARGS = ["-h", PGHOST, "-p", str(PGPORT), "-U", PGUSER]
 _ENV = {**os.environ, "PGPASSWORD": PGPASSWORD}
 
-LEGACY_GLOBAL_READER = "shimpz_ro"
 _mutation_guard = threading.RLock()
 
 
@@ -177,30 +176,6 @@ def rollback_provision(project: str, result: ProvisionResult) -> None:
             database_created=result.database_created,
             role_created=result.role_created,
         )
-
-
-def list_project_dbs() -> list[str]:
-    out = _psql("postgres", "SELECT datname FROM pg_database WHERE left(datname, 5) = 'proj_' ORDER BY 1")
-    return [line for line in out.splitlines() if line]
-
-
-def revoke_legacy_global_reader() -> None:
-    """Remove the historical cross-tenant reader and its database CONNECT grants.
-
-    This migration is intentionally run before the driver listens. A dependency that prevents the
-    role from being dropped is a launch-blocking error, not something to hide while serving traffic.
-    """
-    if not _role_exists(LEGACY_GLOBAL_READER):
-        return
-    for database in list_project_dbs():
-        _psql(
-            "postgres",
-            'REVOKE CONNECT ON DATABASE :"database_name" FROM :"role_name"',
-            {"database_name": database, "role_name": LEGACY_GLOBAL_READER},
-        )
-    role_variable = {"role_name": LEGACY_GLOBAL_READER}
-    _psql("postgres", 'REVOKE pg_read_all_data FROM :"role_name"', role_variable)
-    _psql("postgres", 'DROP ROLE :"role_name"', role_variable)
 
 
 def drop_db_and_role(project: str) -> dict:

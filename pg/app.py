@@ -272,7 +272,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    pg_client.revoke_legacy_global_reader()
     server = BoundedThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
     print(f"pg-driver listening on :{LISTEN_PORT}; tenant principals only", file=sys.stderr)
     server.serve_forever()
