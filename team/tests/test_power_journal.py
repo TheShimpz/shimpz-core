@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
+import shutil
 import sqlite3
 import stat
 import tempfile
@@ -107,6 +108,56 @@ class PowerJournalTests(unittest.TestCase):
             journal._connection.execute("PRAGMA wal_autocheckpoint").fetchone(),
             (power_journal.WAL_AUTOCHECKPOINT_PAGES,),
         )
+
+    def test_power_loss_model_bounds_acknowledged_state_loss(self) -> None:
+        journal = self.journal()
+        operations = tuple(
+            operation(f"interrupt-{index}", f"validated-input-{index}")
+            for index in range(16)
+        )
+        batch = journal.prepare_batch("generation-1", "thread-1", operations)
+        self.assertEqual(
+            journal._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(),
+            (0, 0, 0),
+        )
+        stable_checkpoint = Path(self.temporary.name) / "stable-checkpoint.sqlite3"
+        shutil.copy2(self.path, stable_checkpoint)
+
+        transitions = 0
+        for selected in operations[:-1]:
+            journal.begin(batch, selected)
+            journal.complete(batch, selected, {"interrupt": selected.interrupt_id})
+            transitions += 2
+        final = operations[-1]
+        journal.begin(batch, final)
+        transitions += 1
+
+        page_size = journal._connection.execute("PRAGMA page_size").fetchone()[0]
+        wal_size = self.path.with_name(f"{self.path.name}-wal").stat().st_size
+        frames = (wal_size - 32) // (page_size + 24)
+        self.assertEqual(transitions, power_journal.MAX_ACKNOWLEDGED_TRANSITIONS_AT_RISK)
+        self.assertEqual(frames, transitions)
+
+        simulated_loss = Path(self.temporary.name) / "loss" / "journal.sqlite3"
+        simulated_loss.parent.mkdir(mode=0o700)
+        shutil.copy2(stable_checkpoint, simulated_loss)
+        recovered_before_checkpoint = power_journal.PowerJournal(simulated_loss)
+        self.addCleanup(recovered_before_checkpoint.close)
+        states = recovered_before_checkpoint._connection.execute(
+            "SELECT state FROM operations ORDER BY ordinal"
+        ).fetchall()
+        self.assertEqual(states, [("prepared",)] * len(operations))
+
+        journal.complete(batch, final, {"interrupt": final.interrupt_id})
+        after_checkpoint = Path(self.temporary.name) / "checkpointed" / "journal.sqlite3"
+        after_checkpoint.parent.mkdir(mode=0o700)
+        shutil.copy2(self.path, after_checkpoint)
+        recovered_after_checkpoint = power_journal.PowerJournal(after_checkpoint)
+        self.addCleanup(recovered_after_checkpoint.close)
+        states = recovered_after_checkpoint._connection.execute(
+            "SELECT state FROM operations ORDER BY ordinal"
+        ).fetchall()
+        self.assertEqual(states, [("completed",)] * len(operations))
 
     def test_changed_pending_batch_and_changed_completed_result_fail_closed(self) -> None:
         journal = self.journal()

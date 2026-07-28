@@ -70,14 +70,17 @@ class LocalAuditTests(unittest.TestCase):
     def test_background_sync_bounds_the_acknowledged_loss_window(self) -> None:
         synchronized = threading.Event()
         real_fsync = os.fsync
+        synchronized_at: list[float] = []
 
         def observe(descriptor: int) -> None:
             real_fsync(descriptor)
+            synchronized_at.append(time.monotonic())
             synchronized.set()
 
+        window = 0.02
         with (
             mock.patch.object(audit, "AUDIT_PATH", self.path),
-            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", 0.02),
+            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", window),
             mock.patch.object(audit.os, "fsync", side_effect=observe) as sync,
         ):
             started = time.monotonic()
@@ -86,8 +89,33 @@ class LocalAuditTests(unittest.TestCase):
             self.assertTrue(synchronized.wait(timeout=1))
             elapsed = time.monotonic() - started
 
-        self.assertLess(elapsed, 0.5)
+        self.assertLess(elapsed, window * 5)
+        self.assertLess(synchronized_at[0] - started, window * 5)
         self.assertEqual(sync.call_count, 1)
+
+    def test_power_loss_model_limits_loss_to_the_current_unsynced_group(self) -> None:
+        durable_snapshot = b""
+        real_fsync = os.fsync
+
+        def checkpoint(descriptor: int) -> None:
+            nonlocal durable_snapshot
+            real_fsync(descriptor)
+            durable_snapshot = self.path.read_bytes()
+
+        with (
+            mock.patch.object(audit, "AUDIT_PATH", self.path),
+            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", 60),
+            mock.patch.object(audit.os, "fsync", side_effect=checkpoint),
+        ):
+            for index in range(8):
+                audit.record("burst", result="ok", detail=str(index))
+            self.assertEqual(durable_snapshot, b"")
+            audit.flush()
+            self.assertEqual(len(durable_snapshot.splitlines()), 8)
+            audit.record("next-group", result="ok")
+            simulated_recovery = durable_snapshot
+
+        self.assertEqual(len(simulated_recovery.splitlines()), 8)
 
     def test_concurrent_records_are_complete_and_share_the_writer(self) -> None:
         with (

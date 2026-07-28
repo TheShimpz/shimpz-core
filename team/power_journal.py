@@ -33,6 +33,7 @@ MAX_JSON_NODES = 4096
 # NORMAL preserves SQLite consistency and process-crash recovery, but a sudden power loss may
 # discard commits not yet checkpointed. This private single-connection journal limits that batch.
 WAL_AUTOCHECKPOINT_PAGES = 32
+MAX_ACKNOWLEDGED_TRANSITIONS_AT_RISK = WAL_AUTOCHECKPOINT_PAGES - 1
 
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _FINGERPRINT_RE = re.compile(r"[a-f0-9]{64}\Z")
