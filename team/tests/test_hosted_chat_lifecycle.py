@@ -35,6 +35,45 @@ power_journal = runtime_state.power_journal
 hosted_egress_policy = hosted_apps.egress_policy
 
 
+def hosted_power_batch(round_index: int, count: int) -> brain_runtime_client.RuntimeTurn:
+    return brain_runtime_client.RuntimeTurn(
+        "power-required",
+        "",
+        tuple(
+            brain_runtime_client.PowerRequest(
+                f"power-{round_index}-{power_index}",
+                "shimpz-cloudflare",
+                "list-zones",
+                {"page": 1, "per_page": 25},
+            )
+            for power_index in range(count)
+        ),
+    )
+
+
+def ignore_credential_check(*_args) -> None:
+    pass
+
+
+class ScriptedRuntime:
+    def __init__(self, turns) -> None:
+        self._turns = iter(turns)
+
+    def start(self, _context, _message):
+        return next(self._turns)
+
+    def resume(self, _context, _results):
+        return next(self._turns)
+
+
+class CredentialCheckCounter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, int]] = []
+
+    def __call__(self, owner: str, provider: str, generation: int) -> None:
+        self.calls.append((owner, provider, generation))
+
+
 class HostedChatLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         """Keep pending private-input state isolated from every hosted test."""
@@ -42,7 +81,9 @@ class HostedChatLifecycleTests(unittest.TestCase):
         runtime_state._assistant_account_challenges = assistant_account_challenges.AccountChallengeStore()
         self.addCleanup(setattr, runtime_state, "_assistant_account_challenges", original_accounts)
 
-    def _journal_chat_environment(self, journal, runtime, rpc):
+    def _journal_chat_environment(self, journal, runtime, rpc, require_current=None):
+        if require_current is None:
+            require_current = ignore_credential_check
         contract = marketplace.APPS["shimpz-cloudflare"].assistant
         assert contract is not None
         assistant = hosted_assistants._ActiveAssistant(
@@ -86,7 +127,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                 ),
                 _invoke_assistant_power=rpc,
                 _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
-                _require_model_credential_current=lambda *_args: None,
+                _require_model_credential_current=require_current,
             )
         )
         environment.enter_context(
@@ -336,6 +377,47 @@ class HostedChatLifecycleTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, HTTPStatus.CONFLICT)
         self.assertEqual(checks, [("account_1", "openai", 7), ("account_1", "openai", 7)])
         commit.assert_not_called()
+
+    def test_credential_generation_checks_preserve_every_security_boundary(self) -> None:
+        shapes = (
+            ("no Powers", (), 4),
+            ("one Power", (1,), 8),
+            ("four Powers in one batch", (4,), 14),
+            ("four single-Power rounds", (1, 1, 1, 1), 20),
+            ("eight Powers in one batch", (8,), 22),
+            ("eight single-Power rounds", (1, 1, 1, 1, 1, 1, 1, 1), 36),
+        )
+        power_result = {"zones": [], "page": 1, "per_page": 25, "total_pages": 0}
+
+        for name, batch_sizes, expected in shapes:
+            with self.subTest(shape=name), tempfile.TemporaryDirectory() as directory:
+                turns = [
+                    *(hosted_power_batch(round_index, count) for round_index, count in enumerate(batch_sizes)),
+                    brain_runtime_client.RuntimeTurn("completed", "Done", ()),
+                ]
+                runtime = ScriptedRuntime(turns)
+                checks = CredentialCheckCounter()
+                journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+                anchor, environment = self._journal_chat_environment(
+                    journal,
+                    runtime,
+                    mock.Mock(return_value={"result": power_result}),
+                    checks,
+                )
+                with environment:
+                    hosted_chat_segment._chat_in_turn(
+                        "team_1",
+                        "Exercise every credential boundary",
+                        [],
+                        ("shimpz-cloudflare",),
+                        "turn-token",
+                        anchor,
+                        "account_1",
+                    )
+                journal.close()
+
+                self.assertEqual(len(checks.calls), expected)
+                self.assertTrue(all(check == ("account_1", "openai", 7) for check in checks.calls))
 
     def test_hosted_team_context_contains_and_routes_two_active_assistants(self) -> None:
         place_power = types.SimpleNamespace(summary="Find a place.", input_schema={"type": "object"})
