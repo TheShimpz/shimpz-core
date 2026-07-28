@@ -445,9 +445,7 @@ class OAuthAccountStore:
                 raise OAuthAccountStoreError("OAuth account state cache is unavailable")
             return self._state_cache
         state = (
-            private_state.empty_state()
-            if snapshot.payload is None
-            else _validate_state(_strict_json(snapshot.payload))
+            private_state.empty_state() if snapshot.payload is None else _validate_state(_strict_json(snapshot.payload))
         )
         self._state_cache_identity = snapshot.identity
         self._state_cache = state
@@ -758,10 +756,10 @@ class OAuthAccountStore:
         with self._lock:
             state = self._read_state_for_update()
             records = _PRIVATE_STATE.records(state, team, assistant, create=False)
-            obsolete = set(records) - declared
-            if not obsolete:
+            undeclared = set(records) - declared
+            if not undeclared:
                 return False
-            for account in obsolete:
+            for account in undeclared:
                 records.pop(account)
             _PRIVATE_STATE.prune_empty_records(state, team, assistant)
             self._write_state(state)

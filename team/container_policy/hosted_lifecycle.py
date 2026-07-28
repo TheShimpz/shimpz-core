@@ -276,8 +276,8 @@ def _create(team_id: str, body: dict, owner: str = "") -> dict:
             existing_owner = existing.labels.get("team.owner", "")
             if owner and existing_owner != owner:
                 raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"team {team_id!r} not found")
-            # Upgrade fail-close: idempotent create must not bless a legacy runc container. Test
-            # data can be destroyed/recreated; production migration must be an explicit release step.
+            # Idempotent create must never bless a container whose runtime drifted from the current
+            # isolation contract. Disposable pre-production state can be destroyed and recreated.
             hosted_resources._require_team_runtime()
             hosted_resources._require_team_isolation(existing)
             existing_name = hosted_resources._team_name_from_anchor(existing)
@@ -359,7 +359,7 @@ def _create(team_id: str, body: dict, owner: str = "") -> dict:
 
 def _destroy(team_id: str, lease: hosted_resources._AuthorizationLease) -> dict:
     with runtime_state._lock_for(team_id):
-        # Destruction is the supported remediation for a legacy or drifted runtime.
+        # Destruction is the supported remediation for runtime drift.
         if lease.cleanup_nonce:
             hosted_resources._require_cleanup_authorization(team_id, lease)
             container = None

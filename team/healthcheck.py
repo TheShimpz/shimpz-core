@@ -6,7 +6,7 @@ construction and keeping its startup dependency closure narrow. The configured h
 must remain bound to the reviewed absolute handler while Docker advertises its built-in seccomp and
 AppArmor defaults; every advertised Brain image must be present, and every existing Team Brain/App
 must actually use that runtime. The probe never accepts Docker's default runc, a running workload left
-by an older controller, or a missing provider as a fallback. Then an unauthenticated driver GET must be
+outside the current registry, or a missing provider. Then an unauthenticated driver GET must be
 refused with 403 — a 2xx means the auth gate is not enforced.
 """
 
@@ -113,11 +113,7 @@ def _expected_workload_image(
             compact_app_runtime = False
         else:
             team_id = labels.get("team.id")
-            binding = (
-                bindings.get((team_id, app_id))
-                if isinstance(team_id, str) and isinstance(app_id, str)
-                else None
-            )
+            binding = bindings.get((team_id, app_id)) if isinstance(team_id, str) and isinstance(app_id, str) else None
             try:
                 image_ref = binding.resolution["image_reference"] if binding is not None else None
                 compact_app_runtime = binding is not None
@@ -218,10 +214,7 @@ def _inspect_workloads(
             and isinstance(app_id, str)
             and app_id not in marketplace.APPS
         ):
-            bindings = {
-                (binding.team_id, binding.assistant_id): binding
-                for binding in DYNAMIC_ASSISTANTS.snapshot()
-            }
+            bindings = {(binding.team_id, binding.assistant_id): binding for binding in DYNAMIC_ASSISTANTS.snapshot()}
             bindings_loaded = True
         inspect_status, metadata = _docker_json(f"/containers/{container_id}/json")
         if inspect_status != 200 or not isinstance(metadata, dict):
@@ -232,9 +225,8 @@ def _inspect_workloads(
             return None
         expected_kinds = _workload_network_kinds(metadata, team_id, image_ids, bindings)
         if expected_kinds is None:
-            # An incomplete rollback from an older controller can leave a stopped, labeled
-            # container after its binding was deleted. It cannot execute and remains visible
-            # to uninstall/operator cleanup; a running or ambiguous orphan still fails closed.
+            # A current rollback can leave its stopped container after deleting the binding. It
+            # cannot execute and remains visible for cleanup; a running or ambiguous orphan fails closed.
             if _stopped_unbound_dynamic_app(metadata, running, bindings):
                 continue
             return None
@@ -340,12 +332,7 @@ def auth_gate_ready() -> bool:
 
 
 def main() -> int:
-    ready = (
-        daemon_isolation_ready()
-        and images_ready()
-        and network_topology_ready()
-        and auth_gate_ready()
-    )
+    ready = daemon_isolation_ready() and images_ready() and network_topology_ready() and auth_gate_ready()
     return 0 if ready else 1
 
 

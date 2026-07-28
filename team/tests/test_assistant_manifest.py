@@ -128,15 +128,15 @@ class AssistantManifestTests(unittest.TestCase):
         self.assertEqual(contract.allowed_hosts, ())
         self.assertEqual(contract.accounts, ())
 
-    def test_legacy_manifest_fields_fail_closed(self) -> None:
-        obsolete = (
+    def test_unsupported_manifest_fields_fail_closed(self) -> None:
+        unsupported = (
             b"schema_version = 2\n",
             b'[powers.lookup]\nsummary = "Lookup."\n',
             b'[secrets.token]\nname = "Token"\nsummary = "Old."\n',
             b'[accounts.cloudflare]\nprovider = "cloudflare"\nscopes = ["zone.read"]\n',
         )
 
-        for addition in obsolete:
+        for addition in unsupported:
             with self.subTest(addition=addition), self.assertRaises(assistant_manifest.ManifestError):
                 assistant_manifest.parse_manifest_contract(manifest() + addition)
 

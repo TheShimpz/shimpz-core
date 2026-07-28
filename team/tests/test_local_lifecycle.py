@@ -77,7 +77,7 @@ class LocalLifecycleTests(LocalContractCase):
         controller.assistant_accounts.put(
             "team_1",
             "shimpz-cloudflare",
-            "obsolete-account",
+            "undeclared-account",
             "cloudflare",
             ("zone.read",),
             SimpleNamespace(

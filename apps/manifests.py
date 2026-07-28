@@ -93,7 +93,7 @@ def build_container_kwargs(req: DeployRequest, host_projects_root: str, extra_en
         # The WHOLE project is mounted at /app (see build_mounts) so a role-specific process can
         # still resolve a relative `../.env` at the project root (confirmed against the real
         # laudoctor-backend's own config.py) — working_dir is what actually picks the role's
-        # subdirectory to run FROM, equivalent to supervisord's old per-role `directory=`.
+        # subdirectory to run from.
         "working_dir": req.working_dir,
         # UV_PROJECT_ENVIRONMENT points `uv run`/`uv sync` at a writable tmpfs OUTSIDE /app:
         # /app is a read-only BIND mount, so a tmpfs can't be nested inside it (Docker can't

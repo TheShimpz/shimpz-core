@@ -730,7 +730,7 @@ def _provision_app_transaction(
 @runtime_state._serialize_against_team_chat
 def _uninstall_app(team_id: str, app_id: str, lease: hosted_resources._AuthorizationLease) -> dict:
     with runtime_state._lock_for(team_id):
-        # Removal is a remediation operation and must remain available for a legacy blocked Team.
+        # Removal remains available when isolation drift blocks normal Team operations.
         hosted_resources._require_current_authorization(team_id, lease, require_isolation=False)
         runtime_state._assistant_account_challenges.cancel_team(team_id)
         cleanup = _teardown_app(team_id, app_id)

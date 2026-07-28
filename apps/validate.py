@@ -199,8 +199,8 @@ def resolve_run_dir(workspace_projects_root: Path, app_name: str) -> RunLocation
 
     A bare name ("laudoctor") is the project's WEB tier, working dir = the project root; a
     "<project>-backend" or "<project>-ws" name is a role-specific process of that SAME project,
-    working dir = <project>/backend (the legacy workspace layout also placed the WebSocket gateway
-    at backend/app/ws.py). This is NEVER guessed from which subdirectories happen to exist — a
+    working dir = <project>/backend, where the WebSocket gateway also lives at backend/app/ws.py.
+    This is NEVER guessed from which subdirectories happen to exist — a
     bare-named web app's project root routinely ALSO has its own backend/ subdirectory, so "does
     backend/ exist" is not a safe signal for which tier a bare name means (confirmed against the
     real live `laudoctor` + `laudoctor-backend` apps, which share one project dir this way).
@@ -309,9 +309,8 @@ def validate_deploy_request(name: str, body: dict, workspace_projects_root: Path
 def _validate_target(target: object, field: str) -> str:
     """A route target must be a real app container — never `shimpz-brain` itself.
 
-    The `shimpz-brain` migration-bridge carve-out (`add-legacy`) was removed once the live migration
-    confirmed no route depends on it — a route to `shimpz-brain` would be a public-hostname path straight
-    into the one container holding the whole credential keyring.
+    A route to `shimpz-brain` would expose a public-hostname path straight into the one container
+    holding the whole credential keyring.
     """
     prefix = f"app{os.environ.get('SHIMPZ_SUFFIX', '')}_"  # this instance's app prefix (R137)
     if not isinstance(target, str) or not (

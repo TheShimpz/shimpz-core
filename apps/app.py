@@ -121,6 +121,8 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._request_slots.release()
+
+
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
 _APP_ROUTES = (
@@ -234,11 +236,10 @@ def _wait_running(container) -> tuple[bool, str]:
 
 
 def _ensure_app_network(name: str):
-    """Get-or-create this app's OWN network — never the old shared app_net.
+    """Get or create this app's dedicated internal network.
 
-    An app can never resolve or reach another app's container at all: there is no shared
-    bridge left to enumerate or scan. The network is ALWAYS internal (no NAT); the app's only
-    internet egress is the token-authenticated app-egress-proxy.
+    An app can never resolve or reach another app's container. The network is always internal
+    (no NAT); the app's only internet egress is the token-authenticated app-egress-proxy.
     """
     net_name = manifests.app_network_name(name)
     try:
@@ -250,7 +251,7 @@ def _ensure_app_network(name: str):
         if network.attrs.get("Containers"):
             raise ApiError(
                 HTTPStatus.CONFLICT,
-                f"legacy network {net_name!r} has public NAT; remove/redeploy its disposable app before launch",
+                f"unsafe network {net_name!r} has public NAT; remove/redeploy its disposable app before launch",
             )
         network.remove()
         return _docker.networks.create(net_name, driver="bridge", internal=True)
@@ -294,11 +295,7 @@ def _read_egress_token(path: Path) -> str | None:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-            or metadata.st_size not in {32, 64}
-        ):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size not in {32, 64}:
             return None
         payload = os.read(descriptor, 65)
     except OSError:

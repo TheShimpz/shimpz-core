@@ -84,7 +84,7 @@ class BrainCredentialsClientTests(unittest.TestCase):
         )
         self.assertNotIn(secret, json.dumps(requests))
 
-    def test_legacy_providers_and_oauth_metadata_fail_closed(self):
+    def test_unsupported_providers_and_oauth_metadata_fail_closed(self):
         for provider in ("claude-code", "codex"):
             with self.subTest(provider=provider), mock.patch.object(brain_credentials_client, "_post") as post:
                 with self.assertRaises(brain_credentials_client.BrainCredentialError):
@@ -93,7 +93,7 @@ class BrainCredentialsClientTests(unittest.TestCase):
 
         metadata = {
             "auth_type": "oauth",
-            "secret_ref": {"opaque": "legacy-envelope"},
+            "secret_ref": {"opaque": "invalid-envelope"},
             "generation": 1,
         }
         with mock.patch.object(brain_credentials_client, "_post", return_value=(200, metadata)) as post:
@@ -247,9 +247,9 @@ class BrainCredentialsClientTests(unittest.TestCase):
         self.assertEqual(read.call_count, 2)
 
     def test_volume_archive_helpers_are_not_part_of_the_runtime_contract(self):
-        for legacy_name in ("credential_file", "credential_archive", "resolve_archive"):
-            with self.subTest(name=legacy_name):
-                self.assertFalse(hasattr(brain_credentials_client, legacy_name))
+        for absent_name in ("credential_file", "credential_archive", "resolve_archive"):
+            with self.subTest(name=absent_name):
+                self.assertFalse(hasattr(brain_credentials_client, absent_name))
 
 
 if __name__ == "__main__":
