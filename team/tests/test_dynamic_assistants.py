@@ -6,9 +6,13 @@ import copy
 import json
 import stat
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
+import dynamic_assistants
 from developers_controller_contract import CONTRACT_ROOT
 from dynamic_assistants import (
     DynamicAssistantConflictError,
@@ -34,6 +38,7 @@ class DynamicAssistantStoreTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / "bindings.json"
         self.store = DynamicAssistantStore(self.path)
+        dynamic_assistants._cached_app_spec.cache_clear()
 
     def tearDown(self) -> None:
         self.directory.cleanup()
@@ -111,6 +116,67 @@ class DynamicAssistantStoreTests(unittest.TestCase):
                 ("org.shimpz.source.digest", RESOLUTION["source_digest"]),
             ),
         )
+
+    def test_unchanged_digest_reuses_validation_without_aliasing_results(self) -> None:
+        binding = self.store.put("team_1", runtime_resolution())
+        validator = dynamic_assistants.assistant_manifest.canonical_machine_contract
+
+        with mock.patch.object(
+            dynamic_assistants.assistant_manifest,
+            "canonical_machine_contract",
+            wraps=validator,
+        ) as canonical:
+            first = app_spec(binding)
+            second = app_spec(binding)
+
+        self.assertEqual(canonical.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        first.assistant.powers.pop("hello")
+        self.assertIn("hello", app_spec(binding).assistant.powers)
+
+    def test_registry_readers_share_the_file_lock(self) -> None:
+        expected = self.store.put("team_1", runtime_resolution())
+        original_read = self.store._read
+        readers_entered = threading.Barrier(2)
+
+        def overlapping_read():
+            readers_entered.wait(timeout=2)
+            return original_read()
+
+        with (
+            mock.patch.object(self.store, "_read", side_effect=overlapping_read),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = tuple(executor.map(lambda _index: self.store.get("team_1", "hello-world"), range(2)))
+
+        self.assertEqual(results, (expected, expected))
+
+    def test_registry_writer_waits_for_shared_reader(self) -> None:
+        self.store.put("team_1", runtime_resolution())
+        reader_entered = threading.Event()
+        release_reader = threading.Event()
+        writer_read = threading.Event()
+        original_read = self.store._read
+
+        def hold_reader() -> None:
+            with self.store._shared_lock():
+                reader_entered.set()
+                release_reader.wait(timeout=2)
+
+        def observe_writer_read():
+            writer_read.set()
+            return original_read()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            reader = executor.submit(hold_reader)
+            self.assertTrue(reader_entered.wait(timeout=1))
+            with mock.patch.object(self.store, "_read", side_effect=observe_writer_read):
+                writer = executor.submit(self.store.delete, "team_1", "hello-world")
+                self.assertFalse(writer_read.wait(timeout=0.1))
+                release_reader.set()
+                reader.result(timeout=1)
+                self.assertTrue(writer.result(timeout=1))
 
     def test_noncanonical_machine_contract_fails_closed(self) -> None:
         binding = self.store.put("team_1", copy.deepcopy(RESOLUTION))

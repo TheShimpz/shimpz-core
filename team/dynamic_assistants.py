@@ -8,8 +8,9 @@ import json
 import os
 import re
 import tempfile
-import threading
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,6 @@ class DynamicAssistantStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock_path = path.with_suffix(f"{path.suffix}.lock")
-        self._thread_lock = threading.RLock()
 
     def put(self, team_id: str, resolution: dict[str, Any]) -> DynamicAssistantBinding:
         binding = binding_from_resolution(team_id, resolution)
@@ -70,18 +70,18 @@ class DynamicAssistantStore:
 
     def get(self, team_id: str, assistant_id: str) -> DynamicAssistantBinding | None:
         _validate_identity(team_id, assistant_id)
-        with self._exclusive_lock():
+        with self._shared_lock():
             return _find(self._read(), team_id, assistant_id)
 
     def list(self, team_id: str) -> tuple[DynamicAssistantBinding, ...]:
         _validate_team_id(team_id)
-        with self._exclusive_lock():
+        with self._shared_lock():
             bindings = tuple(binding for binding in self._read() if binding.team_id == team_id)
         return tuple(sorted(bindings, key=lambda binding: binding.assistant_id))
 
     def snapshot(self) -> tuple[DynamicAssistantBinding, ...]:
         """Read and validate one immutable point-in-time view of every binding."""
-        with self._exclusive_lock():
+        with self._shared_lock():
             return tuple(self._read())
 
     def delete(self, team_id: str, assistant_id: str) -> bool:
@@ -97,7 +97,10 @@ class DynamicAssistantStore:
         return True
 
     def _exclusive_lock(self):
-        return _FileLock(self._thread_lock, self._lock_path)
+        return _FileLock(self._lock_path, fcntl.LOCK_EX)
+
+    def _shared_lock(self):
+        return _FileLock(self._lock_path, fcntl.LOCK_SH)
 
     def _read(self) -> list[DynamicAssistantBinding]:
         try:
@@ -162,9 +165,10 @@ class DynamicAssistantStore:
                 temporary.unlink(missing_ok=True)
 
 
-def app_spec(binding: DynamicAssistantBinding) -> marketplace.AppSpec:
-    """Convert one validated binding into the existing hosted Assistant contract."""
-    resolution = binding.resolution
+def _build_app_spec(
+    assistant_id: str,
+    resolution: dict[str, Any],
+) -> marketplace.AppSpec:
     try:
         account_declarations = tuple(
             assistant_manifest.AccountDeclaration(
@@ -211,7 +215,7 @@ def app_spec(binding: DynamicAssistantBinding) -> marketplace.AppSpec:
         first_party=False,
         archs=platforms,
         required_image_labels=(
-            ("org.shimpz.assistant.id", binding.assistant_id),
+            ("org.shimpz.assistant.id", assistant_id),
             ("org.shimpz.source.digest", resolution["source_digest"]),
         ),
         assistant=marketplace.AssistantContract(
@@ -222,14 +226,43 @@ def app_spec(binding: DynamicAssistantBinding) -> marketplace.AppSpec:
     )
 
 
+@lru_cache(maxsize=_MAX_BINDINGS)
+def _cached_app_spec(
+    binding_digest: str,
+    encoded_resolution: bytes,
+) -> marketplace.AppSpec:
+    try:
+        resolution = json.loads(encoded_resolution)
+        assistant_id = resolution["assistant_id"]
+    except (KeyError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DynamicAssistantError("the dynamic Assistant runtime contract is invalid") from exc
+    if not isinstance(assistant_id, str):
+        raise DynamicAssistantError("the dynamic Assistant runtime contract is invalid")
+    return _build_app_spec(assistant_id, resolution)
+
+
+def app_spec(binding: DynamicAssistantBinding) -> marketplace.AppSpec:
+    """Convert one digest-bound binding without re-validating unchanged contract content."""
+    encoded_resolution = _canonical_bytes(binding.resolution)
+    digest_value = {
+        "version": _FORMAT_VERSION,
+        "team_id": binding.team_id,
+        "resolution": binding.resolution,
+    }
+    expected_digest = f"sha256:{hashlib.sha256(_canonical_bytes(digest_value)).hexdigest()}"
+    if binding.binding_digest != expected_digest:
+        raise DynamicAssistantError("the dynamic Assistant registry binding digest is invalid")
+    return deepcopy(_cached_app_spec(binding.binding_digest, encoded_resolution))
+
+
 class _FileLock:
-    def __init__(self, thread_lock: threading.RLock, path: Path) -> None:
-        self._thread_lock = thread_lock
+    def __init__(self, path: Path, operation: int) -> None:
         self._path = path
+        self._operation = operation
         self._stream = None
 
     def __enter__(self) -> None:
-        self._thread_lock.acquire()
+        descriptor = -1
         try:
             self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             descriptor = os.open(
@@ -238,21 +271,24 @@ class _FileLock:
                 0o600,
             )
             self._stream = os.fdopen(descriptor, "rb+")
-            fcntl.flock(self._stream, fcntl.LOCK_EX)
+            descriptor = -1
+            fcntl.flock(self._stream, self._operation)
         except Exception:
-            self._thread_lock.release()
+            if descriptor >= 0:
+                os.close(descriptor)
+            if self._stream is not None:
+                self._stream.close()
+                self._stream = None
             raise
 
     def __exit__(self, *_args: object) -> None:
         stream = self._stream
         if stream is None:
-            self._thread_lock.release()
             raise DynamicAssistantError("the dynamic Assistant registry lock is unavailable")
         try:
             fcntl.flock(stream, fcntl.LOCK_UN)
-            stream.close()
         finally:
-            self._thread_lock.release()
+            stream.close()
 
 
 def binding_from_resolution(
