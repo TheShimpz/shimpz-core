@@ -9,6 +9,7 @@ generation through AES-GCM authenticated additional data (AAD).
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import re
@@ -406,6 +407,8 @@ class OAuthAccountStore:
         self._clock = clock
         self._lock = threading.RLock()
         self._account_flights: dict[tuple[str, str, str], _AccountFlight] = {}
+        self._state_cache_identity: private_state.PrivateFileIdentity | None = None
+        self._state_cache: dict[str, object] | None = None
 
     @contextmanager
     def _account_flight(self, team: str, assistant: str, account: str):
@@ -430,15 +433,42 @@ class OAuthAccountStore:
         return int(now)
 
     def _read_state(self) -> dict[str, object]:
-        payload = _PRIVATE_STATE.read_private_file(self.state_path, MAX_STATE_BYTES, "OAuth account state")
-        return private_state.empty_state() if payload is None else _validate_state(_strict_json(payload))
+        snapshot = _PRIVATE_STATE.read_private_file_if_changed(
+            self.state_path,
+            MAX_STATE_BYTES,
+            "OAuth account state",
+            self._state_cache_identity,
+            cache_initialized=self._state_cache is not None,
+        )
+        if snapshot.unchanged:
+            if self._state_cache is None:
+                raise OAuthAccountStoreError("OAuth account state cache is unavailable")
+            return self._state_cache
+        state = (
+            private_state.empty_state()
+            if snapshot.payload is None
+            else _validate_state(_strict_json(snapshot.payload))
+        )
+        self._state_cache_identity = snapshot.identity
+        self._state_cache = state
+        return state
+
+    def _read_state_for_update(self) -> dict[str, object]:
+        return copy.deepcopy(self._read_state())
+
+    def _drop_state_cache(self) -> None:
+        self._state_cache_identity = None
+        self._state_cache = None
 
     def _write_state(self, state: Mapping[str, object]) -> None:
-        validated = _validate_state(dict(state))
-        payload = json.dumps(validated, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        if len(payload) > MAX_STATE_BYTES:
-            raise OAuthAccountStoreError("OAuth account state exceeds its fixed byte limit")
-        _PRIVATE_STATE.atomic_write(self.state_path, payload, "OAuth account state")
+        try:
+            validated = _validate_state(dict(state))
+            payload = json.dumps(validated, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if len(payload) > MAX_STATE_BYTES:
+                raise OAuthAccountStoreError("OAuth account state exceeds its fixed byte limit")
+            _PRIVATE_STATE.atomic_write(self.state_path, payload, "OAuth account state")
+        finally:
+            self._drop_state_cache()
 
     def _key(self, *, allow_create: bool = False) -> bytes:
         return _PRIVATE_STATE.key(self.key_path, "OAuth account keyring", allow_create=allow_create)
@@ -563,7 +593,7 @@ class OAuthAccountStore:
         canonical = _token_set(token_set, canonical_scopes, self._now(), identity)
         plaintext = self._plaintext(canonical)
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             key = self._key(allow_create=not _PRIVATE_STATE.has_records(state))
             records = _PRIVATE_STATE.records(state, team, assistant, create=True)
             if account not in records and len(records) >= MAX_ACCOUNTS_PER_ASSISTANT:
@@ -726,7 +756,7 @@ class OAuthAccountStore:
         assistant = _component_id(assistant_id, "Assistant id")
         declared = set(_declared_ids(declared_ids))
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             records = _PRIVATE_STATE.records(state, team, assistant, create=False)
             obsolete = set(records) - declared
             if not obsolete:
@@ -747,7 +777,7 @@ class OAuthAccountStore:
         assistant = _component_id(assistant_id, "Assistant id")
         account = _component_id(account_id, "account id")
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             records = _PRIVATE_STATE.records(state, team, assistant, create=False)
             removed = records.pop(account, None) is not None
             if removed:
@@ -780,7 +810,7 @@ class OAuthAccountStore:
                 grant = self._resolve_record(team, assistant, account, record)
             revoke_callback(provider, grant.access_token, grant.refresh_token, grant.broker_lease)
             with self._lock:
-                state = self._read_state()
+                state = self._read_state_for_update()
                 records = _PRIVATE_STATE.records(state, team, assistant, create=False)
                 current = records.get(account)
                 if current is None or _record_metadata(_validate_record(current))[4] != generation:
@@ -794,7 +824,7 @@ class OAuthAccountStore:
         team = _team_id(team_id)
         assistant = _component_id(assistant_id, "Assistant id")
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             removed = _PRIVATE_STATE.delete_assistant(state, team, assistant)
             if removed:
                 self._write_state(state)
@@ -803,7 +833,7 @@ class OAuthAccountStore:
     def delete_team(self, team_id: object) -> bool:
         team = _team_id(team_id)
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             removed = _PRIVATE_STATE.delete_team(state, team)
             if removed:
                 self._write_state(state)
@@ -812,7 +842,7 @@ class OAuthAccountStore:
     def delete_all(self) -> bool:
         """Atomically purge all account material during an owned Space reset."""
         with self._lock:
-            state = self._read_state()
+            state = self._read_state_for_update()
             if not _PRIVATE_STATE.has_records(state):
                 return False
             self._write_state(private_state.empty_state())

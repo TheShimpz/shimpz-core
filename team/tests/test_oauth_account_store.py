@@ -8,6 +8,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 import oauth_account_store
 from oauth_http_client import OAuthTokenSet
@@ -86,6 +87,130 @@ class OAuthAccountStoreTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(store.key_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(store.state_path.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(store.key_path.parent.stat().st_mode), 0o700)
+
+    def test_resolve_reuses_only_the_validated_state_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(Path(directory))
+            store.put("team_1", "shimpz-cloudflare", "cloudflare", "cloudflare", SCOPES, tokens(), ACCOUNT)
+
+            with mock.patch.object(
+                oauth_account_store,
+                "_validate_state",
+                wraps=oauth_account_store._validate_state,
+            ) as validate_state:
+                for _ in range(2):
+                    self.assertEqual(
+                        store.resolve(
+                            "team_1",
+                            "shimpz-cloudflare",
+                            "cloudflare",
+                            "cloudflare",
+                            SCOPES,
+                            lambda *_args: self.fail("unexpired token must not refresh"),
+                        ),
+                        ACCESS,
+                    )
+
+            self.assertEqual(validate_state.call_count, 1)
+
+    def test_external_atomic_replacement_invalidates_cached_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = self._store(root)
+            second = self._store(root)
+            first.put("team_1", "shimpz-cloudflare", "cloudflare", "cloudflare", SCOPES, tokens(), ACCOUNT)
+            self.assertEqual(
+                first.resolve(
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    "cloudflare",
+                    SCOPES,
+                    lambda *_args: self.fail("unexpired token must not refresh"),
+                ),
+                ACCESS,
+            )
+
+            replacement = "replacement-access-token-private-material"
+            second.put(
+                "team_1",
+                "shimpz-cloudflare",
+                "cloudflare",
+                "cloudflare",
+                SCOPES,
+                tokens(access=replacement),
+                ACCOUNT,
+            )
+
+            self.assertEqual(
+                first.resolve(
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    "cloudflare",
+                    SCOPES,
+                    lambda *_args: self.fail("unexpired token must not refresh"),
+                ),
+                replacement,
+            )
+
+    def test_mutation_never_aliases_the_cached_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(Path(directory))
+            store.put("team_1", "shimpz-cloudflare", "cloudflare", "cloudflare", SCOPES, tokens(), ACCOUNT)
+            store.metadata("team_1", "shimpz-cloudflare", DECLARATIONS)
+            cached = store._state_cache
+            self.assertIsNotNone(cached)
+
+            self.assertTrue(store.delete_account("team_1", "shimpz-cloudflare", "cloudflare"))
+
+            if cached is None:
+                self.fail("metadata read did not populate the state cache")
+            records = oauth_account_store._PRIVATE_STATE.records(
+                cached,
+                "team_1",
+                "shimpz-cloudflare",
+                create=False,
+            )
+            self.assertIn("cloudflare", records)
+
+    def test_failed_write_drops_the_validated_state_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(Path(directory))
+            store.put("team_1", "shimpz-cloudflare", "cloudflare", "cloudflare", SCOPES, tokens(), ACCOUNT)
+            store.metadata("team_1", "shimpz-cloudflare", DECLARATIONS)
+            self.assertIsNotNone(store._state_cache)
+
+            with (
+                mock.patch.object(
+                    oauth_account_store.private_state.PrivateState,
+                    "atomic_write",
+                    side_effect=oauth_account_store.OAuthAccountStoreError("write failed"),
+                ),
+                self.assertRaisesRegex(oauth_account_store.OAuthAccountStoreError, "write failed"),
+            ):
+                store.put(
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    "cloudflare",
+                    SCOPES,
+                    tokens(access="replacement-access-token-private-material"),
+                    ACCOUNT,
+                )
+
+            self.assertIsNone(store._state_cache)
+            self.assertEqual(
+                store.resolve(
+                    "team_1",
+                    "shimpz-cloudflare",
+                    "cloudflare",
+                    "cloudflare",
+                    SCOPES,
+                    lambda *_args: self.fail("unexpired token must not refresh"),
+                ),
+                ACCESS,
+            )
 
     def test_rotation_is_atomic_and_increments_authenticated_generation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

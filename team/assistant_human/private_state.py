@@ -15,6 +15,22 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
+@dataclass(frozen=True, slots=True)
+class PrivateFileIdentity:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateFileRead:
+    identity: PrivateFileIdentity | None
+    payload: bytes | None
+    unchanged: bool
+
+
 def timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -52,11 +68,19 @@ class PrivateState:
             raise self.error_class(self.malformed_envelope)
         return decoded
 
-    def read_private_file(self, path: Path, maximum: int, label: str) -> bytes | None:
+    def read_private_file_if_changed(
+        self,
+        path: Path,
+        maximum: int,
+        label: str,
+        previous: PrivateFileIdentity | None,
+        *,
+        cache_initialized: bool,
+    ) -> PrivateFileRead:
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except FileNotFoundError:
-            return None
+            return PrivateFileRead(None, None, cache_initialized and previous is None)
         except OSError as exc:
             raise self.error_class(f"{label} is unavailable") from exc
         try:
@@ -69,6 +93,15 @@ class PrivateState:
                 or metadata.st_size > maximum
             ):
                 raise self.error_class(f"{label} failed its ownership contract")
+            identity = PrivateFileIdentity(
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            if cache_initialized and identity == previous:
+                return PrivateFileRead(identity, None, True)
             payload = bytearray()
             while len(payload) <= maximum:
                 chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - len(payload)))
@@ -77,9 +110,18 @@ class PrivateState:
                 payload.extend(chunk)
             if len(payload) > maximum:
                 raise self.error_class(f"{label} exceeds its fixed byte limit")
-            return bytes(payload)
+            return PrivateFileRead(identity, bytes(payload), False)
         finally:
             os.close(descriptor)
+
+    def read_private_file(self, path: Path, maximum: int, label: str) -> bytes | None:
+        return self.read_private_file_if_changed(
+            path,
+            maximum,
+            label,
+            None,
+            cache_initialized=False,
+        ).payload
 
     def atomic_write(self, path: Path, payload: bytes, label: str) -> None:
         self._require_private_parent(path.parent, label)
