@@ -58,6 +58,20 @@ def suspension(*requests: brain_runtime_client.PowerRequest) -> brain_runtime_cl
     return brain_runtime_client.RuntimeTurn(status="power-required", reply="", powers=requests)
 
 
+def power_batch(round_index: int, count: int) -> brain_runtime_client.RuntimeTurn:
+    return suspension(
+        *(
+            brain_runtime_client.PowerRequest(
+                interrupt_id=f"interrupt-{round_index}-{power_index}",
+                assistant_id="hello-pulse",
+                power="hello",
+                input={"name": f"Ada {power_index}"},
+            )
+            for power_index in range(count)
+        )
+    )
+
+
 def accept_input(_assistant: str, _power: str, payload):
     return payload
 
@@ -331,6 +345,50 @@ class ChatOrchestratorTests(unittest.TestCase):
         )
 
         self.assertEqual(len(validations), 5)
+
+    def test_context_validation_count_preserves_every_security_boundary(self):
+        shapes = (
+            ("no Powers", (), False, 2),
+            ("one Power", (1,), False, 5),
+            ("four Powers in one batch", (4,), False, 8),
+            ("four single-Power rounds", (1, 1, 1, 1), False, 14),
+            ("eight Powers in one batch", (8,), False, 12),
+            ("eight single-Power rounds", (1, 1, 1, 1, 1, 1, 1, 1), False, 26),
+            ("one Power with one pause", (1,), True, 6),
+        )
+        for name, batch_sizes, pause, expected in shapes:
+            with self.subTest(shape=name):
+                validations: list[str] = []
+                runtime = FakeRuntime(
+                    [
+                        *(power_batch(round_index, count) for round_index, count in enumerate(batch_sizes)),
+                        completed(),
+                    ]
+                )
+                pause_once = iter((True, False)) if pause else iter(())
+                current_strategy = strategy(
+                    accept_input,
+                    lambda _request: {"message": "ok"},
+                    validate_context=lambda validations=validations: validations.append("valid"),
+                    pause_before_batch=lambda _batch, pause_once=pause_once: next(pause_once, False),
+                )
+                outcome = chat_orchestrator.run_until_pause(
+                    runtime,
+                    context(),
+                    "Exercise every boundary",
+                    current_strategy,
+                )
+                if pause:
+                    self.assertIsInstance(outcome, chat_orchestrator.ChatSuspension)
+                    outcome = chat_orchestrator.continue_after_pause(
+                        runtime,
+                        context(),
+                        outcome.continuation,
+                        current_strategy,
+                    )
+
+                self.assertIsInstance(outcome, chat_orchestrator.ChatOutcome)
+                self.assertEqual(len(validations), expected)
 
     def test_invalid_later_request_prevents_every_batch_side_effect(self):
         first = suspended(interrupt_id="first").powers[0]
