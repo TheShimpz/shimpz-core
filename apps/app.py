@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import sys
 import threading
 import time
@@ -62,6 +63,7 @@ APP_EGRESS_PROXY = os.environ.get(
     "SHIMPZ_APP_EGRESS_PROXY_CONTAINER", f"app-egress-proxy{os.environ.get('SHIMPZ_SUFFIX', '')}"
 )
 APP_EGRESS_POLICY_DIR = Path(os.environ.get("SHIMPZ_APP_EGRESS_POLICY_DIR", "/app-egress-policy"))
+EGRESS_TOKEN = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{64})\Z")
 # shimpz-caddy joins each app network at DEPLOY time; a recreated caddy (daemon restart, compose
 # recreate, crash) comes back with NONE of them and silently 502s every app domain (a real prod
 # outage, 2026-07-10). The driver reconciles that invariant on startup AND on this loop, so a
@@ -255,6 +257,62 @@ def _ensure_app_network(name: str):
     return network
 
 
+def _atomic_write(path: Path, payload: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
+        )
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written < 1:
+                raise OSError("short app egress state write")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        temporary.replace(path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _read_egress_token(path: Path) -> str | None:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size not in {32, 64}
+        ):
+            return None
+        payload = os.read(descriptor, 65)
+    except OSError:
+        return None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        token = payload.decode("ascii")
+    except UnicodeError:
+        return None
+    return token if EGRESS_TOKEN.fullmatch(token) is not None else None
+
+
 def _egress_token(name: str) -> str:
     """The app's stable per-app egress token (the Proxy-Authorization it presents to app-egress-proxy).
 
@@ -264,19 +322,40 @@ def _egress_token(name: str) -> str:
     tdir = APP_EGRESS_POLICY_DIR / ".tokens"
     tdir.mkdir(parents=True, exist_ok=True)
     tf = tdir / f"{name}.token"
-    with contextlib.suppress(OSError):
-        tok = tf.read_text(encoding="utf-8").strip()
-        if tok:
-            return tok
+    token = _read_egress_token(tf)
+    if token is not None:
+        return token
     tok = secrets.token_hex(16)
-    tf.write_text(tok, encoding="utf-8")
+    _atomic_write(tf, tok.encode("ascii"), 0o600)
     return tok
 
 
 def _write_egress_policy(token: str, egress: list[str]) -> None:
     """Publish the app's allowlist the proxy reads: <token>.json = its effective_egress (sorted hosts)."""
-    APP_EGRESS_POLICY_DIR.mkdir(parents=True, exist_ok=True)
-    (APP_EGRESS_POLICY_DIR / f"{token}.json").write_text(json.dumps(sorted(egress)), encoding="utf-8")
+    if EGRESS_TOKEN.fullmatch(token) is None:
+        raise ValueError("app egress token is invalid")
+    payload = json.dumps(sorted(egress), separators=(",", ":")).encode("utf-8")
+    _atomic_write(APP_EGRESS_POLICY_DIR / f"{token}.json", payload, 0o644)
+
+
+def _unlink_persisted(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _remove_egress_state(name: str) -> None:
+    token_path = APP_EGRESS_POLICY_DIR / ".tokens" / f"{name}.token"
+    token = _read_egress_token(token_path)
+    if token is not None:
+        _unlink_persisted(APP_EGRESS_POLICY_DIR / f"{token}.json")
+    _unlink_persisted(token_path)
 
 
 def _no_proxy_for(req: validate.DeployRequest) -> str:
@@ -519,6 +598,7 @@ def _remove(name: str, purge_volume: bool) -> dict:
         # This app's network is 1:1 with the app (nothing else ever shares it) — always torn
         # down on removal, independent of purge_volume (a different, data-persistence concern).
         _teardown_app_network(name)
+        _remove_egress_state(name)
     trace_id = audit.log("rm", name, result="ok", purge_volume=purge_volume)
     return {"status": "removed", "trace_id": trace_id}
 

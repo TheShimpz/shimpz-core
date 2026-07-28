@@ -5,6 +5,7 @@ import importlib.util
 import io
 import socket
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -133,6 +134,46 @@ class HttpBodyTests(unittest.TestCase):
         self.assertEqual(old.rename.call_args_list, [mock.call("app_example__retiring"), mock.call("app_example")])
         candidate.remove.assert_called_once_with(force=True)
         old.remove.assert_not_called()
+
+    def test_egress_state_is_atomic_canonical_and_removed_with_the_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token_dir = root / ".tokens"
+            token_dir.mkdir()
+            token_path = token_dir / "example.token"
+            token_path.write_text("../invalid-token", encoding="utf-8")
+
+            with mock.patch.object(self.app, "APP_EGRESS_POLICY_DIR", root):
+                token = self.app._egress_token("example")
+                self.assertIsNotNone(self.app.EGRESS_TOKEN.fullmatch(token))
+                self.assertEqual(token_path.read_text(encoding="ascii"), token)
+                self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)
+
+                self.app._write_egress_policy(token, ["z.example", "a.example"])
+                policy_path = root / f"{token}.json"
+                first_inode = policy_path.stat().st_ino
+                self.assertEqual(policy_path.read_text(encoding="utf-8"), '["a.example","z.example"]')
+
+                self.app._write_egress_policy(token, ["new.example"])
+                self.assertNotEqual(policy_path.stat().st_ino, first_inode)
+                self.assertEqual(policy_path.read_text(encoding="utf-8"), '["new.example"]')
+                self.assertEqual(list(root.glob(".*.tmp")), [])
+
+                self.app._remove_egress_state("example")
+                self.assertFalse(policy_path.exists())
+                self.assertFalse(token_path.exists())
+
+    def test_remove_revokes_egress_state_before_reporting_success(self) -> None:
+        with (
+            mock.patch.object(self.app, "_get_or_none", return_value=None),
+            mock.patch.object(self.app, "_teardown_app_network"),
+            mock.patch.object(self.app, "_remove_egress_state") as remove_egress,
+            mock.patch.object(self.app.audit, "log", return_value="trace"),
+        ):
+            result = self.app._remove("example", False)
+
+        remove_egress.assert_called_once_with("example")
+        self.assertEqual(result, {"status": "removed", "trace_id": "trace"})
 
 
 if __name__ == "__main__":
