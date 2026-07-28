@@ -30,6 +30,9 @@ MAX_OPERATIONS = 64
 MAX_RESULT_BYTES = 32 * 1024
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 4096
+# NORMAL preserves SQLite consistency and process-crash recovery, but a sudden power loss may
+# discard commits not yet checkpointed. This private single-connection journal limits that batch.
+WAL_AUTOCHECKPOINT_PAGES = 32
 
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _FINGERPRINT_RE = re.compile(r"[a-f0-9]{64}\Z")
@@ -232,10 +235,16 @@ class PowerJournal:
         self._connection.execute("PRAGMA trusted_schema = OFF")
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 5000")
-        mode = self._connection.execute("PRAGMA journal_mode = DELETE").fetchone()
-        if mode != ("delete",):
+        mode = self._connection.execute("PRAGMA journal_mode = WAL").fetchone()
+        if mode != ("wal",):
             raise PowerJournalCorruptionError("Power journal could not enable its durable mode")
-        self._connection.execute("PRAGMA synchronous = FULL")
+        self._connection.execute("PRAGMA synchronous = NORMAL")
+        checkpoint = self._connection.execute(
+            f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}"
+        ).fetchone()
+        synchronous = self._connection.execute("PRAGMA synchronous").fetchone()
+        if checkpoint != (WAL_AUTOCHECKPOINT_PAGES,) or synchronous != (1,):
+            raise PowerJournalCorruptionError("Power journal durability policy could not be applied")
 
     def _create_schema(self) -> None:
         self._connection.executescript(

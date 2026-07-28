@@ -98,6 +98,16 @@ class PowerJournalTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row, persisted)
 
+    def test_uses_bounded_wal_normal_durability_policy(self) -> None:
+        journal = self.journal()
+
+        self.assertEqual(journal._connection.execute("PRAGMA journal_mode").fetchone(), ("wal",))
+        self.assertEqual(journal._connection.execute("PRAGMA synchronous").fetchone(), (1,))
+        self.assertEqual(
+            journal._connection.execute("PRAGMA wal_autocheckpoint").fetchone(),
+            (power_journal.WAL_AUTOCHECKPOINT_PAGES,),
+        )
+
     def test_changed_pending_batch_and_changed_completed_result_fail_closed(self) -> None:
         journal = self.journal()
         batch = journal.prepare_batch("generation-1", "thread-1", [self.first])
