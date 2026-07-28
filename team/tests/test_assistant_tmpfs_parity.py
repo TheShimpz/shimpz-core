@@ -11,7 +11,7 @@ sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import manifests
-import marketplace
+from assistant_human import marketplace
 from local_controller_harness import LocalContractCase
 
 

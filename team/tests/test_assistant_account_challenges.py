@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-import assistant_account_challenges
+from assistant_human import assistant_account_challenges
 
 
 def requirement() -> assistant_account_challenges.AccountRequirement:

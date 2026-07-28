@@ -6,7 +6,7 @@ from base64 import b64decode
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
-import oauth_http_client
+from assistant_human import oauth_http_client
 
 CLIENT_ID = "cloudflare-client-id-123"
 CLIENT_CREDENTIAL = "cloudflare-client-secret-123"

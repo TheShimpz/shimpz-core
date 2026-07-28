@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import assistant_account_challenges
-import oauth_account_service
-import oauth_account_store
-import oauth_http_client
-import oauth_pkce_challenges
+from assistant_human import (
+    assistant_account_challenges,
+    oauth_account_service,
+    oauth_account_store,
+    oauth_http_client,
+    oauth_pkce_challenges,
+)
 
 CLIENT_ID = "cloudflare-client-123456789"
 CLIENT_CREDENTIAL = "cloudflare-secret-private-123456789"

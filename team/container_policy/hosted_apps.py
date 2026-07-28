@@ -9,15 +9,12 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_genesis
-import assistant_manifest
 import docker
 import docker.errors
 import egress_policy
 import manifests
-import marketplace
-import oauth_account_store
 import pgdriver_client
+from assistant_human import assistant_genesis, assistant_manifest, marketplace, oauth_account_store
 from hosted_install import dynamic_assistants
 from http_boundary import runtime_state
 

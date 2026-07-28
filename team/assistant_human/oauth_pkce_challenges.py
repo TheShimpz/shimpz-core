@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-import oauth_providers
+from assistant_human import oauth_providers
 
 DEFAULT_TTL_SECONDS = 300
 MAX_PENDING_CHALLENGES = 128

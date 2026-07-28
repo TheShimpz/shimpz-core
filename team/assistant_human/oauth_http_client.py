@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode, urlsplit
 
-import oauth_providers
 import strict_json
+
+from assistant_human import oauth_providers
 
 MAX_RESPONSE_BYTES = 32 * 1024
 MAX_TOKEN_BYTES = 16 * 1024

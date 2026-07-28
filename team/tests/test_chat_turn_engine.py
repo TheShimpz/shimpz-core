@@ -21,7 +21,7 @@ import hosted_app_fixture as hosted_harness
 import inference_config
 import local_app
 import local_registry
-import marketplace
+from assistant_human import marketplace
 from local_support import chat_segment as local_chat_segment
 from local_support.chat_segment import SegmentRequest
 from local_support.chat_types import ActiveAssistant

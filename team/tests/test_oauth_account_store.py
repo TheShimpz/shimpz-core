@@ -10,8 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-import oauth_account_store
-from oauth_http_client import OAuthTokenSet
+from assistant_human import oauth_account_store
+from assistant_human.oauth_http_client import OAuthTokenSet
 
 ACCESS = "access-token-private-material-123456789"
 REFRESH = "refresh-token-private-material-987654321"

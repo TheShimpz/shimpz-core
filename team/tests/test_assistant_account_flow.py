@@ -10,9 +10,8 @@ from pathlib import Path
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_account_challenges
-import assistant_account_flow
 import brain_runtime_client
+from assistant_human import assistant_account_challenges, assistant_account_flow
 from local_registry import AccountSpec, AssistantSpec, PowerSpec
 
 

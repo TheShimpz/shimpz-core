@@ -13,20 +13,22 @@ from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 
-import assistant_account_challenges
-import assistant_genesis
-import assistant_manifest
 import brain_runtime_client
 import docker
 import inference_config
 import manifests
-import oauth_account_service
-import oauth_account_store
-import oauth_http_client
-import oauth_pkce_challenges
 import power_journal
 import team_storage
 import token_store
+from assistant_human import (
+    assistant_account_challenges,
+    assistant_genesis,
+    assistant_manifest,
+    oauth_account_service,
+    oauth_account_store,
+    oauth_http_client,
+    oauth_pkce_challenges,
+)
 from hosted_install import artifact_trust, developers_client, developers_delegation, dynamic_assistants, registry_auth
 
 ALL_INTERFACES = str(ipaddress.IPv4Address(0))

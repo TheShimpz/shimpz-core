@@ -6,22 +6,24 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_account_challenges
-import assistant_account_flow
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
 import inference_config
 import manifests
-import marketplace
-import oauth_account_store
 import power_execution
 import power_journal
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
 from http_boundary import runtime_state
 
-from assistant_human import hosted_assistants
+from assistant_human import (
+    assistant_account_challenges,
+    assistant_account_flow,
+    hosted_assistants,
+    marketplace,
+    oauth_account_store,
+)
 
 
 def _current_team_anchor(

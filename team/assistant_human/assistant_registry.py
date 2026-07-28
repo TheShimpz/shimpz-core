@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-import assistant_manifest
+from assistant_human import assistant_manifest
 
 ALL_ZERO_SHA256 = "0" * 64
 REVIEWED_ASSISTANTS = assistant_manifest.load_reviewed_catalog()

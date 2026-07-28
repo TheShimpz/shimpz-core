@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import oauth_providers
 import strict_json
-from assistant_human import private_state
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from assistant_human import oauth_providers, private_state
 
 STATE_PATH = Path("/var/lib/shimpz-local/assistant-accounts/state/accounts.json")
 KEY_PATH = Path("/var/lib/shimpz-local/assistant-accounts/key/aes256.key")

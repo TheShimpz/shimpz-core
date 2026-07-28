@@ -14,9 +14,9 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
-import assistant_account_challenges
 import brain_runtime_client
-import oauth_providers
+
+from assistant_human import assistant_account_challenges, oauth_providers
 
 MAX_BATCH_POWERS = 64
 MAX_ACCOUNT_REQUIREMENTS = 64

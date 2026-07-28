@@ -3,13 +3,15 @@
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_account_challenges
-import assistant_account_flow
 import brain_runtime_client
-import oauth_account_service
-import oauth_account_store
 import power_execution
 import power_journal
+from assistant_human import (
+    assistant_account_challenges,
+    assistant_account_flow,
+    oauth_account_service,
+    oauth_account_store,
+)
 from docker.errors import DockerException
 from local_registry import AssistantSpec
 

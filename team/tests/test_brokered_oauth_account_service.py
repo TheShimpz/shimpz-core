@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import assistant_account_challenges
-import oauth_account_service
-import oauth_account_store
-import oauth_broker_client
-import oauth_pkce_challenges
+from assistant_human import (
+    assistant_account_challenges,
+    oauth_account_service,
+    oauth_account_store,
+    oauth_broker_client,
+    oauth_pkce_challenges,
+)
 
 SCOPES = ("dns.read", "offline_access", "zone.read")
 SESSION = "browser-session-private-123456789"

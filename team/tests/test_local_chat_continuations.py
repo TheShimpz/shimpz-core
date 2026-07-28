@@ -7,12 +7,12 @@ from pathlib import Path
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_account_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
 import local_chat_continuation_store
 import local_chat_continuations
+from assistant_human import assistant_account_challenges
 
 IMAGE = "registry.example/assistant@sha256:" + "b" * 64
 TURN = brain_runtime_client.RuntimeTurn(

@@ -11,8 +11,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import assistant_registry
-from assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
+from assistant_human import assistant_registry
+from assistant_human.assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
 
 __all__ = ("AccountSpec", "PowerSpec", "validate_power_input", "validate_power_output")
 

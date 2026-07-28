@@ -14,9 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import assistant_manifest
-import assistant_registry
-import marketplace
+from assistant_human import assistant_manifest, assistant_registry, marketplace
 
 from .developers_controller_contract import ContractValidationError, ContractValidator
 

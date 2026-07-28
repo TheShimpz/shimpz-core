@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UV_IMAGE = "ghcr.io/astral-sh/uv:0.11.25@sha256:1e3808aa9023d0980e7c15b1fa7c1ac16ff35925780cf5c459858b2d693f01a9"
 HOSTED_ENTRYPOINTS = ("app", "healthcheck")  # Compose invokes the auxiliary healthcheck entrypoint.
 LOCAL_ENTRYPOINTS = ("local_app", "local_healthcheck")
-ROOT_RUNTIME_DATA = {"assistant_catalog.json", "model_catalog.json"}
+ROOT_RUNTIME_DATA = {"model_catalog.json"}
 PRODUCTION_PACKAGES = {
     "assistant_human",
     "container_policy",
@@ -18,8 +18,8 @@ PRODUCTION_PACKAGES = {
     "local_support",
 }
 # Package data has no import graph; these per-image maps are its reviewed necessity authority.
-HOSTED_PACKAGE_DATA: dict[str, set[str]] = {}
-LOCAL_PACKAGE_DATA: dict[str, set[str]] = {}
+HOSTED_PACKAGE_DATA = {"assistant_human": {"assistant_human/assistant_catalog.json"}}
+LOCAL_PACKAGE_DATA = HOSTED_PACKAGE_DATA
 DYNAMIC_IMPORT_MODULES = {"importlib", "pkgutil", "runpy"}
 
 
@@ -133,9 +133,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
                 {path for path in imported_paths if path.startswith(f"{package}/")},
             )
             nested_sources = {
-                source
-                for source in package_files
-                if not re.fullmatch(rf"{re.escape(package)}/[A-Za-z0-9_.-]+", source)
+                source for source in package_files if not re.fullmatch(rf"{re.escape(package)}/[A-Za-z0-9_.-]+", source)
             }
             self.assertEqual(
                 set(),
@@ -151,11 +149,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         package_data: dict[str, set[str]],
     ) -> None:
         root_copy_sources = self._root_copy_sources(logical_lines)
-        packaged = {
-            source
-            for source in root_copy_sources
-            if re.fullmatch(r"[a-z][a-z0-9_]*[.]py", source)
-        }
+        packaged = {source for source in root_copy_sources if re.fullmatch(r"[a-z][a-z0-9_]*[.]py", source)}
         modules, packages, imported_paths = _runtime_import_closure(*entrypoints)
         self.assertEqual(packaged, modules)
         self.assertEqual(root_copy_sources, modules | ROOT_RUNTIME_DATA)
@@ -167,10 +161,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
                 package_destination = re.fullmatch(r"[.]\/([a-z][a-z0-9_]*)/", destination)
                 self.assertTrue(
                     destination in modeled_destinations
-                    or (
-                        package_destination
-                        and package_destination.group(1) in PRODUCTION_PACKAGES
-                    ),
+                    or (package_destination and package_destination.group(1) in PRODUCTION_PACKAGES),
                     f"unmodeled COPY destination: {line}",
                 )
         self._assert_package_copy_closure(
@@ -270,8 +261,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         self.assertIn("COPY --from=dependencies /opt/venv /opt/venv", runtime)
         self.assertTrue(
             any(
-                line.startswith("HEALTHCHECK ")
-                and f'/app/{LOCAL_ENTRYPOINTS[1]}.py"]' in line
+                line.startswith("HEALTHCHECK ") and f'/app/{LOCAL_ENTRYPOINTS[1]}.py"]' in line
                 for line in logical_lines
             ),
         )
@@ -295,17 +285,12 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         self.assertEqual({path.name for path in ROOT.glob("*.py")}, hosted_modules | local_modules)
         self.assertEqual({path.name for path in ROOT.glob("*.json")}, ROOT_RUNTIME_DATA)
         filesystem_packages = {
-            path.name
-            for path in ROOT.iterdir()
-            if path.is_dir() and (path / "__init__.py").is_file()
+            path.name for path in ROOT.iterdir() if path.is_dir() and (path / "__init__.py").is_file()
         }
         self.assertEqual(PRODUCTION_PACKAGES, filesystem_packages)
         self.assertEqual(PRODUCTION_PACKAGES, hosted_packages | local_packages)
         for package in PRODUCTION_PACKAGES:
-            package_files = {
-                path.relative_to(ROOT).as_posix()
-                for path in (ROOT / package).rglob("*.py")
-            }
+            package_files = {path.relative_to(ROOT).as_posix() for path in (ROOT / package).rglob("*.py")}
             self.assertEqual(
                 package_files,
                 {path for path in imported_paths if path.startswith(f"{package}/")},
@@ -316,10 +301,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
             for path in (ROOT / package).rglob("*")
             if path.is_file()
             and path.suffix not in {".py", ".pyc"}
-            and not any(
-                part.startswith(".") or part == "__pycache__"
-                for part in path.relative_to(ROOT).parts
-            )
+            and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(ROOT).parts)
         }
         declared_package_data = {
             path
@@ -329,17 +311,10 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
         }
         self.assertEqual(source_package_data, declared_package_data)
         production_sources = [*ROOT.glob("*.py")]
-        production_sources.extend(
-            path
-            for package in PRODUCTION_PACKAGES
-            for path in (ROOT / package).rglob("*.py")
-        )
+        production_sources.extend(path for package in PRODUCTION_PACKAGES for path in (ROOT / package).rglob("*.py"))
         for path in production_sources:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            imported_roots = {
-                module.partition(".")[0]
-                for module in _source_imports(_module_name(path), path)
-            }
+            imported_roots = {module.partition(".")[0] for module in _source_imports(_module_name(path), path)}
             self.assertEqual(
                 set(),
                 imported_roots & DYNAMIC_IMPORT_MODULES,
@@ -354,10 +329,7 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
                         isinstance(node.func, ast.Name)
                         and node.func.id in {"__import__", "compile", "eval", "exec", "import_module"}
                     )
-                    or (
-                        isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "__import__"
-                    )
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr == "__import__")
                 )
             ]
             self.assertEqual([], dynamic_imports, f"{path.relative_to(ROOT)} hides imports from the image closure")

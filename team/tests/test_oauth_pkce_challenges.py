@@ -5,7 +5,7 @@ import hashlib
 import unittest
 from unittest import mock
 
-import oauth_pkce_challenges
+from assistant_human import oauth_pkce_challenges
 
 SESSION_ONE = "session-binding-one-123456789"
 SESSION_TWO = "session-binding-two-123456789"

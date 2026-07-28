@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import marketplace
+from assistant_human import marketplace
 from container_policy import network as network_policy
 from hosted_install import dynamic_assistants
 

@@ -20,8 +20,8 @@ from pathlib import PurePosixPath
 import docker
 import docker.types
 import power_execution
+from assistant_human.marketplace import AppSpec
 from container_policy import network as network_policy
-from marketplace import AppSpec
 
 # Multi-instance (R137): SHIMPZ_SUFFIX names this Space's resources; empty (the default) is prod.
 SUFFIX = os.environ.get("SHIMPZ_SUFFIX", "")

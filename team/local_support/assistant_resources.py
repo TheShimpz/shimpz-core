@@ -2,7 +2,7 @@
 
 from http import HTTPStatus
 
-import assistant_manifest
+from assistant_human import assistant_manifest
 from container_policy import local as local_container_policy
 from docker.errors import DockerException, ImageNotFound, NotFound
 from local_registry import AssistantSpec

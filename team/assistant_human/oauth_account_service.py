@@ -13,12 +13,14 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-import assistant_account_challenges
-import oauth_account_store
-import oauth_broker_client
-import oauth_http_client
-import oauth_pkce_challenges
-import oauth_providers
+from assistant_human import (
+    assistant_account_challenges,
+    oauth_account_store,
+    oauth_broker_client,
+    oauth_http_client,
+    oauth_pkce_challenges,
+    oauth_providers,
+)
 
 _CLIENT_ID = re.compile(r"[A-Za-z0-9._~-]{8,256}\Z")
 _CLIENT_SECRET = re.compile(r"[!-~]{16,1024}\Z")

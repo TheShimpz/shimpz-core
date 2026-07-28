@@ -7,12 +7,12 @@ import math
 import re
 from dataclasses import asdict, dataclass
 
-import assistant_account_challenges
 import brain_runtime_client
 import chat_orchestrator
 import inference_config
 import local_chat_continuation_store
 import strict_json
+from assistant_human import assistant_account_challenges
 
 SCHEMA_VERSION = 1
 MAX_JSON_DEPTH = 16

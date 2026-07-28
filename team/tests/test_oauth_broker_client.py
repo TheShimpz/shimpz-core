@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
-import oauth_broker_client
+from assistant_human import oauth_broker_client
 
 SCOPES = ("dns.read", "offline_access", "zone.read")
 STATE = "s" * 43

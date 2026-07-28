@@ -8,9 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import assistant_registry
 import local_registry
-import marketplace
+from assistant_human import assistant_registry, marketplace
 
 
 class SharedRegistry(unittest.TestCase):

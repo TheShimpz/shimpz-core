@@ -2,10 +2,9 @@
 
 from http import HTTPStatus
 
-import assistant_account_challenges
-import assistant_account_flow
 import chat_orchestrator
 import chat_turn_engine
+from assistant_human import assistant_account_challenges, assistant_account_flow
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat

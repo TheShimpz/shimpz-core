@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 import docker
-import marketplace
+from assistant_human import marketplace
 from hosted_install import marketplace_image
 
 AUTH_CONFIG = {"username": "registry-reader", "password": "x" * 20}

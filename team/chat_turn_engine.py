@@ -6,13 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NoReturn
 
-import assistant_account_challenges
-import assistant_account_flow
-import assistant_chat
 import brain_runtime_client
 import chat_orchestrator
-import oauth_account_store
 import power_journal
+from assistant_human import assistant_account_challenges, assistant_account_flow, assistant_chat, oauth_account_store
 
 CHAT_PAUSED_STATUSES = frozenset({"accounts-required"})
 

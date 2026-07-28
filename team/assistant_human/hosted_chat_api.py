@@ -6,16 +6,19 @@ import contextlib
 import secrets
 from http import HTTPStatus
 
-import assistant_account_challenges
 import audit
 import chat_turn_engine
 import docker.errors
-import marketplace
-import oauth_account_service
 from container_policy import hosted_resources
 from http_boundary import runtime_state
 
-from assistant_human import hosted_assistants, hosted_chat_segment
+from assistant_human import (
+    assistant_account_challenges,
+    hosted_assistants,
+    hosted_chat_segment,
+    marketplace,
+    oauth_account_service,
+)
 
 
 @contextlib.contextmanager

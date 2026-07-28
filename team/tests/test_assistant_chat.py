@@ -8,7 +8,7 @@ from pathlib import Path
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_chat
+from assistant_human import assistant_chat
 
 
 class AssistantChatContractTests(unittest.TestCase):

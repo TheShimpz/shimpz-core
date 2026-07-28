@@ -4,7 +4,7 @@ import io
 import tarfile
 import unittest
 
-import assistant_genesis
+from assistant_human import assistant_genesis
 
 
 def manifest(genesis: str = "Use only the declared Powers.") -> bytes:

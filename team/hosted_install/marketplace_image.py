@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import docker
-import marketplace
+from assistant_human import marketplace
 
 from . import registry_auth
 

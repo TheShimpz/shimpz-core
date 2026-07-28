@@ -12,14 +12,12 @@ from types import SimpleNamespace
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import assistant_account_challenges
 import inference_config
 import local_app
 import local_chat_continuation_store
 import local_registry
-import oauth_account_store
-import oauth_pkce_challenges
 import power_execution
+from assistant_human import assistant_account_challenges, oauth_account_store, oauth_pkce_challenges
 from local_support import assistant_lifecycle
 from local_support.chat_types import ActiveAssistant
 

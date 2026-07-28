@@ -8,9 +8,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_account_flow
-import assistant_chat
-import assistant_manifest
 import audit
 import brain_credentials_client
 import brain_runtime_client
@@ -19,9 +16,6 @@ import chat_turn_engine
 import docker
 import docker.errors
 import manifests
-import marketplace
-import oauth_account_store
-import oauth_http_client
 import power_execution
 import power_journal
 import team_storage
@@ -29,6 +23,15 @@ from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
 from http_boundary import runtime_state
 from jsonschema import Draft202012Validator
+
+from assistant_human import (
+    assistant_account_flow,
+    assistant_chat,
+    assistant_manifest,
+    marketplace,
+    oauth_account_store,
+    oauth_http_client,
+)
 
 # ── Controller-owned Assistant chat ─────────────────────────────────────────────────────────────
 CHAT_OUTPUT_CAP = 60000
@@ -511,11 +514,7 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
         _current_id = validated.assistant_id
         current_contract = validated.contract
         current_container = validated.container
-    if (
-        _current_id != assistant_id
-        or current_contract != contract
-        or current_container.id != container.id
-    ):
+    if _current_id != assistant_id or current_contract != contract or current_container.id != container.id:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "installed Assistant changed during the chat turn")
     active = _ActiveAssistant(assistant_id, contract, container)
     account_values = (

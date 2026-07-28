@@ -15,9 +15,8 @@ import accounts_client
 import audit
 import brain_runtime_token_store
 import docker
-import marketplace
 import validate
-from assistant_human import hosted_assistants, hosted_chat_api, hosted_chat_segment
+from assistant_human import hosted_assistants, hosted_chat_api, hosted_chat_segment, marketplace
 from container_policy import hosted_apps, hosted_lifecycle, hosted_resources
 from hosted_install import (
     artifact_trust,

@@ -10,13 +10,15 @@ from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
-import assistant_account_challenges
-import assistant_account_flow
 import brain_runtime_client
 import chat_orchestrator
-import marketplace
-import oauth_account_store
-import oauth_http_client
+from assistant_human import (
+    assistant_account_challenges,
+    assistant_account_flow,
+    marketplace,
+    oauth_account_store,
+    oauth_http_client,
+)
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))

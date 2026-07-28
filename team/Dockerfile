@@ -89,14 +89,19 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml,ro \
     UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py marketplace.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
-     assistant_chat.py \
-     assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
-     oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
+COPY app.py validate.py manifests.py cleanup_state.py audit.py token_store.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
      model_catalog.json egress_policy.py power_execution.py power_journal.py strict_json.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
-COPY assistant_human/__init__.py assistant_human/challenge_store.py assistant_human/hosted_assistants.py \
-     assistant_human/hosted_chat_api.py assistant_human/hosted_chat_segment.py assistant_human/private_state.py \
+COPY assistant_human/__init__.py assistant_human/assistant_account_challenges.py \
+     assistant_human/assistant_account_flow.py assistant_human/assistant_catalog.json \
+     assistant_human/assistant_chat.py assistant_human/assistant_genesis.py \
+     assistant_human/assistant_manifest.py assistant_human/assistant_registry.py \
+     assistant_human/challenge_store.py assistant_human/hosted_assistants.py \
+     assistant_human/hosted_chat_api.py assistant_human/hosted_chat_segment.py \
+     assistant_human/marketplace.py assistant_human/oauth_account_service.py \
+     assistant_human/oauth_account_store.py assistant_human/oauth_broker_client.py \
+     assistant_human/oauth_http_client.py assistant_human/oauth_pkce_challenges.py \
+     assistant_human/oauth_providers.py assistant_human/private_state.py \
      ./assistant_human/
 COPY container_policy/__init__.py container_policy/hosted_apps.py container_policy/hosted_lifecycle.py \
      container_policy/hosted_resources.py container_policy/network.py ./container_policy/

@@ -11,12 +11,10 @@ import cleanup_state
 import docker.errors
 import inference_config
 import manifests
-import marketplace
-import oauth_account_store
 import pgdriver_client
 import power_journal
 import team_storage
-from assistant_human import hosted_assistants
+from assistant_human import hosted_assistants, marketplace, oauth_account_store
 from http_boundary import runtime_state
 
 from container_policy import hosted_apps, hosted_resources

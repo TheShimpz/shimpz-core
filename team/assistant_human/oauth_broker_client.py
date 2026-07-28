@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode, urlsplit
 
-import oauth_http_client
-import oauth_providers
 import strict_json
+
+from assistant_human import oauth_http_client, oauth_providers
 
 BROKER_ORIGIN = "https://shimpz.com"
 DEFAULT_CALLBACK_MODE = "loopback"

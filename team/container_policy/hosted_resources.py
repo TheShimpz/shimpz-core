@@ -14,8 +14,8 @@ import docker
 import docker.errors
 import inference_config
 import manifests
-import marketplace
 import validate
+from assistant_human import marketplace
 from hosted_install import dynamic_assistants, marketplace_image
 from http_boundary import runtime_state
 

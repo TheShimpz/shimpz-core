@@ -6,14 +6,11 @@ import time
 from http import HTTPStatus
 from typing import NoReturn
 
-import assistant_account_challenges
-import assistant_genesis
-import assistant_manifest
 import inference_config
 import local_chat_continuation_store
 import local_chat_continuations
-import oauth_account_store
 import team_storage
+from assistant_human import assistant_account_challenges, assistant_genesis, assistant_manifest, oauth_account_store
 from docker.errors import DockerException
 from local_registry import AssistantSpec
 

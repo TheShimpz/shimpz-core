@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-import oauth_providers
+from assistant_human import oauth_providers
 
 
 class OAuthProviderTests(unittest.TestCase):

@@ -13,9 +13,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-import assistant_registry
-from assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
 from container_policy import network as network_policy
+
+from assistant_human import assistant_registry
+from assistant_human.assistant_registry import AccountSpec, PowerSpec, validate_power_input, validate_power_output
 
 __all__ = ("AccountSpec", "PowerSpec", "validate_power_input", "validate_power_output")
 
