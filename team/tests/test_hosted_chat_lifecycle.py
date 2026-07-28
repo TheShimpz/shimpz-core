@@ -333,6 +333,11 @@ class HostedChatLifecycleTests(unittest.TestCase):
                     "model credential changed or was revoked; retry",
                 )
 
+        def run(_runtime, _context, _message, strategy):
+            strategy.validate_context()
+            strategy.validate_context()
+            return chat_orchestrator.ChatOutcome(reply="late reply", powers=())
+
         with (
             mock.patch.multiple(
                 hosted_assistants,
@@ -352,6 +357,12 @@ class HostedChatLifecycleTests(unittest.TestCase):
                 "_require_assistant_genesis",
                 return_value="Use only declared Powers.",
             ),
+            mock.patch.object(hosted_apps, "_dynamic_binding_snapshot", return_value={}),
+            mock.patch.object(
+                hosted_assistants,
+                "_installed_assistant",
+                return_value=("hello-pulse", contract, assistant_container),
+            ),
             mock.patch.multiple(
                 runtime_state,
                 _inference_store=store,
@@ -362,7 +373,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
             mock.patch.object(
                 hosted_chat_segment.chat_orchestrator,
                 "run_until_pause",
-                return_value=chat_orchestrator.ChatOutcome(reply="late reply", powers=()),
+                side_effect=run,
             ),
             self.assertRaises(runtime_state.ApiError) as caught,
         ):
@@ -380,14 +391,14 @@ class HostedChatLifecycleTests(unittest.TestCase):
         self.assertEqual(checks, [("account_1", "openai", 7), ("account_1", "openai", 7)])
         commit.assert_not_called()
 
-    def test_credential_generation_checks_preserve_every_security_boundary(self) -> None:
+    def test_credential_generation_queries_match_context_security_boundaries(self) -> None:
         shapes = (
-            ("no Powers", (), 4),
-            ("one Power", (1,), 8),
-            ("four Powers in one batch", (4,), 14),
-            ("four single-Power rounds", (1, 1, 1, 1), 20),
-            ("eight Powers in one batch", (8,), 22),
-            ("eight single-Power rounds", (1, 1, 1, 1, 1, 1, 1, 1), 36),
+            ("no Powers", (), 2),
+            ("one Power", (1,), 5),
+            ("four Powers in one batch", (4,), 8),
+            ("four single-Power rounds", (1, 1, 1, 1), 14),
+            ("eight Powers in one batch", (8,), 12),
+            ("eight single-Power rounds", (1, 1, 1, 1, 1, 1, 1, 1), 26),
         )
         power_result = {"zones": [], "page": 1, "per_page": 25, "total_pages": 0}
 
@@ -465,6 +476,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
             )
             strategy.prepare_batch(requests)
             for request in requests:
+                strategy.validate_context()
                 strategy.invoke_power(request)
             strategy.batch_delivered(requests)
             return chat_orchestrator.ChatOutcome(
@@ -507,6 +519,19 @@ class HostedChatLifecycleTests(unittest.TestCase):
                     _commit_chat_terminal=lambda _team_id, _token: True,
                 ),
                 mock.patch.object(hosted_chat_segment, "_current_team_anchor", return_value=anchor),
+                mock.patch.object(
+                    hosted_chat_segment,
+                    "_hosted_chat_current_identity",
+                    return_value=(
+                        ANCHOR_ID,
+                        "account_1",
+                        "Marketing",
+                        (("places", "places-container"), ("weather", "weather-container")),
+                        [],
+                        types.SimpleNamespace(provider="openai", model="gpt-test"),
+                        7,
+                    ),
+                ),
                 mock.patch.object(hosted_chat_segment.chat_orchestrator, "run_until_pause", side_effect=run),
             ):
                 result = hosted_chat_segment._chat_in_turn(

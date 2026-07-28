@@ -72,7 +72,6 @@ def _hosted_chat_setup(
             HTTPStatus.CONFLICT, "configure this Team's model provider before chatting"
         ) from exc
     api_key, generation = hosted_assistants._model_credential(owner, config.provider, credential_session)
-    hosted_assistants._require_model_credential_current(owner, config.provider, generation, credential_session)
     identity = (
         container.id,
         owner,
@@ -248,22 +247,16 @@ def _run_hosted_chat_segment_with_metadata(
     generation = 0
     prepared_assistants: tuple[hosted_assistants._ActiveAssistant, ...] = ()
     inspect_memo: dict[str, object] = {}
-
-    def require_current_credential() -> None:
-        if config is None:
-            raise AssertionError("hosted chat segment was not prepared")
-        hosted_assistants._require_model_credential_current(
-            owner,
-            config.provider,
-            generation,
-            credential_session,
-        )
+    credential_evidence = False
 
     def validate_power(assistant_id: str, power: str, power_input) -> object:
         return hosted_assistants._validate_assistant_power_input(bindings, assistant_id, power, power_input)
 
     def execute_power(request: brain_runtime_client.PowerRequest) -> object:
-        require_current_credential()
+        nonlocal credential_evidence
+        if not credential_evidence:
+            raise AssertionError("hosted Power lacks fresh credential evidence")
+        credential_evidence = False
         return _execute_hosted_power(team_id, token, bindings, inspect_memo, request)
 
     def prepare() -> chat_turn_engine.PreparedSegment:
@@ -336,7 +329,7 @@ def _run_hosted_chat_segment_with_metadata(
         return bool(requirements.accounts)
 
     def validate_context() -> None:
-        nonlocal inspect_memo
+        nonlocal credential_evidence, inspect_memo
         inspect_memo = {}
         current_identity = _hosted_chat_current_identity(
             request,
@@ -349,6 +342,7 @@ def _run_hosted_chat_segment_with_metadata(
         )
         if current_identity != initial_identity:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
+        credential_evidence = True
 
     team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
         chat_turn_engine.SegmentStrategy(
@@ -359,7 +353,6 @@ def _run_hosted_chat_segment_with_metadata(
             cancelled=lambda: runtime_state._token_cancelled(token),
             validate_context=validate_context,
             raise_problem=_raise_hosted_chat_problem,
-            finalize=require_current_credential,
         ),
         message=request.message,
         continuation=request.continuation,

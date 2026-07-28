@@ -414,7 +414,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
 
         local_prepared.durable_batch._operation(request)
         local_strategy.finalize()
-        self.assertEqual(hosted_events, ["model", "preflight", "accounts", "model"])
+        self.assertEqual(hosted_events, ["preflight", "accounts"])
         self.assertEqual(local_events, ["preflight", "accounts"])
 
 
