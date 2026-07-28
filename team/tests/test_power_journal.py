@@ -123,6 +123,37 @@ class PowerJournalTests(unittest.TestCase):
         with self.assertRaises(power_journal.PowerJournalConflictError):
             journal.complete(batch, self.first, {"answer": 2})
 
+    def test_batch_identity_is_scanned_once_before_point_transitions(self) -> None:
+        journal = self.journal()
+        operations = (
+            self.first,
+            self.second,
+            operation("interrupt-3", "validated-input-3"),
+        )
+        batch = journal.prepare_batch("generation-1", "thread-1", operations)
+
+        with mock.patch.object(journal, "_load_batch", wraps=journal._load_batch) as full_scan:
+            for selected in operations:
+                journal.begin(batch, selected)
+                journal.complete(batch, selected, {"interrupt": selected.interrupt_id})
+            self.assertEqual(full_scan.call_count, 1)
+            journal.delivered(batch)
+
+        self.assertEqual(full_scan.call_count, 2)
+        self.assertEqual(journal._validated_batches, {})
+
+    def test_point_transition_revalidates_persisted_batch_header(self) -> None:
+        journal = self.journal()
+        batch = journal.prepare_batch("generation-1", "thread-1", [self.first])
+        journal.begin(batch, self.first)
+        journal._connection.execute(
+            "UPDATE batches SET fingerprint = ? WHERE generation = ?",
+            ("f" * 64, batch.generation),
+        )
+
+        with self.assertRaises(power_journal.PowerJournalConflictError):
+            journal.complete(batch, self.first, {"answer": 1})
+
     def test_delivery_requires_all_results_then_allows_the_next_batch(self) -> None:
         journal = self.journal(max_generations=1)
         batch = journal.prepare_batch("generation-1", "thread-1", [self.first, self.second])

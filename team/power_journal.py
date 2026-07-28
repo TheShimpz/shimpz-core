@@ -162,6 +162,10 @@ class PowerJournal:
         self.max_result_bytes = _positive_limit(max_result_bytes, "max_result_bytes")
         self._guard = threading.RLock()
         self._closed = False
+        self._validated_batches: dict[
+            tuple[str, str],
+            dict[str, tuple[int, str]],
+        ] = {}
         initialize = self._prepare_file()
         try:
             self._connection = sqlite3.connect(
@@ -385,7 +389,46 @@ class PowerJournal:
             or any(row[3] not in _STATES for row in operations)
         ):
             raise PowerJournalConflictError("Power batch changed or is corrupt")
+        self._validated_batches[(batch.generation, batch.fingerprint)] = {
+            operation.interrupt_id: (ordinal, operation.fingerprint)
+            for ordinal, operation in enumerate(batch.operations)
+        }
         return operations
+
+    def _load_operation(self, batch: Batch, operation: Operation) -> tuple[object, ...]:
+        key = (batch.generation, batch.fingerprint)
+        expected = self._validated_batches.get(key)
+        if expected is None:
+            self._load_batch(batch)
+            expected = self._validated_batches[key]
+        try:
+            row = self._connection.execute(
+                """SELECT b.fingerprint, b.operation_count,
+                          o.ordinal, o.interrupt_id, o.fingerprint, o.state, o.result
+                   FROM batches AS b
+                   JOIN operations AS o ON o.generation = b.generation
+                   WHERE b.generation = ? AND o.interrupt_id = ?""",
+                (batch.generation, operation.interrupt_id),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise PowerJournalCorruptionError("Power journal operation could not be read") from exc
+        identity = expected.get(operation.interrupt_id)
+        if (
+            row is None
+            or identity is None
+            or row[:2] != (batch.fingerprint, len(batch.operations))
+            or row[2:5] != (identity[0], operation.interrupt_id, identity[1])
+            or row[5] not in _STATES
+        ):
+            raise PowerJournalConflictError("Power operation changed or is corrupt")
+        return row[2:]
+
+    def _forget_generation(self, generation: str) -> None:
+        self._validated_batches = {
+            key: value
+            for key, value in self._validated_batches.items()
+            if key[0] != generation
+        }
 
     def prepare_batch(
         self,
@@ -446,8 +489,7 @@ class PowerJournal:
             self._ensure_open()
             self._transaction()
             try:
-                operations = self._load_batch(batch)
-                persisted = next(row for row in operations if row[1] == operation.interrupt_id)
+                persisted = self._load_operation(batch, operation)
                 state, raw_result = persisted[3], persisted[4]
                 if state == "executing":
                     raise PowerJournalUncertainError(
@@ -468,12 +510,10 @@ class PowerJournal:
                     raise PowerJournalConflictError("Power operation changed before execution")
                 self._commit()
                 return Execution(execute=True)
-            except (sqlite3.Error, PowerJournalError, StopIteration) as exc:
+            except (sqlite3.Error, PowerJournalError) as exc:
                 self._rollback()
                 if isinstance(exc, PowerJournalError):
                     raise
-                if isinstance(exc, StopIteration):
-                    raise PowerJournalCorruptionError("Power operation is missing") from exc
                 raise PowerJournalError("Power execution could not begin") from exc
 
     def _decode_result(self, raw: object) -> object:
@@ -499,8 +539,7 @@ class PowerJournal:
             self._ensure_open()
             self._transaction()
             try:
-                operations = self._load_batch(batch)
-                persisted = next(row for row in operations if row[1] == operation.interrupt_id)
+                persisted = self._load_operation(batch, operation)
                 state, existing = persisted[3], persisted[4]
                 if state == "completed":
                     if existing != encoded:
@@ -517,12 +556,10 @@ class PowerJournal:
                 if self._connection.execute("SELECT changes()").fetchone() != (1,):
                     raise PowerJournalConflictError("Power operation changed before completion")
                 self._commit()
-            except (sqlite3.Error, PowerJournalError, StopIteration) as exc:
+            except (sqlite3.Error, PowerJournalError) as exc:
                 self._rollback()
                 if isinstance(exc, PowerJournalError):
                     raise
-                if isinstance(exc, StopIteration):
-                    raise PowerJournalCorruptionError("Power operation is missing") from exc
                 raise PowerJournalError("Power result could not be committed") from exc
 
     def delivered(self, batch: Batch) -> None:
@@ -552,6 +589,7 @@ class PowerJournal:
                 if self._connection.execute("SELECT changes()").fetchone() != (1,):
                     raise PowerJournalConflictError("Power batch changed before delivery")
                 self._commit()
+                self._forget_generation(batch.generation)
             except (sqlite3.Error, PowerJournalError) as exc:
                 self._rollback()
                 if isinstance(exc, PowerJournalError):
@@ -566,6 +604,7 @@ class PowerJournal:
             try:
                 self._connection.execute("DELETE FROM batches WHERE generation = ?", (safe_generation,))
                 self._commit()
+                self._forget_generation(safe_generation)
             except sqlite3.Error as exc:
                 self._rollback()
                 raise PowerJournalError("Power generation could not be purged") from exc
