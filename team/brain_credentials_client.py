@@ -200,13 +200,19 @@ class BrainCredentialSession:
     def __init__(self) -> None:
         self._connections: dict[tuple[object, str, int], http.client.HTTPConnection] = {}
 
-    def connection(self, connection_cls, host: str, port: int) -> tuple[tuple[object, str, int], object]:
+    def connection(
+        self,
+        connection_cls,
+        host: str,
+        port: int,
+    ) -> tuple[tuple[object, str, int], object, bool]:
         key = (connection_cls, host, port)
         connection = self._connections.get(key)
+        reused = connection is not None
         if connection is None:
             connection = connection_cls(host, port, timeout=10)
             self._connections[key] = connection
-        return key, connection
+        return key, connection, reused
 
     def discard(self, key: tuple[object, str, int]) -> None:
         connection = self._connections.pop(key, None)
@@ -241,34 +247,38 @@ def _post(
     connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     current_session = session or BrainCredentialSession()
     owned_session = session is None
-    key, connection = current_session.connection(
-        connection_cls,
-        parsed.hostname,
-        parsed.port or (443 if parsed.scheme == "https" else 80),
-    )
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     request_path = f"{parsed.path.rstrip('/')}{path}"
     body = json.dumps(payload, separators=(",", ":")).encode()
-    reusable = False
     try:
-        connection.request(
-            "POST",
-            request_path,
-            body,
-            {
-                "Authorization": f"Bearer {_token(token_file)}",
-                "Content-Type": "application/json",
-            },
-        )
-        response = connection.getresponse()
-        raw = response.read(MAX_RESPONSE_BYTES + 1)
-        reusable = len(raw) <= MAX_RESPONSE_BYTES
-    except (OSError, http.client.HTTPException) as exc:
-        raise BrainCredentialError("Brain credential service is unavailable") from exc
+        for attempt in range(2):
+            key, connection, reused = current_session.connection(connection_cls, host, port)
+            try:
+                connection.request(
+                    "POST",
+                    request_path,
+                    body,
+                    {
+                        "Authorization": f"Bearer {_token(token_file)}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response = connection.getresponse()
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+            except (OSError, http.client.HTTPException) as exc:
+                current_session.discard(key)
+                # Resolve, generation-check, and encrypted delivery are idempotent reads. Retry
+                # only a previously healthy transport that the bounded server closed while idle.
+                if attempt == 0 and reused:
+                    continue
+                raise BrainCredentialError("Brain credential service is unavailable") from exc
+            if len(raw) > MAX_RESPONSE_BYTES or getattr(response, "will_close", False):
+                current_session.discard(key)
+            break
     finally:
         if owned_session:
             current_session.close()
-        elif not reusable:
-            current_session.discard(key)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise BrainCredentialError("Brain credential service returned an invalid response")
     try:

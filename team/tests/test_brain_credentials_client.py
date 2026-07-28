@@ -168,6 +168,66 @@ class BrainCredentialsClientTests(unittest.TestCase):
         self.assertEqual(connection.requests, 2)
         self.assertEqual(connection.closes, 1)
 
+    def test_session_retries_once_when_an_idle_connection_was_closed(self):
+        class Response:
+            status = 200
+            will_close = False
+
+            @staticmethod
+            def read(_maximum):
+                return b'{"valid":true}'
+
+        class Connection:
+            def __init__(self, *, fail_on_request: int | None = None) -> None:
+                self.fail_on_request = fail_on_request
+                self.requests = 0
+                self.closes = 0
+
+            def request(self, *_args) -> None:
+                self.requests += 1
+                if self.requests == self.fail_on_request:
+                    raise brain_credentials_client.http.client.RemoteDisconnected("idle close")
+
+            @staticmethod
+            def getresponse():
+                return Response()
+
+            def close(self) -> None:
+                self.closes += 1
+
+        stale = Connection(fail_on_request=2)
+        replacement = Connection()
+        constructors = mock.Mock(side_effect=(stale, replacement))
+        with tempfile.TemporaryDirectory() as directory:
+            token_path = Path(directory) / "token"
+            token_path.write_text("service-token", encoding="utf-8")
+            with (
+                mock.patch.object(brain_credentials_client.http.client, "HTTPConnection", constructors),
+                brain_credentials_client.BrainCredentialSession() as session,
+            ):
+                first = brain_credentials_client._post(
+                    "http://accounts:7079",
+                    "/v1/internal/brains/generation-check",
+                    {"generation": 1},
+                    token_path,
+                    session,
+                )
+                second = brain_credentials_client._post(
+                    "http://accounts:7079",
+                    "/v1/internal/brains/generation-check",
+                    {"generation": 2},
+                    token_path,
+                    session,
+                )
+
+        self.assertEqual(first, (200, {"valid": True}))
+        self.assertEqual(second, first)
+        self.assertEqual(constructors.call_count, 2)
+        self.assertEqual(stale.requests, 2)
+        self.assertEqual(stale.closes, 1)
+        self.assertEqual(replacement.requests, 1)
+        self.assertEqual(replacement.closes, 1)
+
     def test_token_cache_reopens_metadata_and_rereads_only_after_replacement(self):
         brain_credentials_client._token_cache.clear()
         with tempfile.TemporaryDirectory() as directory:
