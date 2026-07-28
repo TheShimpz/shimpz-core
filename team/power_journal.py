@@ -166,6 +166,7 @@ class PowerJournal:
             tuple[str, str],
             dict[str, tuple[int, str]],
         ] = {}
+        self._validated_results: dict[tuple[str, str], bytes] = {}
         initialize = self._prepare_file()
         try:
             self._connection = sqlite3.connect(
@@ -429,6 +430,11 @@ class PowerJournal:
             for key, value in self._validated_batches.items()
             if key[0] != generation
         }
+        self._validated_results = {
+            key: value
+            for key, value in self._validated_results.items()
+            if key[0] != generation
+        }
 
     def prepare_batch(
         self,
@@ -496,7 +502,7 @@ class PowerJournal:
                         "Power execution outcome is uncertain; refusing a duplicate side effect"
                     )
                 if state == "completed":
-                    result = self._decode_result(raw_result)
+                    result = self._validated_result(batch, operation.interrupt_id, raw_result)
                     self._commit()
                     return Execution(execute=False, result=result)
                 if raw_result is not None:
@@ -529,6 +535,23 @@ class PowerJournal:
             raise PowerJournalCorruptionError("cached Power result is invalid") from exc
         return result
 
+    def _validated_result(self, batch: Batch, interrupt_id: str, raw: object) -> object:
+        if not isinstance(raw, bytes) or len(raw) > self.max_result_bytes:
+            raise PowerJournalCorruptionError("cached Power result is invalid")
+        key = (batch.generation, interrupt_id)
+        digest = hashlib.sha256(raw).digest()
+        if self._validated_results.get(key) == digest:
+            try:
+                return json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+                raise PowerJournalCorruptionError("cached Power result is invalid") from exc
+        result = self._decode_result(raw)
+        self._validated_results[key] = digest
+        return result
+
+    def _remember_result(self, batch: Batch, interrupt_id: str, encoded: bytes) -> None:
+        self._validated_results[(batch.generation, interrupt_id)] = hashlib.sha256(encoded).digest()
+
     def complete(self, batch: Batch, operation: Operation, result: object) -> None:
         batch = self._validate_handle(batch)
         operation = _operation(operation)
@@ -545,6 +568,7 @@ class PowerJournal:
                     if existing != encoded:
                         raise PowerJournalConflictError("Power result changed after completion")
                     self._commit()
+                    self._remember_result(batch, operation.interrupt_id, encoded)
                     return
                 if state != "executing" or existing is not None:
                     raise PowerJournalConflictError("Power operation was not executing")
@@ -556,6 +580,7 @@ class PowerJournal:
                 if self._connection.execute("SELECT changes()").fetchone() != (1,):
                     raise PowerJournalConflictError("Power operation changed before completion")
                 self._commit()
+                self._remember_result(batch, operation.interrupt_id, encoded)
             except (sqlite3.Error, PowerJournalError) as exc:
                 self._rollback()
                 if isinstance(exc, PowerJournalError):
@@ -581,7 +606,7 @@ class PowerJournal:
                 if any(row[3] != "completed" for row in operations):
                     raise PowerJournalConflictError("Power batch cannot be delivered before every result exists")
                 for operation in operations:
-                    self._decode_result(operation[4])
+                    self._validated_result(batch, str(operation[1]), operation[4])
                 self._connection.execute(
                     "DELETE FROM batches WHERE generation = ? AND fingerprint = ?",
                     (batch.generation, batch.fingerprint),

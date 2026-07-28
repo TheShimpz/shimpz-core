@@ -180,6 +180,33 @@ class PowerJournalTests(unittest.TestCase):
         journal.delivered(next_batch)
         journal.prepare_batch("generation-2", "thread-2", [self.first])
 
+    def test_delivery_reuses_confirmed_canonical_result_digests(self) -> None:
+        journal = self.journal()
+        operations = (self.first, self.second)
+        batch = journal.prepare_batch("generation-1", "thread-1", operations)
+        for selected in operations:
+            journal.begin(batch, selected)
+            journal.complete(batch, selected, {"interrupt": selected.interrupt_id})
+
+        with mock.patch.object(journal, "_decode_result", wraps=journal._decode_result) as decode:
+            journal.delivered(batch)
+
+        decode.assert_not_called()
+        self.assertEqual(journal._validated_results, {})
+
+    def test_reopen_canonically_validates_results_before_delivery(self) -> None:
+        journal = self.journal()
+        batch = journal.prepare_batch("generation-1", "thread-1", [self.first])
+        journal.begin(batch, self.first)
+        journal.complete(batch, self.first, {"answer": 1})
+        journal.close()
+
+        reopened = self.journal()
+        with mock.patch.object(reopened, "_decode_result", wraps=reopened._decode_result) as decode:
+            reopened.delivered(batch)
+
+        decode.assert_called_once_with(b'{"answer":1}')
+
     def test_corrupt_database_and_noncanonical_cache_fail_closed(self) -> None:
         journal = self.journal()
         batch = journal.prepare_batch("generation-1", "thread-1", [self.first])
