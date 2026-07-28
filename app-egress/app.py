@@ -22,9 +22,11 @@ import contextlib
 import ipaddress
 import json
 import os
+import re
 import select
 import socket
 import socketserver
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -37,6 +39,8 @@ ALLOWED_PORTS = {443}  # HTTPS only — every legitimate app destination is TLS
 CONNECT_TIMEOUT = 15
 IDLE_TIMEOUT = 300
 BUFSIZE = 65536
+MAX_POLICY_BYTES = 16 * 1024
+TOKEN = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{64})\Z")
 MAX_CONCURRENCY = int(os.environ.get("SHIMPZ_APP_EGRESS_MAX_CONCURRENCY", "64"))
 MAX_SOURCE_CONCURRENCY = int(os.environ.get("SHIMPZ_APP_EGRESS_MAX_SOURCE_CONCURRENCY", "8"))
 LISTEN_BACKLOG = int(os.environ.get("SHIMPZ_APP_EGRESS_LISTEN_BACKLOG", "16"))
@@ -58,36 +62,77 @@ _STATUS = {
 }
 
 
-def load_policy(policy_dir: Path) -> dict[str, frozenset[str]]:
-    """Read the per-app allowlists the driver wrote: `<token>.json` = a JSON list of hostnames.
+def _policy_metadata_valid(before: os.stat_result, after: os.stat_result, payload_size: int) -> bool:
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    return (
+        stat.S_ISREG(before.st_mode)
+        and before.st_nlink == 1
+        and 0 < before.st_size <= MAX_POLICY_BYTES
+        and payload_size == before.st_size
+        and identity_before == identity_after
+    )
 
-    Returns {token: frozenset(lowercased hosts)}. A missing dir → {} (deny everything — fail-closed). An
-    unreadable/garbage file is SKIPPED (that app gets no egress) rather than crashing the proxy for others.
-    """
-    policy: dict[str, frozenset[str]] = {}
-    if not policy_dir.is_dir():
-        return policy
-    for f in policy_dir.glob("*.json"):
-        token = f.stem
-        try:
-            hosts = json.loads(f.read_text(encoding="utf-8"))
-        except OSError, ValueError:
-            continue  # a bad policy file denies that app's egress — never opens another's
-        if isinstance(hosts, list) and all(isinstance(h, str) for h in hosts):
-            policy[token] = frozenset(h.lower().rstrip(".") for h in hosts)
-    return policy
+
+def load_policy(policy_dir: Path, token: str) -> frozenset[str]:
+    """Read exactly one bounded `<token>.json` allowlist, denying on every ambiguity."""
+    if TOKEN.fullmatch(token) is None:
+        return frozenset()
+    directory = -1
+    descriptor = -1
+    try:
+        directory = os.open(policy_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptor = os.open(
+            f"{token}.json",
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=directory,
+        )
+        before = os.fstat(descriptor)
+        payload = bytearray()
+        while len(payload) <= MAX_POLICY_BYTES:
+            chunk = os.read(descriptor, min(64 * 1024, MAX_POLICY_BYTES + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+    except OSError:
+        return frozenset()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if directory >= 0:
+            os.close(directory)
+    if not _policy_metadata_valid(before, after, len(payload)):
+        return frozenset()
+    try:
+        hosts = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
+        return frozenset()
+    return frozenset(host.lower().rstrip(".") for host in hosts)
 
 
-def permitted(token: str, host: str, port: int, policy: dict[str, frozenset[str]]) -> bool:
-    """Forward a CONNECT to host:port iff the app (identified by `token`) declared exactly this host.
+def permitted(host: str, port: int, allow: frozenset[str]) -> bool:
+    """Forward a CONNECT to host:port iff the authenticated app declared exactly this host.
 
-    Deny-by-default: unknown/empty token, an app with no allowlist, an unlisted host, or a non-:443 port
-    all return False. `effective_egress` entries are EXACT hostnames, so this is an exact match (no wildcard
-    — an app lists every host it needs); this is the enforcement kernel of the ShimpzPay/egress lock.
+    Deny-by-default: an empty allowlist, an unlisted host, or a non-:443 port all return False.
+    `effective_egress` entries are exact hostnames, so this is an exact match without wildcards.
     """
     if port not in ALLOWED_PORTS:
         return False
-    allow = policy.get(token)
     if not allow:
         return False
     return host.lower().rstrip(".") in allow
@@ -160,7 +205,7 @@ class Handler(socketserver.BaseRequestHandler):
             self._reply(cli, 407)
             audit.log("connect", f"{host}:{port}", result="denied", level="info" if probe else "warn", code=407)
             return
-        if not permitted(token, host, port, load_policy(POLICY_DIR)):
+        if not permitted(host, port, load_policy(POLICY_DIR, token)):
             self._reply(cli, 403)
             audit.log("connect", f"{host}:{port}", result="denied", level="warn", code=403, app=token[:12])
             return

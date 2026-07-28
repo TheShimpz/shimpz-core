@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import os
 import socket
 import sys
 import tempfile
@@ -40,26 +41,60 @@ BRAIN_EGRESS = _load_driver("egress", "brain_egress_test_target")
 
 class AppPolicyTest(unittest.TestCase):
     def test_policy_is_exact_case_insensitive_and_deny_by_default(self) -> None:
-        policy = {"tok-shop": frozenset({"api.example.com", "pay.shimpz.com"})}
+        allow = frozenset({"api.example.com", "pay.shimpz.com"})
 
-        self.assertTrue(APP_EGRESS.permitted("tok-shop", "API.EXAMPLE.COM", 443, policy))
-        self.assertFalse(APP_EGRESS.permitted("tok-shop", "evil.com", 443, policy))
-        self.assertFalse(APP_EGRESS.permitted("tok-shop", "api.example.com", 80, policy))
-        self.assertFalse(APP_EGRESS.permitted("tok-unknown", "api.example.com", 443, policy))
-        self.assertFalse(APP_EGRESS.permitted("", "api.example.com", 443, policy))
-        self.assertFalse(APP_EGRESS.permitted("tok-empty", "api.example.com", 443, {"tok-empty": frozenset()}))
+        self.assertTrue(APP_EGRESS.permitted("API.EXAMPLE.COM", 443, allow))
+        self.assertFalse(APP_EGRESS.permitted("evil.com", 443, allow))
+        self.assertFalse(APP_EGRESS.permitted("api.example.com", 80, allow))
+        self.assertFalse(APP_EGRESS.permitted("api.example.com", 443, frozenset()))
 
-    def test_policy_loader_normalizes_valid_files_and_skips_invalid_files(self) -> None:
+    def test_policy_loader_reads_only_the_exact_canonical_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "tok-a.json").write_text('["graph.facebook.com", "API.X.com."]', encoding="utf-8")
-            (root / "bad.json").write_text("{not json", encoding="utf-8")
-            (root / "object.json").write_text('{"host":"open.example"}', encoding="utf-8")
+            token32 = "a" * 32
+            token64 = "b" * 64
+            (root / f"{token32}.json").write_text(
+                '["graph.facebook.com", "API.X.com."]',
+                encoding="utf-8",
+            )
+            (root / f"{token64}.json").write_text('["api.example.com"]', encoding="utf-8")
+            (root / f"{'c' * 32}.json").write_text('["must-not-be-read.example"]', encoding="utf-8")
 
-            policy = APP_EGRESS.load_policy(root)
+            self.assertEqual(
+                APP_EGRESS.load_policy(root, token32),
+                frozenset({"graph.facebook.com", "api.x.com"}),
+            )
+            self.assertEqual(
+                APP_EGRESS.load_policy(root, token64),
+                frozenset({"api.example.com"}),
+            )
+            self.assertEqual(APP_EGRESS.load_policy(root, "A" * 32), frozenset())
+            self.assertEqual(APP_EGRESS.load_policy(root, "../" + token32), frozenset())
 
-        self.assertEqual(policy, {"tok-a": frozenset({"graph.facebook.com", "api.x.com"})})
-        self.assertEqual(APP_EGRESS.load_policy(Path(directory)), {})
+        self.assertEqual(APP_EGRESS.load_policy(Path(directory), token32), frozenset())
+
+    def test_policy_loader_rejects_ambiguous_or_unbounded_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token = "a" * 32
+            policy = root / f"{token}.json"
+
+            policy.write_text("{not json", encoding="utf-8")
+            self.assertEqual(APP_EGRESS.load_policy(root, token), frozenset())
+            policy.write_text('{"host":"wrong-shape"}', encoding="utf-8")
+            self.assertEqual(APP_EGRESS.load_policy(root, token), frozenset())
+            policy.write_bytes(b"[" + (b'"a",' * APP_EGRESS.MAX_POLICY_BYTES) + b"]")
+            self.assertEqual(APP_EGRESS.load_policy(root, token), frozenset())
+
+            policy.unlink()
+            target = root / "target.json"
+            target.write_text('["api.example.com"]', encoding="utf-8")
+            policy.symlink_to(target)
+            self.assertEqual(APP_EGRESS.load_policy(root, token), frozenset())
+
+            policy.unlink()
+            os.link(target, policy)
+            self.assertEqual(APP_EGRESS.load_policy(root, token), frozenset())
 
     def test_proxy_authorization_accepts_only_a_basic_username_token(self) -> None:
         identity = "opaque-test-identity"
