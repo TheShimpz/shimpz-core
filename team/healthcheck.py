@@ -29,11 +29,11 @@ DOCKER_SOCKET = os.environ.get("DOCKER_HOST_SOCKET", "/var/run/docker.sock")
 # operator override: hostile-tenant readiness is always tied to the shipping gVisor runtime.
 REQUIRED_RUNTIME = "runsc"
 REQUIRED_RUNTIME_PATH = "/usr/local/bin/runsc"
+DEFAULT_BRAIN_IMAGE = (
+    "registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c"
+)
 REQUIRED_BRAIN_IMAGES = {
-    "runtime": os.environ.get(
-        "SHIMPZ_TEAM_IMAGE",
-        "registry.k8s.io/pause:3.10.1@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c",
-    ),
+    "runtime": os.environ.get("SHIMPZ_TEAM_IMAGE", DEFAULT_BRAIN_IMAGE),
 }
 REQUIRED_IMAGES = tuple(REQUIRED_BRAIN_IMAGES.values())
 LISTEN_PORT = int(os.environ.get("SHIMPZ_TEAMDRIVER_PORT", "7077"))

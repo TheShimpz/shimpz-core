@@ -7,6 +7,7 @@ same stdlib policy used by team-driver admission and its shipping healthcheck.
 
 from __future__ import annotations
 
+import ast
 import copy
 import tempfile
 import types
@@ -14,7 +15,10 @@ import unittest
 from pathlib import Path
 
 import healthcheck as team_healthcheck
+import manifests
 from container_policy import network as policy
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def check(condition: object, message: str) -> None:
@@ -28,6 +32,34 @@ BRAIN_IMAGE_REF = "trusted-brain:v1"
 BRAIN_IMAGE_ID = "sha256:trusted-brain-id"
 APP_IMAGE_REF = "trusted-app:v1"
 APP_IMAGE_ID = "sha256:trusted-app-id"
+
+
+def _environment_get(path: Path, assignment: str) -> ast.Call:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        if node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == assignment for target in targets):
+            continue
+        call = next(
+            (
+                candidate
+                for candidate in ast.walk(node.value)
+                if isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Attribute)
+                and candidate.func.attr == "get"
+                and ast.unparse(candidate.func.value) == "os.environ"
+                and len(candidate.args) == 2
+            ),
+            None,
+        )
+        if call is None:
+            raise AssertionError(f"{assignment} is not a two-argument os.environ.get read in {path}")
+        return call
+    raise AssertionError(f"{assignment} environment read not found in {path}")
 
 
 def _endpoint(network_id: str, *aliases: str) -> dict:
@@ -307,9 +339,48 @@ def test_daemon_admission_requires_exact_runsc_path_and_builtin_seccomp() -> Non
         not policy.daemon_isolation_valid(missing_seccomp, "runsc", policy.TEAM_RUNTIME_PATH),
         "missing built-in seccomp fails admission despite the exact runtime path",
     )
+
+
+def test_shipping_healthcheck_constants_mirror_lifecycle_manifests() -> None:
     check(
         team_healthcheck.REQUIRED_RUNTIME_PATH == policy.TEAM_RUNTIME_PATH,
         "shipping readiness pins the same absolute runsc handler as lifecycle admission",
+    )
+    check(
+        team_healthcheck.REQUIRED_RUNTIME == manifests.RUNTIME,
+        "shipping readiness pins the same runtime name as lifecycle admission",
+    )
+    check(
+        team_healthcheck.DEFAULT_BRAIN_IMAGE == manifests.DEFAULT_TEAM_IMAGE,
+        "shipping readiness pins the same default Brain image as lifecycle admission",
+    )
+    health_image = _environment_get(ROOT / "healthcheck.py", "REQUIRED_BRAIN_IMAGES")
+    manifest_image = _environment_get(ROOT / "manifests.py", "IMAGE")
+    check(
+        ast.literal_eval(health_image.args[0]) == ast.literal_eval(manifest_image.args[0]),
+        "shipping readiness and lifecycle admission use the same Brain image environment key",
+    )
+    check(
+        {name: brain["image"] for name, brain in manifests.BRAINS.items()}
+        == team_healthcheck.REQUIRED_BRAIN_IMAGES,
+        "shipping readiness pins the same Brain image registry as lifecycle admission",
+    )
+    health_port = _environment_get(ROOT / "healthcheck.py", "LISTEN_PORT")
+    runtime_port = _environment_get(ROOT / "http_boundary" / "runtime_state.py", "LISTEN_PORT")
+    check(
+        tuple(ast.literal_eval(argument) for argument in health_port.args)
+        == tuple(ast.literal_eval(argument) for argument in runtime_port.args),
+        "shipping readiness probes the same configured Controller port as runtime state",
+    )
+    health_bindings = _environment_get(ROOT / "healthcheck.py", "DYNAMIC_ASSISTANTS")
+    runtime_bindings = _environment_get(
+        ROOT / "http_boundary" / "runtime_state.py",
+        "DYNAMIC_ASSISTANT_PATH",
+    )
+    check(
+        tuple(ast.literal_eval(argument) for argument in health_bindings.args)
+        == tuple(ast.literal_eval(argument) for argument in runtime_bindings.args),
+        "shipping readiness reads the same dynamic Assistant bindings path as runtime state",
     )
 
 

@@ -147,12 +147,14 @@ def _trusted_workload_image(
         image_ref = provider_spec.get("image") if provider_spec is not None else None
     else:
         app_id = labels.get("team.app")
+        dynamic_app_role = isinstance(app_id, str) and app_id not in marketplace.APPS
+        compact_app_runtime = workload_spec is not None and dynamic_app_role
         app_spec = workload_spec or (marketplace.APPS.get(app_id) if isinstance(app_id, str) else None)
         if app_spec is None and isinstance(app_id, str):
             try:
                 binding = runtime_state._dynamic_assistants.get(team_id, app_id)
                 app_spec = dynamic_assistants.app_spec(binding) if binding is not None else None
-                compact_app_runtime = binding is not None
+                compact_app_runtime = binding is not None and dynamic_app_role
             except dynamic_assistants.DynamicAssistantError as exc:
                 raise runtime_state.ApiError(
                     HTTPStatus.SERVICE_UNAVAILABLE,

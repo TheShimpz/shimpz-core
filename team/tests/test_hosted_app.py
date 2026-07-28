@@ -466,6 +466,61 @@ class HostedDynamicAssistantResolutionTests(unittest.TestCase):
 
         self.assertEqual(trusted, (resolution["image_reference"], "sha256:image", True))
 
+    def test_dynamic_resolution_with_preloaded_spec_keeps_compact_posture(self) -> None:
+        resolution = self._resolution()
+        container = types.SimpleNamespace(
+            attrs={
+                "Config": {
+                    "Labels": {
+                        "team.id": "team_1",
+                        "team.app": "hello-world",
+                        "team.app.driver": "1",
+                        "team.app.dynamic": "1",
+                    }
+                },
+                "State": {"Running": True},
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = dynamic_assistants.DynamicAssistantStore(Path(directory) / "bindings.json")
+            binding = store.put("team_1", resolution)
+            spec = dynamic_assistants.app_spec(binding)
+            with (
+                mock.patch.object(network_policy, "brain_identity_valid", return_value=False),
+                mock.patch.object(hosted_resources, "_trusted_image_id", return_value="sha256:image"),
+            ):
+                trusted = hosted_resources._trusted_workload_image(
+                    container,
+                    "team_1",
+                    workload_spec=spec,
+                )
+
+        self.assertEqual(trusted, (resolution["image_reference"], "sha256:image", True))
+        network = types.SimpleNamespace(attrs={})
+        with (
+            mock.patch.object(hosted_resources, "_team_runtime", return_value=manifests.RUNTIME),
+            mock.patch.object(
+                hosted_resources,
+                "_trusted_workload_image",
+                return_value=(resolution["image_reference"], "sha256:image", True),
+            ) as trusted_image,
+            mock.patch.object(network_policy, "workload_security_valid", return_value=True) as posture,
+            mock.patch.object(network_policy, "brain_identity_valid", return_value=False),
+            mock.patch.object(network_policy, "workload_endpoint_valid", return_value=True),
+            mock.patch.object(network_policy, "workload_live_membership_valid", return_value=True),
+            mock.patch.object(hosted_resources, "_require_network_policy"),
+            mock.patch.object(runtime_state._docker.networks, "get", return_value=network),
+        ):
+            hosted_resources._require_running_team_isolation(
+                container,
+                refreshed=True,
+                workload_spec=spec,
+            )
+
+        self.assertIs(trusted_image.call_args.args[2], spec)
+        self.assertTrue(posture.call_args.kwargs["compact_app_runtime"])
+
     def test_dynamic_install_persists_the_binding_and_returns_immutable_evidence(self) -> None:
         resolution = self._resolution()
         lease = types.SimpleNamespace(owner="creator_1")
