@@ -641,11 +641,15 @@ def _chat_file_metadata(
         _raise_chat_storage_error(exc)
 
 
-def _model_credential(owner: str, provider: str) -> tuple[str, int]:
+def _model_credential(
+    owner: str,
+    provider: str,
+    credential_session: brain_credentials_client.BrainCredentialSession | None = None,
+) -> tuple[str, int]:
     if not owner:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "this Team has no account owner for model credentials")
     try:
-        credential = brain_credentials_client.resolve(owner, provider)
+        credential = brain_credentials_client.resolve(owner, provider, credential_session)
     except brain_credentials_client.BrainCredentialError as exc:
         raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "model credential service is unavailable") from exc
     if credential is None:
@@ -656,9 +660,14 @@ def _model_credential(owner: str, provider: str) -> tuple[str, int]:
     return api_key, generation
 
 
-def _require_model_credential_current(owner: str, provider: str, generation: int) -> None:
+def _require_model_credential_current(
+    owner: str,
+    provider: str,
+    generation: int,
+    credential_session: brain_credentials_client.BrainCredentialSession | None = None,
+) -> None:
     try:
-        current = brain_credentials_client.generation_is_current(owner, provider, generation)
+        current = brain_credentials_client.generation_is_current(owner, provider, generation, credential_session)
     except brain_credentials_client.BrainCredentialError as exc:
         raise runtime_state.ApiError(HTTPStatus.BAD_GATEWAY, "model credential could not be verified") from exc
     if not current:

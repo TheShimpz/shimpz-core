@@ -91,6 +91,14 @@ class _BrainCredentialError(Exception):
     pass
 
 
+class _BrainCredentialSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        pass
+
+
 class _PgDriverError(Exception):
     pass
 
@@ -100,6 +108,7 @@ _stub("audit", log=lambda *_args, **_kwargs: "trace")
 _stub(
     "brain_credentials_client",
     BrainCredentialError=_BrainCredentialError,
+    BrainCredentialSession=_BrainCredentialSession,
     resolve=lambda *_args: None,
     generation_is_current=lambda *_args: True,
 )

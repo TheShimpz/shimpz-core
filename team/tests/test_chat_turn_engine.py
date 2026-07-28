@@ -226,7 +226,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             mock.patch.multiple(
                 hosted_harness.hosted_assistants,
                 _active_team_assistants=lambda _team_id: (),
-                _model_credential=lambda _owner, _provider: ("test-key", 7),
+                _model_credential=lambda _owner, _provider, *_args: ("test-key", 7),
                 _require_model_credential_current=lambda *_args: None,
             ),
             mock.patch.object(
@@ -242,7 +242,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             mock.patch.object(
                 hosted_harness.runtime_state,
                 "_storage",
-                side_effect=lambda: SimpleNamespace(metadata=lambda _team_id, _files: []),
+                side_effect=lambda: SimpleNamespace(metadata=lambda _team_id, _files, *_args: []),
             ),
             mock.patch.object(
                 hosted_harness.hosted_chat_segment,
@@ -268,7 +268,9 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             )
 
         self.assertEqual(result.outcome.reply, "done")
-        setup.assert_called_once_with("team_1", [], (), anchor, "owner")
+        self.assertEqual(setup.call_args.args[:5], ("team_1", [], (), anchor, "owner"))
+        self.assertIsNone(setup.call_args.args[5])
+        self.assertIsNotNone(setup.call_args.args[6])
 
     def test_hosted_and_local_controllers_build_equivalent_real_segment_strategies(self) -> None:
         assistant_id = "shimpz-cloudflare"
@@ -333,7 +335,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             mock.patch.multiple(
                 hosted_harness.hosted_assistants,
                 _active_team_assistants=lambda _team_id: (hosted_active,),
-                _model_credential=lambda _owner, _provider: ("test-key", 7),
+                _model_credential=lambda _owner, _provider, *_args: ("test-key", 7),
                 _require_model_credential_current=lambda *_args: hosted_events.append("model"),
                 _require_hosted_power_rpc_envelope=lambda *_args: hosted_events.append("preflight"),
                 _hosted_power_identity=lambda _active: (assistant_container.id, local_spec.image),
@@ -357,7 +359,7 @@ class SharedChatTurnEngineTest(unittest.TestCase):
             mock.patch.object(
                 hosted_harness.runtime_state,
                 "_storage",
-                side_effect=lambda: SimpleNamespace(metadata=lambda _team_id, _files: []),
+                side_effect=lambda: SimpleNamespace(metadata=lambda _team_id, _files, *_args: []),
             ),
             mock.patch.object(
                 hosted_harness.hosted_chat_segment.chat_turn_engine,

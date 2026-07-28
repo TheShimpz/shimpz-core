@@ -69,9 +69,11 @@ class ScriptedRuntime:
 class CredentialCheckCounter:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
+        self.sessions: list[object] = []
 
-    def __call__(self, owner: str, provider: str, generation: int) -> None:
+    def __call__(self, owner: str, provider: str, generation: int, session=None) -> None:
         self.calls.append((owner, provider, generation))
+        self.sessions.append(session)
 
 
 class HostedChatLifecycleTests(unittest.TestCase):
@@ -126,7 +128,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                     assistant.container,
                 ),
                 _invoke_assistant_power=rpc,
-                _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                _model_credential=lambda _owner, _provider, *_args: ("secret-in-memory", 7),
                 _require_model_credential_current=require_current,
             )
         )
@@ -323,7 +325,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
         )
         store = types.SimpleNamespace(load=lambda _team_id: types.SimpleNamespace(provider="openai", model="gpt-5.5"))
 
-        def require_current(owner: str, provider: str, generation: int) -> None:
+        def require_current(owner: str, provider: str, generation: int, _session=None) -> None:
             checks.append((owner, provider, generation))
             if len(checks) == 2:
                 raise runtime_state.ApiError(
@@ -342,7 +344,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                     ),
                 ),
                 _chat_file_metadata=lambda _team_id, _files, *_args: [],
-                _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                _model_credential=lambda _owner, _provider, *_args: ("secret-in-memory", 7),
                 _require_model_credential_current=require_current,
             ),
             mock.patch.object(
@@ -418,6 +420,8 @@ class HostedChatLifecycleTests(unittest.TestCase):
 
                 self.assertEqual(len(checks.calls), expected)
                 self.assertTrue(all(check == ("account_1", "openai", 7) for check in checks.calls))
+                self.assertEqual(len({id(session) for session in checks.sessions}), 1)
+                self.assertIsNotNone(checks.sessions[0])
 
     def test_hosted_team_context_contains_and_routes_two_active_assistants(self) -> None:
         place_power = types.SimpleNamespace(summary="Find a place.", input_schema={"type": "object"})
@@ -486,7 +490,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                         hosted_assistants._ActiveAssistant("weather", weather_contract, weather_container),
                     ),
                     _chat_file_metadata=lambda _team_id, _files, *_args: [],
-                    _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
+                    _model_credential=lambda _owner, _provider, *_args: ("secret-in-memory", 7),
                     _require_model_credential_current=lambda *_args: None,
                     _invoke_assistant_power=invoke,
                 ),

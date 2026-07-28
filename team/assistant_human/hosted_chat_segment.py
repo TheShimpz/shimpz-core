@@ -50,6 +50,7 @@ def _hosted_chat_setup(
     container,
     owner: str,
     metadata_connection=None,
+    credential_session=None,
 ) -> tuple[
     str,
     tuple[hosted_assistants._ActiveAssistant, ...],
@@ -70,8 +71,8 @@ def _hosted_chat_setup(
         raise runtime_state.ApiError(
             HTTPStatus.CONFLICT, "configure this Team's model provider before chatting"
         ) from exc
-    api_key, generation = hosted_assistants._model_credential(owner, config.provider)
-    hosted_assistants._require_model_credential_current(owner, config.provider, generation)
+    api_key, generation = hosted_assistants._model_credential(owner, config.provider, credential_session)
+    hosted_assistants._require_model_credential_current(owner, config.provider, generation, credential_session)
     identity = (
         container.id,
         owner,
@@ -143,6 +144,7 @@ def _hosted_chat_current_identity(
     generation: int,
     inspect_memo: dict[str, object],
     metadata_connection=None,
+    credential_session=None,
 ) -> tuple[object, ...]:
     if config is None:
         raise AssertionError("hosted chat segment was not prepared")
@@ -175,7 +177,12 @@ def _hosted_chat_current_identity(
         raise runtime_state.ApiError(
             HTTPStatus.CONFLICT, "configure this Team's model provider before chatting"
         ) from exc
-    hosted_assistants._require_model_credential_current(request.owner, config.provider, generation)
+    hosted_assistants._require_model_credential_current(
+        request.owner,
+        config.provider,
+        generation,
+        credential_session,
+    )
     return (
         current_anchor.id,
         request.owner,
@@ -216,13 +223,17 @@ def _execute_hosted_power(
 
 
 def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_engine.SegmentResult:
-    with hosted_assistants._chat_file_metadata_connection(request.team_id, request.file_ids) as metadata_connection:
-        return _run_hosted_chat_segment_with_metadata(request, metadata_connection)
+    with (
+        hosted_assistants.brain_credentials_client.BrainCredentialSession() as credential_session,
+        hosted_assistants._chat_file_metadata_connection(request.team_id, request.file_ids) as metadata_connection,
+    ):
+        return _run_hosted_chat_segment_with_metadata(request, metadata_connection, credential_session)
 
 
 def _run_hosted_chat_segment_with_metadata(
     request: HostedChatSegmentRequest,
     metadata_connection,
+    credential_session,
 ) -> chat_turn_engine.SegmentResult:
     team_id, assistant_ids, token, container, owner = (
         request.team_id,
@@ -241,7 +252,12 @@ def _run_hosted_chat_segment_with_metadata(
     def require_current_credential() -> None:
         if config is None:
             raise AssertionError("hosted chat segment was not prepared")
-        hosted_assistants._require_model_credential_current(owner, config.provider, generation)
+        hosted_assistants._require_model_credential_current(
+            owner,
+            config.provider,
+            generation,
+            credential_session,
+        )
 
     def validate_power(assistant_id: str, power: str, power_input) -> object:
         return hosted_assistants._validate_assistant_power_input(bindings, assistant_id, power, power_input)
@@ -259,6 +275,7 @@ def _run_hosted_chat_segment_with_metadata(
             container,
             owner,
             metadata_connection,
+            credential_session,
         )
         genesis_by_id = {
             active.assistant_id: hosted_apps._require_assistant_genesis(active.container)
@@ -328,6 +345,7 @@ def _run_hosted_chat_segment_with_metadata(
             generation,
             inspect_memo,
             metadata_connection,
+            credential_session,
         )
         if current_identity != initial_identity:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
