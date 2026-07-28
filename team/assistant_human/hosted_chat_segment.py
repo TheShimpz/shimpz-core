@@ -49,6 +49,7 @@ def _hosted_chat_setup(
     assistant_ids: tuple[str, ...],
     container,
     owner: str,
+    metadata_connection=None,
 ) -> tuple[
     str,
     tuple[hosted_assistants._ActiveAssistant, ...],
@@ -62,7 +63,7 @@ def _hosted_chat_setup(
     assistants = hosted_assistants._select_team_assistants(
         hosted_assistants._active_team_assistants(team_id), assistant_ids
     )
-    files = hosted_assistants._chat_file_metadata(team_id, file_ids)
+    files = hosted_assistants._chat_file_metadata(team_id, file_ids, metadata_connection)
     try:
         config = runtime_state._inference_store.load(team_id)
     except inference_config.InferenceConfigError as exc:
@@ -141,6 +142,7 @@ def _hosted_chat_current_identity(
     config: inference_config.InferenceConfig | None,
     generation: int,
     inspect_memo: dict[str, object],
+    metadata_connection=None,
 ) -> tuple[object, ...]:
     if config is None:
         raise AssertionError("hosted chat segment was not prepared")
@@ -166,7 +168,7 @@ def _hosted_chat_current_identity(
         )[2]
         for active in assistants
     )
-    files = hosted_assistants._chat_file_metadata(request.team_id, request.file_ids)
+    files = hosted_assistants._chat_file_metadata(request.team_id, request.file_ids, metadata_connection)
     try:
         current_config = runtime_state._inference_store.load(request.team_id)
     except inference_config.InferenceConfigError as exc:
@@ -214,6 +216,14 @@ def _execute_hosted_power(
 
 
 def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_engine.SegmentResult:
+    with hosted_assistants._chat_file_metadata_connection(request.team_id, request.file_ids) as metadata_connection:
+        return _run_hosted_chat_segment_with_metadata(request, metadata_connection)
+
+
+def _run_hosted_chat_segment_with_metadata(
+    request: HostedChatSegmentRequest,
+    metadata_connection,
+) -> chat_turn_engine.SegmentResult:
     team_id, assistant_ids, token, container, owner = (
         request.team_id,
         request.assistant_ids,
@@ -248,6 +258,7 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
             assistant_ids,
             container,
             owner,
+            metadata_connection,
         )
         genesis_by_id = {
             active.assistant_id: hosted_apps._require_assistant_genesis(active.container)
@@ -316,6 +327,7 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
             config,
             generation,
             inspect_memo,
+            metadata_connection,
         )
         if current_identity != initial_identity:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")

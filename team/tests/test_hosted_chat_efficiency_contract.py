@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import types
 import unittest
 from collections import Counter
@@ -164,8 +165,9 @@ class HostedCheckHarness:
         return CountingEgressStore(self.calls)
 
     def _storage(self):
-        def metadata(_team_id, _file_ids):
-            self.calls["sqlite.connect"] += 1
+        def metadata(_team_id, _file_ids, reader=None):
+            if reader is None:
+                self.calls["sqlite.connect"] += 1
             self.calls["sqlite.query"] += 1
             return self.files
 
@@ -279,6 +281,31 @@ class HostedChatEfficiencyContractTests(unittest.TestCase):
         harness.run()
 
         self.assertTrue(all(harness.calls[name] == 2 * first[name] for name in evidence))
+
+    def test_one_sqlite_connection_serves_fresh_queries_across_a_turn(self) -> None:
+        calls: Counter = Counter()
+        reader = object()
+
+        class Storage:
+            @contextlib.contextmanager
+            def metadata_connection(self, _team_id, _file_ids):
+                calls["sqlite.connect"] += 1
+                yield reader
+
+            @staticmethod
+            def metadata(_team_id, _file_ids, current):
+                self.assertIs(current, reader)
+                calls["sqlite.query"] += 1
+                return []
+
+        with (
+            mock.patch.object(runtime_state, "_storage", return_value=Storage()),
+            hosted_assistants._chat_file_metadata_connection(TEAM_ID, ["f" * 32]) as current,
+        ):
+            hosted_assistants._chat_file_metadata(TEAM_ID, ["f" * 32], current)
+            hosted_assistants._chat_file_metadata(TEAM_ID, ["f" * 32], current)
+
+        self.assertEqual(calls, {"sqlite.connect": 1, "sqlite.query": 2})
 
 
 if __name__ == "__main__":

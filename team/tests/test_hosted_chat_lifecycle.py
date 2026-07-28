@@ -119,7 +119,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
             mock.patch.multiple(
                 hosted_assistants,
                 _active_team_assistants=lambda _team_id: (assistant,),
-                _chat_file_metadata=lambda _team_id, _files: [],
+                _chat_file_metadata=lambda _team_id, _files, *_args: [],
                 _installed_assistant=lambda _team_id, assistant_id, *_args, **_kwargs: (
                     assistant_id,
                     contract,
@@ -341,7 +341,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                         assistant_container,
                     ),
                 ),
-                _chat_file_metadata=lambda _team_id, _files: [],
+                _chat_file_metadata=lambda _team_id, _files, *_args: [],
                 _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
                 _require_model_credential_current=require_current,
             ),
@@ -485,7 +485,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                         hosted_assistants._ActiveAssistant("places", place_contract, place_container),
                         hosted_assistants._ActiveAssistant("weather", weather_contract, weather_container),
                     ),
-                    _chat_file_metadata=lambda _team_id, _files: [],
+                    _chat_file_metadata=lambda _team_id, _files, *_args: [],
                     _model_credential=lambda _owner, _provider: ("secret-in-memory", 7),
                     _require_model_credential_current=lambda *_args: None,
                     _invoke_assistant_power=invoke,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import NoReturn
 
 import assistant_account_flow
 import assistant_chat
@@ -599,19 +600,45 @@ def _validate_power_payload(
     )
 
 
-def _chat_file_metadata(team_id: str, file_ids: object) -> list[dict[str, object]]:
+def _validate_chat_file_ids(file_ids: object) -> list[object]:
     if file_ids is None:
         return []
     if not isinstance(file_ids, list) or len(file_ids) > MAX_CHAT_FILES:
         raise runtime_state.ApiError(HTTPStatus.BAD_REQUEST, f"files must contain at most {MAX_CHAT_FILES} opaque ids")
-    try:
-        return runtime_state._storage().metadata(team_id, file_ids)
-    except team_storage.StorageNotFoundError as exc:
+    return file_ids
+
+
+def _raise_chat_storage_error(exc: team_storage.StorageError) -> NoReturn:
+    if isinstance(exc, team_storage.StorageNotFoundError):
         raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, "selected file not found in this Team") from exc
-    except team_storage.StorageInputError as exc:
+    if isinstance(exc, team_storage.StorageInputError):
         raise runtime_state.ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+    raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team storage failed its safety checks") from exc
+
+
+@contextlib.contextmanager
+def _chat_file_metadata_connection(team_id: str, file_ids: object):
+    safe_ids = _validate_chat_file_ids(file_ids)
+    if not safe_ids:
+        yield None
+        return
+    try:
+        with runtime_state._storage().metadata_connection(team_id, safe_ids) as reader:
+            yield reader
     except team_storage.StorageError as exc:
-        raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team storage failed its safety checks") from exc
+        _raise_chat_storage_error(exc)
+
+
+def _chat_file_metadata(
+    team_id: str,
+    file_ids: object,
+    metadata_connection=None,
+) -> list[dict[str, object]]:
+    safe_ids = _validate_chat_file_ids(file_ids)
+    try:
+        return runtime_state._storage().metadata(team_id, safe_ids, metadata_connection)
+    except team_storage.StorageError as exc:
+        _raise_chat_storage_error(exc)
 
 
 def _model_credential(owner: str, provider: str) -> tuple[str, int]:
