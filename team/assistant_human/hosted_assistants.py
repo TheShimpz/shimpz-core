@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
@@ -408,12 +409,12 @@ def _require_hosted_power_rpc_envelope(
     team_id: str,
     bindings: dict[str, _ActiveAssistant],
     request: brain_runtime_client.PowerRequest,
-) -> None:
+) -> Mapping[str, Mapping[str, object]]:
     active = bindings.get(request.assistant_id)
     if active is None:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Brain requested an unavailable Assistant")
     try:
-        power_execution.require_rpc_envelope(
+        return power_execution.require_rpc_envelope(
             active,
             request,
             lambda binding, power_id: _resolve_power_accounts(team_id, binding, power_id),
@@ -479,6 +480,8 @@ class PowerInvocationRequest:
     power: object
     payload: object
     inspect_memo: dict[str, object] | None = None
+    validated_assistant: _ActiveAssistant | None = None
+    account_values: Mapping[str, Mapping[str, object]] | None = None
 
 
 def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object]:
@@ -497,15 +500,29 @@ def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object
         safe_input = _validate_power_payload(contract, power, request.payload, output=False)
     except ValueError as exc:
         raise runtime_state.ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc)) from exc
-    _current_id, _current_contract, current_container = _installed_assistant(
-        team_id,
-        assistant_id,
-        request.inspect_memo,
-    )
-    if current_container.id != container.id:
+    validated = request.validated_assistant
+    if validated is None:
+        _current_id, current_contract, current_container = _installed_assistant(
+            team_id,
+            assistant_id,
+            request.inspect_memo,
+        )
+    else:
+        _current_id = validated.assistant_id
+        current_contract = validated.contract
+        current_container = validated.container
+    if (
+        _current_id != assistant_id
+        or current_contract != contract
+        or current_container.id != container.id
+    ):
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "installed Assistant changed during the chat turn")
     active = _ActiveAssistant(assistant_id, contract, container)
-    account_values = _resolve_power_accounts(team_id, active, power)
+    account_values = (
+        _resolve_power_accounts(team_id, active, power)
+        if request.account_values is None
+        else dict(request.account_values)
+    )
     audit.log(
         "assistant_power",
         team_id,

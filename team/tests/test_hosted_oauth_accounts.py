@@ -174,6 +174,46 @@ class HostedOAuthAccountTests(unittest.TestCase):
         self.assertNotIn("generation", serialized)
         self.assertEqual(payload["accounts"][0]["status"], "connected")
 
+    def test_fresh_power_evidence_reaches_only_its_immediate_rpc(self) -> None:
+        turn_token = "-".join(("turn", "token"))
+        account_values = {
+            "cloudflare": {
+                "type": "oauth2-bearer",
+                "access_token": ACCESS_TOKEN,
+            }
+        }
+        rpc = mock.Mock(return_value=_zones())
+        with (
+            mock.patch.object(runtime_state, "_assistant_accounts", self.store),
+            mock.patch.object(hosted_assistants, "_assistant_rpc", rpc),
+            mock.patch.object(
+                hosted_assistants,
+                "_installed_assistant",
+                side_effect=AssertionError("validated Assistant must not be inspected again"),
+            ),
+            mock.patch.object(
+                hosted_assistants,
+                "_resolve_power_accounts",
+                side_effect=AssertionError("fresh account values must not be decrypted again"),
+            ),
+        ):
+            result = hosted_assistants._invoke_assistant_power(
+                hosted_assistants.PowerInvocationRequest(
+                    team_id=TEAM_ID,
+                    token=turn_token,
+                    assistant_id=ASSISTANT_ID,
+                    contract=self.contract,
+                    container=self.container,
+                    power="list-zones",
+                    payload=ZONE_INPUT,
+                    validated_assistant=self.active,
+                    account_values=account_values,
+                )
+            )
+
+        self.assertEqual(result["result"]["zones"][0]["name"], "example.com")
+        self.assertEqual(rpc.call_args.args[-1]["accounts"], {"cloudflare": ACCESS_TOKEN})
+
     def test_account_token_exposure_is_rejected_without_echoing_it(self) -> None:
         self._connect()
         turn_token = "turn-token"

@@ -124,8 +124,8 @@ def power_operation(
 @dataclass(frozen=True, slots=True)
 class PowerBatchStrategy:
     binding_identity: Callable[[object], tuple[object, object]]
-    execute: Callable[[object], object]
-    preflight: Callable[[object], None]
+    execute: Callable[[object, object], object]
+    preflight: Callable[[object], object]
     account_generations: Callable[[object], tuple[tuple[str, int], ...]] = lambda _request: ()
 
 
@@ -149,18 +149,24 @@ class PowerBatch:
         self._batch: power_journal.Batch | None = None
         self._operations: dict[str, power_journal.Operation] = {}
 
-    def _operation(self, request: object) -> power_journal.Operation:
+    def _operation_with_evidence(self, request: object) -> tuple[power_journal.Operation, object]:
         active = self._bindings.get(request.assistant_id)
         if active is None:
             raise power_journal.PowerJournalConflictError("Power Assistant is unavailable")
-        self._strategy.preflight(request)
+        evidence = self._strategy.preflight(request)
         container_id, image = self._strategy.binding_identity(active)
-        return power_operation(
-            request,
-            container_id,
-            image,
-            self._strategy.account_generations(request),
+        return (
+            power_operation(
+                request,
+                container_id,
+                image,
+                self._strategy.account_generations(request),
+            ),
+            evidence,
         )
+
+    def _operation(self, request: object) -> power_journal.Operation:
+        return self._operation_with_evidence(request)[0]
 
     def prepare(self, requests: tuple[object, ...]) -> None:
         if self._batch is not None:
@@ -177,12 +183,13 @@ class PowerBatch:
         operation = self._operations.get(request.interrupt_id)
         if operation is None:
             raise power_journal.PowerJournalConflictError("Power operation is not prepared")
-        if self._operation(request) != operation:
+        current_operation, evidence = self._operation_with_evidence(request)
+        if current_operation != operation:
             raise power_journal.PowerJournalConflictError("Power credential generation changed")
         decision = self._journal.begin(self._batch, operation)
         if not decision.execute:
             return decision.result
-        result = self._strategy.execute(request)
+        result = self._strategy.execute(request, evidence)
         self._journal.complete(self._batch, operation, result)
         return result
 
@@ -347,12 +354,14 @@ def require_rpc_envelope(
     active: object,
     request: object,
     resolve_accounts: Callable[[object, str], Mapping[str, Mapping[str, object]]],
-) -> None:
+) -> Mapping[str, Mapping[str, object]]:
     """Resolve and size-check the exact Spec v1 invocation before journaling."""
+    accounts = resolve_accounts(active, request.power)
     encode_rpc_invocation(
         request.input,
-        account_access_tokens(resolve_accounts(active, request.power)),
+        account_access_tokens(accounts),
     )
+    return accounts
 
 
 def contains_secret(value: object, secrets_by_id: Mapping[str, str]) -> bool:

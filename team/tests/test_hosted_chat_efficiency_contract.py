@@ -227,7 +227,7 @@ class HostedCheckHarness:
                 self.assistants,
                 self.config,
                 7,
-                {},
+                hosted_chat_segment.HostedValidationContext({}, None, None, {}),
             )
 
 

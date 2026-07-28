@@ -136,14 +136,20 @@ class HostedChatSegmentRequest:
     expected_identity: tuple[object, ...] | None = None
 
 
+@dataclass(slots=True)
+class HostedValidationContext:
+    inspect_memo: dict[str, object]
+    metadata_connection: object
+    credential_session: object
+    power_assistants: dict[str, hosted_assistants._ActiveAssistant]
+
+
 def _hosted_chat_current_identity(
     request: HostedChatSegmentRequest,
     assistants: tuple[hosted_assistants._ActiveAssistant, ...],
     config: inference_config.InferenceConfig | None,
     generation: int,
-    inspect_memo: dict[str, object],
-    metadata_connection=None,
-    credential_session=None,
+    validation: HostedValidationContext,
 ) -> tuple[object, ...]:
     if config is None:
         raise AssertionError("hosted chat segment was not prepared")
@@ -151,7 +157,7 @@ def _hosted_chat_current_identity(
         request.team_id,
         request.container.id,
         request.owner,
-        inspect_memo,
+        validation.inspect_memo,
     )
     team_name = hosted_resources._team_name_from_anchor(current_anchor)
     dynamic_bindings = hosted_apps._dynamic_binding_snapshot(
@@ -159,17 +165,37 @@ def _hosted_chat_current_identity(
         tuple(active.assistant_id for active in assistants),
     )
     egress_store = hosted_apps._egress_store() if assistants else None
-    current_assistants = tuple(
+    current = tuple(
         hosted_assistants._installed_assistant(
             request.team_id,
             active.assistant_id,
-            inspect_memo,
+            validation.inspect_memo,
             dynamic_bindings=dynamic_bindings,
             egress_store=egress_store,
-        )[2]
+        )
         for active in assistants
     )
-    files = hosted_assistants._chat_file_metadata(request.team_id, request.file_ids, metadata_connection)
+    current_assistants = tuple(item[2] for item in current)
+    validation.power_assistants.update(
+        {
+            assistant_id: hosted_assistants._ActiveAssistant(
+                assistant_id,
+                contract,
+                current_container,
+                prepared.image,
+            )
+            for prepared, (assistant_id, contract, current_container) in zip(
+                assistants,
+                current,
+                strict=True,
+            )
+        }
+    )
+    files = hosted_assistants._chat_file_metadata(
+        request.team_id,
+        request.file_ids,
+        validation.metadata_connection,
+    )
     try:
         current_config = runtime_state._inference_store.load(request.team_id)
     except inference_config.InferenceConfigError as exc:
@@ -180,7 +206,7 @@ def _hosted_chat_current_identity(
         request.owner,
         config.provider,
         generation,
-        credential_session,
+        validation.credential_session,
     )
     return (
         current_anchor.id,
@@ -202,6 +228,8 @@ def _execute_hosted_power(
     bindings: dict[str, hosted_assistants._ActiveAssistant],
     inspect_memo: dict[str, object],
     request: brain_runtime_client.PowerRequest,
+    validated_assistant: hosted_assistants._ActiveAssistant,
+    account_values: object,
 ) -> object:
     active = bindings.get(request.assistant_id)
     if active is None:
@@ -216,6 +244,8 @@ def _execute_hosted_power(
             power=request.power,
             payload=request.input,
             inspect_memo=inspect_memo,
+            validated_assistant=validated_assistant,
+            account_values=account_values,
         )
     )
     return invocation["result"]
@@ -248,16 +278,29 @@ def _run_hosted_chat_segment_with_metadata(
     prepared_assistants: tuple[hosted_assistants._ActiveAssistant, ...] = ()
     inspect_memo: dict[str, object] = {}
     credential_evidence = False
+    validated_power_assistants: dict[str, hosted_assistants._ActiveAssistant] = {}
 
     def validate_power(assistant_id: str, power: str, power_input) -> object:
         return hosted_assistants._validate_assistant_power_input(bindings, assistant_id, power, power_input)
 
-    def execute_power(request: brain_runtime_client.PowerRequest) -> object:
-        nonlocal credential_evidence
+    def execute_power(request: brain_runtime_client.PowerRequest, account_values: object) -> object:
+        nonlocal credential_evidence, validated_power_assistants
         if not credential_evidence:
             raise AssertionError("hosted Power lacks fresh credential evidence")
+        validated_assistant = validated_power_assistants.get(request.assistant_id)
+        if validated_assistant is None:
+            raise AssertionError("hosted Power lacks fresh Assistant evidence")
         credential_evidence = False
-        return _execute_hosted_power(team_id, token, bindings, inspect_memo, request)
+        validated_power_assistants = {}
+        return _execute_hosted_power(
+            team_id,
+            token,
+            bindings,
+            inspect_memo,
+            request,
+            validated_assistant,
+            account_values,
+        )
 
     def prepare() -> chat_turn_engine.PreparedSegment:
         nonlocal bindings, config, generation, initial_identity, prepared_assistants
@@ -329,20 +372,25 @@ def _run_hosted_chat_segment_with_metadata(
         return bool(requirements.accounts)
 
     def validate_context() -> None:
-        nonlocal credential_evidence, inspect_memo
+        nonlocal credential_evidence, inspect_memo, validated_power_assistants
         inspect_memo = {}
+        validation = HostedValidationContext(
+            inspect_memo,
+            metadata_connection,
+            credential_session,
+            {},
+        )
         current_identity = _hosted_chat_current_identity(
             request,
             prepared_assistants,
             config,
             generation,
-            inspect_memo,
-            metadata_connection,
-            credential_session,
+            validation,
         )
         if current_identity != initial_identity:
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team capabilities changed; retry")
         credential_evidence = True
+        validated_power_assistants = validation.power_assistants
 
     team_name, identity, outcome, requirements = chat_turn_engine.run_segment(
         chat_turn_engine.SegmentStrategy(

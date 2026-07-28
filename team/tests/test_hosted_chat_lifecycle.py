@@ -491,6 +491,18 @@ class HostedChatLifecycleTests(unittest.TestCase):
             invoked.append((request.assistant_id, request.power, request.payload))
             return {"result": {"ok": True}}
 
+        def current_identity(_request, assistants, _config, _generation, validation):
+            validation.power_assistants.update({active.assistant_id: active for active in assistants})
+            return (
+                ANCHOR_ID,
+                "account_1",
+                "Marketing",
+                (("places", "places-container"), ("weather", "weather-container")),
+                [],
+                types.SimpleNamespace(provider="openai", model="gpt-test"),
+                7,
+            )
+
         with tempfile.TemporaryDirectory() as directory:
             journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
             self.addCleanup(journal.close)
@@ -522,15 +534,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                 mock.patch.object(
                     hosted_chat_segment,
                     "_hosted_chat_current_identity",
-                    return_value=(
-                        ANCHOR_ID,
-                        "account_1",
-                        "Marketing",
-                        (("places", "places-container"), ("weather", "weather-container")),
-                        [],
-                        types.SimpleNamespace(provider="openai", model="gpt-test"),
-                        7,
-                    ),
+                    side_effect=current_identity,
                 ),
                 mock.patch.object(hosted_chat_segment.chat_orchestrator, "run_until_pause", side_effect=run),
             ):

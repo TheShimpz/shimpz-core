@@ -290,6 +290,39 @@ class PowerRpcFrameTests(unittest.TestCase):
                         batch.invoke(request)
         execute.assert_not_called()
 
+    def test_power_batch_passes_only_the_invoke_time_preflight_evidence(self) -> None:
+        request = brain_runtime_client.PowerRequest("interrupt-1", "assistant", "lookup", {"query": "safe"})
+        binding = SimpleNamespace(container_id="container-1", spec=SimpleNamespace(image="example.invalid/image"))
+        evidence: list[dict[str, int]] = []
+
+        def preflight(_request):
+            current = {"sequence": len(evidence) + 1}
+            evidence.append(current)
+            return current
+
+        execute = mock.Mock(return_value={"ok": True})
+        with tempfile.TemporaryDirectory() as directory:
+            journal = power_journal.PowerJournal(Path(directory) / "journal.sqlite3")
+            self.addCleanup(journal.close)
+            batch = power_execution.PowerBatch(
+                journal,
+                "generation-1",
+                "thread-1",
+                {"assistant": binding},
+                power_execution.PowerBatchStrategy(
+                    lambda item: (item.container_id, item.spec.image),
+                    execute,
+                    preflight,
+                ),
+            )
+
+            batch.prepare((request,))
+            result = batch.invoke(request)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(evidence, [{"sequence": 1}, {"sequence": 2}])
+        execute.assert_called_once_with(request, evidence[1])
+
     def test_power_resolution_failures_have_identical_statuses(self) -> None:
         local_spec = SimpleNamespace(assistant_id="assistant", name="Assistant", powers={}, accounts={})
 

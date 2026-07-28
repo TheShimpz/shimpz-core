@@ -82,10 +82,10 @@ def _require_power_rpc_envelope(
     team_id: str,
     bindings: dict[str, _ActiveAssistant],
     request: brain_runtime_client.PowerRequest,
-) -> None:
+) -> object:
     active = _required_active_assistant(bindings, request.assistant_id)
     try:
-        power_execution.require_rpc_envelope(
+        return power_execution.require_rpc_envelope(
             active,
             request,
             lambda binding, power_id: self._resolve_power_accounts(team_id, binding.spec, power_id),

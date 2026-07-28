@@ -42,7 +42,7 @@ def _run_chat_segment_with_metadata(
     identity: tuple[object, ...] = ()
     network_id = ""
 
-    def execute_power(power_request: brain_runtime_client.PowerRequest) -> object:
+    def execute_power(power_request: brain_runtime_client.PowerRequest, _account_values: object) -> object:
         active = _required_active_assistant(bindings, power_request.assistant_id)
         return self._invoke_chat_power(
             request.team_id,
