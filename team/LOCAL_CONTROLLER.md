@@ -64,7 +64,6 @@ metadata-only `trace_id` added at the HTTP boundary.
 | `GET` | `/v1/teams/{team_id}/assistants` | installed Assistant status inventory |
 | `POST` | `/v1/teams/{team_id}/assistants` | install one trusted Assistant ID/digest |
 | `DELETE` | `/v1/teams/{team_id}/assistants/{assistant_id}` | uninstall one owned Assistant |
-| `GET` | `/v1/teams/{team_id}/assistants/{assistant_id}/help[/{locale}]` | validated localized Assistant help |
 | `POST` | `/v1/teams/{team_id}/assistants/{assistant_id}/powers/{power_id}` | invoke one declared Power directly |
 | `GET` | `/v1/teams/{team_id}/files` | list opaque Team file metadata and quota |
 | `POST` | `/v1/teams/{team_id}/files` | upload one bounded base64 object |
