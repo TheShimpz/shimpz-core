@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from registry_auth import RegistryAuth, RegistryAuthError
+from hosted_install.registry_auth import RegistryAuth, RegistryAuthError
 
 
 class RegistryAuthTests(unittest.TestCase):

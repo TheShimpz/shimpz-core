@@ -15,7 +15,8 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from developers_controller_contract import ContractValidationError, ContractValidator
+
+from .developers_controller_contract import ContractValidationError, ContractValidator
 
 _MAX_TOKEN_BYTES = 8192
 _CLOCK_SKEW_SECONDS = 5

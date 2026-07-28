@@ -12,12 +12,11 @@ from http import HTTPStatus
 import cleanup_state
 import docker
 import docker.errors
-import dynamic_assistants
 import inference_config
 import manifests
 import marketplace
-import marketplace_image
 import validate
+from hosted_install import dynamic_assistants, marketplace_image
 from http_boundary import runtime_state
 
 from container_policy import network as network_policy

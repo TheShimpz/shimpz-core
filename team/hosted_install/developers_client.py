@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from developers_controller_contract import ContractValidationError, ContractValidator
+from .developers_controller_contract import ContractValidationError, ContractValidator
 
 _HOST = "developers-api"
 _PORT = 8080

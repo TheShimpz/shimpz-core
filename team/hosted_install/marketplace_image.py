@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import docker
 import marketplace
-import registry_auth
+
+from . import registry_auth
 
 
 class ImageTrustError(RuntimeError):

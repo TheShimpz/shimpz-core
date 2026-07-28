@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import docker
-import registry_auth
+
+from . import registry_auth
 
 SIGNER_IDENTITY = "https://github.com/TheShimpz/shimpz-developers/.github/workflows/build-assistant.yml@refs/heads/main"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"

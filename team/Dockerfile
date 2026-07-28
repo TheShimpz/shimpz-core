@@ -87,8 +87,7 @@ COPY pyproject.toml uv.lock ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py marketplace.py marketplace_image.py registry_auth.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
-     artifact_trust.py developers_client.py developers_controller_contract.py developers_delegation.py dynamic_assistants.py \
+COPY app.py validate.py manifests.py marketplace.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
      assistant_chat.py \
      assistant_account_challenges.py assistant_account_flow.py oauth_account_store.py oauth_account_service.py \
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
@@ -97,6 +96,7 @@ COPY app.py validate.py manifests.py marketplace.py marketplace_image.py registr
 COPY assistant_human ./assistant_human
 COPY container_policy ./container_policy
 COPY contracts ./contracts
+COPY hosted_install ./hosted_install
 COPY http_boundary ./http_boundary
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the

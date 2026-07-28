@@ -12,8 +12,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
-from artifact_trust import SIGNER_IDENTITY, ArtifactTrustError, ArtifactTrustVerifier
-from developers_controller_contract import CONTRACT_ROOT
+from hosted_install.artifact_trust import SIGNER_IDENTITY, ArtifactTrustError, ArtifactTrustVerifier
+from hosted_install.developers_controller_contract import CONTRACT_ROOT
 
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 RESOLUTION = VECTORS["fixtures"]["resolve_response"]["value"]

@@ -12,9 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-import dynamic_assistants
-from developers_controller_contract import CONTRACT_ROOT
-from dynamic_assistants import (
+from hosted_install import dynamic_assistants
+from hosted_install.developers_controller_contract import CONTRACT_ROOT
+from hosted_install.dynamic_assistants import (
     DynamicAssistantConflictError,
     DynamicAssistantError,
     DynamicAssistantStore,

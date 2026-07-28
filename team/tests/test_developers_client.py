@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
-from developers_client import (
+from hosted_install.developers_client import (
     AssistantNotInstallableError,
     DevelopersClient,
     DevelopersClientError,
     InstallAuthorizationDeniedError,
 )
-from developers_controller_contract import CONTRACT_ROOT
+from hosted_install.developers_controller_contract import CONTRACT_ROOT
 
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 RESOLUTION = VECTORS["fixtures"]["resolve_response"]["value"]
@@ -63,7 +63,7 @@ class DevelopersClientTests(unittest.TestCase):
 
     def test_resolve_uses_fixed_internal_target_and_validates_response(self) -> None:
         _Connection.response = _Response(200, copy.deepcopy(RESOLUTION))
-        with mock.patch("developers_client.http.client.HTTPConnection", _Connection):
+        with mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection):
             value = self.client.resolve(RESOLUTION["source_digest"])
 
         self.assertEqual(value, RESOLUTION)
@@ -73,7 +73,7 @@ class DevelopersClientTests(unittest.TestCase):
 
     def test_authorization_request_and_receipt_are_both_closed(self) -> None:
         _Connection.response = _Response(200, copy.deepcopy(AUTHORIZATION_RECEIPT))
-        with mock.patch("developers_client.http.client.HTTPConnection", _Connection):
+        with mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection):
             value = self.client.authorize_install(copy.deepcopy(AUTHORIZATION_REQUEST))
 
         self.assertEqual(value, AUTHORIZATION_RECEIPT)
@@ -89,14 +89,14 @@ class DevelopersClientTests(unittest.TestCase):
             _Connection.response = _Response(status, {})
             with (
                 self.subTest(name=name),
-                mock.patch("developers_client.http.client.HTTPConnection", _Connection),
+                mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection),
                 self.assertRaises(error),
             ):
                 self.client.resolve(RESOLUTION["source_digest"])
 
         _Connection.response = _Response(403, {})
         with (
-            mock.patch("developers_client.http.client.HTTPConnection", _Connection),
+            mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection),
             self.assertRaises(InstallAuthorizationDeniedError),
         ):
             self.client.authorize_install(copy.deepcopy(AUTHORIZATION_REQUEST))
@@ -105,7 +105,7 @@ class DevelopersClientTests(unittest.TestCase):
         malformed["image_reference"] = "ghcr.io/attacker/image@sha256:" + "0" * 64
         _Connection.response = _Response(200, malformed)
         with (
-            mock.patch("developers_client.http.client.HTTPConnection", _Connection),
+            mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection),
             self.assertRaises(DevelopersClientError),
         ):
             self.client.resolve(RESOLUTION["source_digest"])
@@ -114,7 +114,7 @@ class DevelopersClientTests(unittest.TestCase):
         mismatched["source_digest"] = "sha256:" + "9" * 64
         _Connection.response = _Response(200, mismatched)
         with (
-            mock.patch("developers_client.http.client.HTTPConnection", _Connection),
+            mock.patch("hosted_install.developers_client.http.client.HTTPConnection", _Connection),
             self.assertRaises(DevelopersClientError),
         ):
             self.client.resolve(RESOLUTION["source_digest"])

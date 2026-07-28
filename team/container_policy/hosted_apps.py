@@ -13,12 +13,12 @@ import assistant_genesis
 import assistant_manifest
 import docker
 import docker.errors
-import dynamic_assistants
 import egress_policy
 import manifests
 import marketplace
 import oauth_account_store
 import pgdriver_client
+from hosted_install import dynamic_assistants
 from http_boundary import runtime_state
 
 from container_policy import hosted_resources

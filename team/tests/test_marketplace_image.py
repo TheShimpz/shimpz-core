@@ -4,7 +4,7 @@ import unittest
 
 import docker
 import marketplace
-import marketplace_image
+from hosted_install import marketplace_image
 
 AUTH_CONFIG = {"username": "registry-reader", "password": "x" * 20}
 AUTH = type("_Auth", (), {"docker_auth_config": lambda self: AUTH_CONFIG})()

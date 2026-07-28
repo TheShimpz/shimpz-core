@@ -12,18 +12,20 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts_client
-import artifact_trust
 import audit
 import brain_runtime_token_store
-import developers_client
-import developers_controller_contract
-import developers_delegation
 import docker
-import dynamic_assistants
 import marketplace
 import validate
 from assistant_human import hosted_assistants, hosted_chat_api, hosted_chat_segment
 from container_policy import hosted_apps, hosted_lifecycle, hosted_resources
+from hosted_install import (
+    artifact_trust,
+    developers_client,
+    developers_controller_contract,
+    developers_delegation,
+    dynamic_assistants,
+)
 
 from http_boundary import hosted, runtime_state, stdlib
 from http_boundary import strict as strict_http

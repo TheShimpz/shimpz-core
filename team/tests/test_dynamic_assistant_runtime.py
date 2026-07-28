@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 
 import manifests
-from developers_controller_contract import CONTRACT_ROOT
-from dynamic_assistants import DynamicAssistantStore, app_spec
+from hosted_install.developers_controller_contract import CONTRACT_ROOT
+from hosted_install.dynamic_assistants import DynamicAssistantStore, app_spec
 
 VECTORS = json.loads((CONTRACT_ROOT / "vectors.json").read_bytes())
 RESOLUTION = VECTORS["fixtures"]["resolve_response"]["value"]

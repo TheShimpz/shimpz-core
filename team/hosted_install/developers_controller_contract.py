@@ -8,7 +8,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-CONTRACT_ROOT = Path(__file__).resolve().parent / "contracts" / "developers-controller" / "v1"
+CONTRACT_ROOT = Path(__file__).resolve().parent.parent / "contracts" / "developers-controller" / "v1"
 DEFINITIONS = "definitions.schema.json"
 ENTRY_POINTS = {
     "controller-install-request.schema.json": "controllerInstallRequest",

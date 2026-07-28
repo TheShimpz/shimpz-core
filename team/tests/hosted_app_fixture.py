@@ -154,6 +154,13 @@ for module_name, module in tuple(sys.modules.items()):
             sys.modules.pop(module_name, None)
         else:
             sys.modules[module_name] = previous
+        parent_name, separator, child_name = module_name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if separator and parent is not None:
+            if previous is None and getattr(parent, child_name, None) is module:
+                delattr(parent, child_name)
+            elif previous is not None:
+                setattr(parent, child_name, previous)
 for module_name in (
     "docker",
     "docker.types",

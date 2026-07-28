@@ -17,7 +17,8 @@ from typing import Any
 import assistant_manifest
 import assistant_registry
 import marketplace
-from developers_controller_contract import ContractValidationError, ContractValidator
+
+from .developers_controller_contract import ContractValidationError, ContractValidator
 
 _FORMAT_VERSION = 1
 _MAX_BINDINGS = 4096
