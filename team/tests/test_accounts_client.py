@@ -17,7 +17,7 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import accounts_client
+from controller_runtime import accounts_client
 
 
 class _AccountsHandler(BaseHTTPRequestHandler):

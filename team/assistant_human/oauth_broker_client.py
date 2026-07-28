@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlencode, urlsplit
 
-import strict_json
+from controller_runtime import strict_json
 
 from assistant_human import oauth_http_client, oauth_providers
 

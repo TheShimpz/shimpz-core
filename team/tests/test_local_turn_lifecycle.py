@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
-import brain_runtime_client
 import local_app
+from controller_runtime import brain_runtime_client
 from local_controller_harness import LocalContractCase
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}

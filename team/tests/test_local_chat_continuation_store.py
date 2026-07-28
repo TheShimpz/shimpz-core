@@ -10,7 +10,7 @@ from pathlib import Path
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import local_chat_continuation_store
+from controller_runtime import local_chat_continuation_store
 
 
 class EncryptedContinuationStoreTests(unittest.TestCase):

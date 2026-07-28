@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import brain_runtime_client
+from controller_runtime import brain_runtime_client
 
 
 class _Response:

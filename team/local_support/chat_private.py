@@ -3,17 +3,15 @@
 from http import HTTPStatus
 from typing import NoReturn
 
-import brain_runtime_client
-import power_execution
-import power_journal
 from assistant_human import (
     assistant_account_challenges,
     assistant_account_flow,
     oauth_account_service,
     oauth_account_store,
 )
+from controller_runtime import brain_runtime_client, power_execution, power_journal
+from controller_runtime.local_registry import AssistantSpec
 from docker.errors import DockerException
-from local_registry import AssistantSpec
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import required_active_assistant as _required_active_assistant

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-import pgdriver_client
+from controller_runtime import pgdriver_client
 
 
 class PgDriverClientTests(unittest.TestCase):

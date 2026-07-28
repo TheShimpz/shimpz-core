@@ -11,10 +11,9 @@ from typing import NoReturn
 
 import docker
 import docker.errors
-import egress_policy
 import manifests
-import pgdriver_client
 from assistant_human import assistant_genesis, assistant_manifest, marketplace, oauth_account_store
+from controller_runtime import egress_policy, pgdriver_client
 from hosted_install import dynamic_assistants
 from http_boundary import runtime_state
 

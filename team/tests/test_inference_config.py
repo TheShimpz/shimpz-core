@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import inference_config
+from controller_runtime import inference_config
 
 
 class InferenceConfigTests(unittest.TestCase):

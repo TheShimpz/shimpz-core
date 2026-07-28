@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import brain_credentials_client
+from controller_runtime import brain_credentials_client
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM

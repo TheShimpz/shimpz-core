@@ -6,9 +6,9 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import NoReturn
 
-import egress_policy
+from controller_runtime import egress_policy
+from controller_runtime.local_registry import AssistantSpec
 from docker.errors import DockerException, NotFound
-from local_registry import AssistantSpec
 
 from local_support.errors import ApiProblemError as ApiProblem
 from local_support.labels import (

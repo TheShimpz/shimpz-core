@@ -9,16 +9,20 @@ ROOT = Path(__file__).resolve().parents[1]
 UV_IMAGE = "ghcr.io/astral-sh/uv:0.11.25@sha256:1e3808aa9023d0980e7c15b1fa7c1ac16ff35925780cf5c459858b2d693f01a9"
 HOSTED_ENTRYPOINTS = ("app", "healthcheck")  # Compose invokes the auxiliary healthcheck entrypoint.
 LOCAL_ENTRYPOINTS = ("local_app", "local_healthcheck")
-ROOT_RUNTIME_DATA = {"model_catalog.json"}
+ROOT_RUNTIME_DATA: set[str] = set()
 PRODUCTION_PACKAGES = {
     "assistant_human",
     "container_policy",
+    "controller_runtime",
     "hosted_install",
     "http_boundary",
     "local_support",
 }
 # Package data has no import graph; these per-image maps are its reviewed necessity authority.
-HOSTED_PACKAGE_DATA = {"assistant_human": {"assistant_human/assistant_catalog.json"}}
+HOSTED_PACKAGE_DATA = {
+    "assistant_human": {"assistant_human/assistant_catalog.json"},
+    "controller_runtime": {"controller_runtime/model_catalog.json"},
+}
 LOCAL_PACKAGE_DATA = HOSTED_PACKAGE_DATA
 DYNAMIC_IMPORT_MODULES = {"importlib", "pkgutil", "runpy"}
 

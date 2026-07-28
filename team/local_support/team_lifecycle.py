@@ -5,10 +5,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from http import HTTPStatus
 
-import brain_runtime_client
-import inference_config
-import power_journal
-import team_storage
+from controller_runtime import brain_runtime_client, inference_config, power_journal, team_storage
 from docker.errors import DockerException
 
 from local_support.egress import PROFILE

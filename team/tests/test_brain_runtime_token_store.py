@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import brain_runtime_token_store
+from controller_runtime import brain_runtime_token_store
 
 
 class BrainRuntimeTokenStoreTests(unittest.TestCase):

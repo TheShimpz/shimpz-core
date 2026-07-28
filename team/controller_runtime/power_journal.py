@@ -245,9 +245,7 @@ class PowerJournal:
         if mode != ("wal",):
             raise PowerJournalCorruptionError("Power journal could not enable its durable mode")
         self._connection.execute("PRAGMA synchronous = NORMAL")
-        checkpoint = self._connection.execute(
-            f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}"
-        ).fetchone()
+        checkpoint = self._connection.execute(f"PRAGMA wal_autocheckpoint = {WAL_AUTOCHECKPOINT_PAGES}").fetchone()
         synchronous = self._connection.execute("PRAGMA synchronous").fetchone()
         if checkpoint != (WAL_AUTOCHECKPOINT_PAGES,) or synchronous != (1,):
             raise PowerJournalCorruptionError("Power journal durability policy could not be applied")
@@ -426,16 +424,8 @@ class PowerJournal:
         return row[2:]
 
     def _forget_generation(self, generation: str) -> None:
-        self._validated_batches = {
-            key: value
-            for key, value in self._validated_batches.items()
-            if key[0] != generation
-        }
-        self._validated_results = {
-            key: value
-            for key, value in self._validated_results.items()
-            if key[0] != generation
-        }
+        self._validated_batches = {key: value for key, value in self._validated_batches.items() if key[0] != generation}
+        self._validated_results = {key: value for key, value in self._validated_results.items() if key[0] != generation}
 
     def prepare_batch(
         self,

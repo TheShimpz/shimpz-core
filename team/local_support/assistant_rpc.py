@@ -5,9 +5,9 @@ from contextlib import suppress
 from http import HTTPStatus
 from pathlib import Path
 
-import power_execution
+from controller_runtime import power_execution
+from controller_runtime.local_registry import AssistantSpec
 from docker.errors import DockerException, NotFound
-from local_registry import AssistantSpec
 
 from local_support.errors import ApiProblemError as ApiProblem
 

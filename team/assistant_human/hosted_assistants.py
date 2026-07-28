@@ -9,18 +9,20 @@ from http import HTTPStatus
 from typing import NoReturn
 
 import audit
-import brain_credentials_client
-import brain_runtime_client
-import chat_orchestrator
-import chat_turn_engine
 import docker
 import docker.errors
 import manifests
-import power_execution
-import power_journal
-import team_storage
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
+from controller_runtime import (
+    brain_credentials_client,
+    brain_runtime_client,
+    chat_orchestrator,
+    chat_turn_engine,
+    power_execution,
+    power_journal,
+    team_storage,
+)
 from http_boundary import runtime_state
 from jsonschema import Draft202012Validator
 

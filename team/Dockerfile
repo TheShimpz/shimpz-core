@@ -89,9 +89,7 @@ RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml,ro \
     UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
-COPY app.py validate.py manifests.py cleanup_state.py audit.py token_store.py \
-     team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
-     model_catalog.json egress_policy.py power_execution.py power_journal.py strict_json.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
+COPY app.py validate.py manifests.py audit.py healthcheck.py ./
 COPY assistant_human/__init__.py assistant_human/assistant_account_challenges.py \
      assistant_human/assistant_account_flow.py assistant_human/assistant_catalog.json \
      assistant_human/assistant_chat.py assistant_human/assistant_genesis.py \
@@ -103,6 +101,15 @@ COPY assistant_human/__init__.py assistant_human/assistant_account_challenges.py
      assistant_human/oauth_http_client.py assistant_human/oauth_pkce_challenges.py \
      assistant_human/oauth_providers.py assistant_human/private_state.py \
      ./assistant_human/
+COPY controller_runtime/__init__.py controller_runtime/accounts_client.py \
+     controller_runtime/brain_credentials_client.py controller_runtime/brain_runtime_client.py \
+     controller_runtime/brain_runtime_token_store.py controller_runtime/chat_orchestrator.py \
+     controller_runtime/chat_turn_engine.py controller_runtime/cleanup_state.py \
+     controller_runtime/egress_policy.py controller_runtime/inference_config.py \
+     controller_runtime/model_catalog.json controller_runtime/pgdriver_client.py \
+     controller_runtime/power_execution.py controller_runtime/power_journal.py \
+     controller_runtime/strict_json.py controller_runtime/team_storage.py \
+     controller_runtime/token_store.py ./controller_runtime/
 COPY container_policy/__init__.py container_policy/hosted_apps.py container_policy/hosted_lifecycle.py \
      container_policy/hosted_resources.py container_policy/network.py ./container_policy/
 # Keep the vendored contract authority byte-complete for its independent digest re-verification.

@@ -6,15 +6,17 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
 
-import brain_runtime_client
-import chat_orchestrator
-import chat_turn_engine
-import inference_config
 import manifests
-import power_execution
-import power_journal
 from container_policy import hosted_apps, hosted_resources
 from container_policy import network as network_policy
+from controller_runtime import (
+    brain_runtime_client,
+    chat_orchestrator,
+    chat_turn_engine,
+    inference_config,
+    power_execution,
+    power_journal,
+)
 from http_boundary import runtime_state
 
 from assistant_human import (

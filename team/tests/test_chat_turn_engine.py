@@ -14,14 +14,16 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(TESTS))
 
-import brain_runtime_client
-import chat_orchestrator
-import chat_turn_engine
 import hosted_app_fixture as hosted_harness
-import inference_config
 import local_app
-import local_registry
 from assistant_human import marketplace
+from controller_runtime import (
+    brain_runtime_client,
+    chat_orchestrator,
+    chat_turn_engine,
+    inference_config,
+    local_registry,
+)
 from local_support import chat_segment as local_chat_segment
 from local_support.chat_segment import SegmentRequest
 from local_support.chat_types import ActiveAssistant

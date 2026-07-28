@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import NoReturn
 
-import power_journal
-import strict_json
+from controller_runtime import power_journal, strict_json
 
 # A missing manifest Power is a missing resource; an unavailable connected account is an unmet
 # request precondition. Both Controllers use these statuses so their public contracts cannot drift.

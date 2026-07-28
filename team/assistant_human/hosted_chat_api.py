@@ -7,9 +7,9 @@ import secrets
 from http import HTTPStatus
 
 import audit
-import chat_turn_engine
 import docker.errors
 from container_policy import hosted_resources
+from controller_runtime import chat_turn_engine
 from http_boundary import runtime_state
 
 from assistant_human import (

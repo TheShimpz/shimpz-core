@@ -9,7 +9,7 @@ from http import HTTPStatus
 from typing import BinaryIO
 from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit
 
-import strict_json
+from controller_runtime import strict_json
 
 MAX_REQUEST_TARGET_BYTES = 512
 MAX_FILENAME_BYTES = 255

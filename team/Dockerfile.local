@@ -19,11 +19,7 @@ ARG SOURCE_DATE_EPOCH=0
 WORKDIR /app
 COPY --from=dependencies /opt/venv /opt/venv
 
-COPY local_app.py local_registry.py local_token_store.py local_healthcheck.py team_storage.py \
-    brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
-    local_chat_continuation_store.py \
-    model_catalog.json \
-    egress_policy.py power_execution.py power_journal.py strict_json.py ./
+COPY local_app.py local_healthcheck.py ./
 COPY assistant_human/__init__.py assistant_human/assistant_account_challenges.py \
     assistant_human/assistant_account_flow.py assistant_human/assistant_catalog.json \
     assistant_human/assistant_chat.py assistant_human/assistant_genesis.py \
@@ -32,9 +28,16 @@ COPY assistant_human/__init__.py assistant_human/assistant_account_challenges.py
     assistant_human/oauth_account_store.py assistant_human/oauth_broker_client.py \
     assistant_human/oauth_http_client.py assistant_human/oauth_pkce_challenges.py \
     assistant_human/oauth_providers.py assistant_human/private_state.py ./assistant_human/
+COPY controller_runtime/__init__.py controller_runtime/brain_runtime_client.py \
+    controller_runtime/brain_runtime_token_store.py controller_runtime/chat_orchestrator.py \
+    controller_runtime/chat_turn_engine.py controller_runtime/egress_policy.py \
+    controller_runtime/inference_config.py controller_runtime/local_chat_continuations.py \
+    controller_runtime/local_chat_continuation_store.py controller_runtime/local_registry.py \
+    controller_runtime/local_token_store.py controller_runtime/model_catalog.json \
+    controller_runtime/power_execution.py controller_runtime/power_journal.py \
+    controller_runtime/strict_json.py controller_runtime/team_storage.py ./controller_runtime/
 COPY container_policy/__init__.py container_policy/local.py ./container_policy/
 COPY http_boundary/__init__.py http_boundary/local.py http_boundary/stdlib.py http_boundary/strict.py ./http_boundary/
-COPY local_chat_continuations.py ./
 COPY local_support/__init__.py local_support/assistant_api.py local_support/assistant_lifecycle.py \
     local_support/assistant_resources.py local_support/assistant_rpc.py local_support/audit.py \
     local_support/chat_api.py local_support/chat_execution.py local_support/chat_pause.py \

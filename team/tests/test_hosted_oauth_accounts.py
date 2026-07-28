@@ -10,8 +10,6 @@ from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
-import brain_runtime_client
-import chat_orchestrator
 from assistant_human import (
     assistant_account_challenges,
     assistant_account_flow,
@@ -19,6 +17,7 @@ from assistant_human import (
     oauth_account_store,
     oauth_http_client,
 )
+from controller_runtime import brain_runtime_client, chat_orchestrator
 
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS))

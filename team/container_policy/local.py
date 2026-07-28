@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-import egress_policy
-from local_registry import is_digest_ref
+from controller_runtime import egress_policy
+from controller_runtime.local_registry import is_digest_ref
 
 ASSISTANT_UID = "10001:10001"
 ASSISTANT_MEMORY = 128 * 1024 * 1024

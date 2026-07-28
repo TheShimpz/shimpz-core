@@ -13,8 +13,8 @@ from unittest import mock
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
-import brain_runtime_client
 import local_app
+from controller_runtime import brain_runtime_client
 from local_controller_harness import LocalContractCase
 from local_support.chat_types import ActiveAssistant
 from local_support.validation import MAX_CHAT_ASSISTANTS

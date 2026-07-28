@@ -5,7 +5,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import chat_turn_engine
+from controller_runtime import chat_turn_engine
 from docker.errors import DockerException
 from http_boundary import local
 from http_boundary import strict as strict_http

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 import local_app
-import local_registry
+from controller_runtime import local_registry
 from local_controller_harness import LocalContractCase
 
 LOOKUP_INPUT = {"page": 1, "per_page": 25}

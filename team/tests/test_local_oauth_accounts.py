@@ -15,17 +15,19 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import brain_runtime_client
-import chat_orchestrator
-import chat_turn_engine
-import inference_config
 import local_app
-import local_registry
 from assistant_human import (
     assistant_account_challenges,
     oauth_account_service,
     oauth_account_store,
     oauth_broker_client,
+)
+from controller_runtime import (
+    brain_runtime_client,
+    chat_orchestrator,
+    chat_turn_engine,
+    inference_config,
+    local_registry,
 )
 from local_controller_harness import CURRENT_ASSISTANT_IMAGE, LocalContractCase
 from local_support.chat_segment import SegmentRequest

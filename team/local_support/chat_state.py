@@ -6,13 +6,10 @@ import time
 from http import HTTPStatus
 from typing import NoReturn
 
-import inference_config
-import local_chat_continuation_store
-import local_chat_continuations
-import team_storage
 from assistant_human import assistant_account_challenges, assistant_genesis, assistant_manifest, oauth_account_store
+from controller_runtime import inference_config, local_chat_continuation_store, local_chat_continuations, team_storage
+from controller_runtime.local_registry import AssistantSpec
 from docker.errors import DockerException
-from local_registry import AssistantSpec
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat

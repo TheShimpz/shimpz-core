@@ -19,12 +19,10 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import brain_runtime_client
 import local_app
 import manifests
-import power_execution
-import power_journal
 from container_policy import local as local_container_policy
+from controller_runtime import brain_runtime_client, power_execution, power_journal
 from hosted_app_fixture import hosted_assistants, runtime_state
 from local_support import assistant_rpc as local_assistant_rpc
 

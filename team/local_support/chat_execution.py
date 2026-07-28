@@ -3,13 +3,15 @@
 from http import HTTPStatus
 from typing import NoReturn
 
-import brain_runtime_client
-import chat_orchestrator
-import chat_turn_engine
-import inference_config
-import power_journal
 from assistant_human import assistant_account_flow, oauth_account_store
-from local_registry import validate_power_input
+from controller_runtime import (
+    brain_runtime_client,
+    chat_orchestrator,
+    chat_turn_engine,
+    inference_config,
+    power_journal,
+)
+from controller_runtime.local_registry import validate_power_input
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import required_active_assistant as _required_active_assistant

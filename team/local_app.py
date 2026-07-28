@@ -19,15 +19,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import NoReturn
 
-import brain_runtime_client
-import brain_runtime_token_store
 import docker
-import inference_config
-import local_chat_continuation_store
-import local_token_store
-import power_execution
-import power_journal
-import team_storage
 from assistant_human import (
     assistant_account_challenges,
     assistant_genesis,
@@ -37,14 +29,24 @@ from assistant_human import (
     oauth_broker_client,
     oauth_pkce_challenges,
 )
-from docker.errors import APIError, DockerException
-from local_registry import (
+from controller_runtime import (
+    brain_runtime_client,
+    brain_runtime_token_store,
+    inference_config,
+    local_chat_continuation_store,
+    local_token_store,
+    power_execution,
+    power_journal,
+    team_storage,
+)
+from controller_runtime.local_registry import (
     AssistantSpec,
     RegistryError,
     load_registry,
     validate_power_input,
     validate_power_output,
 )
+from docker.errors import APIError, DockerException
 from local_support import assistant_api as local_assistant_api
 from local_support import assistant_lifecycle as local_assistant_lifecycle
 from local_support import assistant_resources as local_assistant_resources

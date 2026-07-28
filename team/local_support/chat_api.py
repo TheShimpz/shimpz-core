@@ -2,8 +2,7 @@
 
 from http import HTTPStatus
 
-import chat_orchestrator
-import chat_turn_engine
+from controller_runtime import chat_orchestrator, chat_turn_engine
 
 from local_support.chat_segment import SegmentRequest as _ChatSegmentRequest
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat

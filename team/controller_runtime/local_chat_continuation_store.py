@@ -15,9 +15,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-import strict_json
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from controller_runtime import strict_json
 
 STATE_PATH = Path("/var/lib/shimpz-local/chat-continuations/state/continuations.json")
 KEY_PATH = Path("/var/lib/shimpz-local/chat-continuations/key/aes256.key")

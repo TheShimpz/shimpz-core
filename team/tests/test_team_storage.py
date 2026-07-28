@@ -12,7 +12,7 @@ from unittest import mock
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 
-import team_storage
+from controller_runtime import team_storage
 
 
 class TeamStorageTests(unittest.TestCase):

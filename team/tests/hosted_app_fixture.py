@@ -9,6 +9,8 @@ from pathlib import Path
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
+_CONTROLLER_RUNTIME = importlib.import_module("controller_runtime")
+
 _MODULES_BEFORE_APP_LOAD = dict(sys.modules)
 
 
@@ -84,6 +86,10 @@ def _stub(name: str, **members):
     for key, value in members.items():
         setattr(module, key, value)
     sys.modules[name] = module
+    parent_name, separator, child_name = name.rpartition(".")
+    parent = _CONTROLLER_RUNTIME if parent_name == "controller_runtime" else sys.modules.get(parent_name)
+    if separator and parent is not None:
+        setattr(parent, child_name, module)
     return module
 
 
@@ -103,17 +109,17 @@ class _PgDriverError(Exception):
     pass
 
 
-_stub("accounts_client", verify=lambda _token: None)
+_stub("controller_runtime.accounts_client", verify=lambda _token: None)
 _stub("audit", log=lambda *_args, **_kwargs: "trace")
 _stub(
-    "brain_credentials_client",
+    "controller_runtime.brain_credentials_client",
     BrainCredentialError=_BrainCredentialError,
     BrainCredentialSession=_BrainCredentialSession,
     resolve=lambda *_args: None,
     generation_is_current=lambda *_args: True,
 )
 _stub(
-    "pgdriver_client",
+    "controller_runtime.pgdriver_client",
     PgDriverError=_PgDriverError,
     provision_team=lambda _team_id: {"database_url": "postgres://scoped"},
     create_app_db=lambda *_args: {},
@@ -121,7 +127,7 @@ _stub(
     drop_team=lambda *_args: {},
     finalize_team_drop=lambda *_args: {},
 )
-_stub("token_store", ensure_token=lambda: "operator-token")
+_stub("controller_runtime.token_store", ensure_token=lambda: "operator-token")
 
 spec = importlib.util.spec_from_file_location("team_app_hosted_test", TEAM / "app.py")
 app = importlib.util.module_from_spec(spec)
@@ -167,16 +173,24 @@ for module_name in (
     "docker.errors",
     "docker.utils",
     "docker.utils.socket",
-    "accounts_client",
+    "controller_runtime.accounts_client",
     "audit",
-    "brain_credentials_client",
-    "pgdriver_client",
-    "token_store",
+    "controller_runtime.brain_credentials_client",
+    "controller_runtime.pgdriver_client",
+    "controller_runtime.token_store",
 ):
+    current = sys.modules.get(module_name)
     previous = _MODULES_BEFORE_APP_LOAD.get(module_name)
     if previous is None:
         sys.modules.pop(module_name, None)
     else:
         sys.modules[module_name] = previous
+    parent_name, separator, child_name = module_name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if separator and parent is not None:
+        if previous is None and getattr(parent, child_name, None) is current:
+            delattr(parent, child_name)
+        elif previous is not None:
+            setattr(parent, child_name, previous)
 
 ANCHOR_ID = "a" * 64

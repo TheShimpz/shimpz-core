@@ -4,7 +4,7 @@ import hashlib
 import re
 from http import HTTPStatus
 
-import inference_config
+from controller_runtime import inference_config
 
 from local_support.errors import ApiProblemError
 

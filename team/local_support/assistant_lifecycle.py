@@ -4,11 +4,11 @@ from collections.abc import Callable
 from contextlib import suppress
 from http import HTTPStatus
 
-import power_execution
 from container_policy import local as local_container_policy
+from controller_runtime import power_execution
+from controller_runtime.local_registry import AssistantSpec
 from docker.errors import DockerException, NotFound
 from docker.types import LogConfig, Ulimit
-from local_registry import AssistantSpec
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.errors import ApiProblemError as ApiProblem

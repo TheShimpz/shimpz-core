@@ -28,7 +28,7 @@ KIND_LABEL = "com.shimpz.local.kind"
 LOCAL_PROFILE = "single-owner-local-v1"
 
 sys.path.insert(0, str(TEAM))
-import power_execution
+from controller_runtime import power_execution
 from docker_harness import DockerHarnessMixin
 from local_app import half_cpu_set
 

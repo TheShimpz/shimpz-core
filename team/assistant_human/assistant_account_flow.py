@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
-import brain_runtime_client
+from controller_runtime import brain_runtime_client
 
 from assistant_human import assistant_account_challenges, oauth_providers
 

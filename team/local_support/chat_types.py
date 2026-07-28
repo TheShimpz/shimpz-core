@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from http import HTTPStatus
 
-import local_chat_continuations
-from local_registry import AssistantSpec
+from controller_runtime import local_chat_continuations
+from controller_runtime.local_registry import AssistantSpec
 
 from local_support.errors import ApiProblemError
 

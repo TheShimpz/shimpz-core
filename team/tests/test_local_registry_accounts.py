@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import local_registry
 from assistant_human import assistant_manifest, marketplace
+from controller_runtime import local_registry
 
 
 class LocalRegistryAccountTests(unittest.TestCase):

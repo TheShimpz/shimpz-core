@@ -13,12 +13,9 @@ from unittest import mock
 
 TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
-import inference_config
 import local_app
-import local_chat_continuation_store
 import local_healthcheck
-import local_registry
-import local_token_store
+from controller_runtime import inference_config, local_chat_continuation_store, local_registry, local_token_store
 from local_controller_harness import LocalContractCase
 from local_support import assistant_lifecycle
 from local_support import audit as local_audit

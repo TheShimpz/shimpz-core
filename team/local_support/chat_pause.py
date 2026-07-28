@@ -2,9 +2,8 @@
 
 from http import HTTPStatus
 
-import chat_orchestrator
-import chat_turn_engine
 from assistant_human import assistant_account_challenges, assistant_account_flow
+from controller_runtime import chat_orchestrator, chat_turn_engine
 
 from local_support.chat_types import ActiveAssistant as _ActiveAssistant
 from local_support.chat_types import PendingLocalChat as _PendingLocalChat

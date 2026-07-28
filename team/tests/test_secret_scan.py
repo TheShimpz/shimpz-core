@@ -10,7 +10,7 @@ TEAM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TEAM))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import power_execution
+from controller_runtime import power_execution
 
 SECRET = "private-test-credential-123456789"
 

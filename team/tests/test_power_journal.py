@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import power_journal
+from controller_runtime import power_journal
 
 
 def operation(interrupt_id: str, value: str) -> power_journal.Operation:
@@ -111,10 +111,7 @@ class PowerJournalTests(unittest.TestCase):
 
     def test_power_loss_model_bounds_acknowledged_state_loss(self) -> None:
         journal = self.journal()
-        operations = tuple(
-            operation(f"interrupt-{index}", f"validated-input-{index}")
-            for index in range(16)
-        )
+        operations = tuple(operation(f"interrupt-{index}", f"validated-input-{index}") for index in range(16))
         batch = journal.prepare_batch("generation-1", "thread-1", operations)
         self.assertEqual(
             journal._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(),
