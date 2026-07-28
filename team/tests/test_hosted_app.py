@@ -223,6 +223,32 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             self.assertEqual(hosted_apps._registered_app_ready_now(container, spec), (True, "running"))
         probe.assert_not_called()
 
+    def test_teardown_requires_the_current_database_label(self) -> None:
+        for db_label, expected_drop in (("0", False), ("1", True)):
+            container = types.SimpleNamespace(
+                attrs={},
+                labels={"team.app.db": db_label},
+                reload=mock.Mock(),
+            )
+            with (
+                self.subTest(db_label=db_label),
+                mock.patch.object(network_policy, "app_identity_valid", return_value=True),
+            ):
+                self.assertEqual(
+                    hosted_apps._admit_teardown_app("team_1", "assistant", container, True),
+                    (container, expected_drop),
+                )
+
+        for labels in ({}, {"team.app.db": "yes"}):
+            container = types.SimpleNamespace(attrs={}, labels=labels, reload=mock.Mock())
+            with (
+                self.subTest(labels=labels),
+                mock.patch.object(network_policy, "app_identity_valid", return_value=True),
+            ):
+                rejected = hosted_apps._admit_teardown_app("team_1", "assistant", container, True)
+            self.assertIsInstance(rejected, hosted_resources._CleanupResult)
+            self.assertFalse(rejected.complete)
+
     def test_manifest_mismatch_rolls_back_before_policy_proxy_or_start(self) -> None:
         events: list[object] = []
         spec = marketplace.APPS["shimpz-cloudflare"]

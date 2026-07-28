@@ -422,10 +422,9 @@ def _admit_teardown_app(team_id: str, app_id: str, container, drop_db: bool):
             # A deterministic-name collision or drifted ownership label is not ours to delete.
             return hosted_resources._CleanupResult(False, not drop_db)
         db_label = container.labels.get("team.app.db")
-        if db_label not in (None, "0", "1"):
+        if db_label not in ("0", "1"):
             return hosted_resources._CleanupResult(False, not drop_db)
-            # Missing means a legacy App from before the label existed; conservatively assume it has a DB.
-        drop_db = drop_db and db_label != "0"
+        drop_db = drop_db and db_label == "1"
     return container, drop_db
 
 
