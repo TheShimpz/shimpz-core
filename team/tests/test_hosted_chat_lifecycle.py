@@ -120,7 +120,7 @@ class HostedChatLifecycleTests(unittest.TestCase):
                 hosted_assistants,
                 _active_team_assistants=lambda _team_id: (assistant,),
                 _chat_file_metadata=lambda _team_id, _files: [],
-                _installed_assistant=lambda _team_id, assistant_id, *_args: (
+                _installed_assistant=lambda _team_id, assistant_id, *_args, **_kwargs: (
                     assistant_id,
                     contract,
                     assistant.container,

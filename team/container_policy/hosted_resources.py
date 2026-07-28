@@ -79,12 +79,16 @@ def _require_team_runtime() -> None:
         )
 
 
-def _team_runtime(container) -> str:
+def _team_runtime(container, *, refresh: bool = True) -> str:
     """Return Docker's immutable runtime selection for one existing Team."""
-    try:
-        container.reload()
-    except docker.errors.DockerException as exc:
-        raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "cannot verify Team runtime isolation") from exc
+    if refresh:
+        try:
+            container.reload()
+        except docker.errors.DockerException as exc:
+            raise runtime_state.ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "cannot verify Team runtime isolation",
+            ) from exc
     runtime = container.attrs.get("HostConfig", {}).get("Runtime")
     return str(runtime or "runc")
 
@@ -124,7 +128,11 @@ def _prepare_marketplace_image(spec: marketplace.AppSpec) -> None:
         raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
-def _trusted_workload_image(container, team_id: str) -> tuple[str, str, bool]:
+def _trusted_workload_image(
+    container,
+    team_id: str,
+    workload_spec: marketplace.AppSpec | None = None,
+) -> tuple[str, str, bool]:
     """Resolve this exact workload role's configured ref to the currently trusted immutable ID."""
     labels = container.attrs.get("Config", {}).get("Labels", {})
     compact_app_runtime = False
@@ -134,7 +142,7 @@ def _trusted_workload_image(container, team_id: str) -> tuple[str, str, bool]:
         image_ref = provider_spec.get("image") if provider_spec is not None else None
     else:
         app_id = labels.get("team.app")
-        app_spec = marketplace.APPS.get(app_id) if isinstance(app_id, str) else None
+        app_spec = workload_spec or (marketplace.APPS.get(app_id) if isinstance(app_id, str) else None)
         if app_spec is None and isinstance(app_id, str):
             try:
                 binding = runtime_state._dynamic_assistants.get(team_id, app_id)
@@ -157,10 +165,12 @@ def _require_team_isolation_mode(
     container,
     *,
     require_running: bool,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
+    refreshed: bool = False,
+    workload_spec: marketplace.AppSpec | None = None,
 ) -> None:
     """Validate exact static posture, plus live network membership whenever the workload is running."""
-    runtime = _team_runtime(container)
+    runtime = _team_runtime(container, refresh=not refreshed)
     if runtime != manifests.RUNTIME:
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE,
@@ -180,7 +190,7 @@ def _require_team_isolation_mode(
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE, "Team isolation is blocked: invalid workload identity"
         )
-    image_ref, image_id, compact_app_runtime = _trusted_workload_image(container, team_id)
+    image_ref, image_id, compact_app_runtime = _trusted_workload_image(container, team_id, workload_spec)
     if not network_policy.workload_security_valid(
         container.attrs,
         team_id,
@@ -194,13 +204,18 @@ def _require_team_isolation_mode(
             "Team isolation is blocked: workload security or network attachment drifted; destroy and recreate the Team",
         )
     kind = network_policy.CORE_KIND
-    try:
-        network = runtime_state._docker.networks.get(network_policy.network_name(team_id, kind))
-    except docker.errors.DockerException as exc:
-        raise runtime_state.ApiError(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            "Team isolation is blocked: required network is missing",
-        ) from exc
+    network_key = f"network:{team_id}:{kind}"
+    network = inspect_memo.get(network_key) if inspect_memo is not None else None
+    if network is None:
+        try:
+            network = runtime_state._docker.networks.get(network_policy.network_name(team_id, kind))
+        except docker.errors.DockerException as exc:
+            raise runtime_state.ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Team isolation is blocked: required network is missing",
+            ) from exc
+        if inspect_memo is not None:
+            inspect_memo[network_key] = network
     _require_network_policy(
         network,
         team_id,
@@ -241,10 +256,19 @@ def _require_team_isolation(container) -> None:
 
 def _require_running_team_isolation(
     container,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
+    *,
+    refreshed: bool = False,
+    workload_spec: marketplace.AppSpec | None = None,
 ) -> None:
     """Require a running workload and its complete live core-network membership."""
-    _require_team_isolation_mode(container, require_running=True, inspect_memo=inspect_memo)
+    _require_team_isolation_mode(
+        container,
+        require_running=True,
+        inspect_memo=inspect_memo,
+        refreshed=refreshed,
+        workload_spec=workload_spec,
+    )
 
 
 def _team_not_running(container) -> bool:
@@ -513,11 +537,13 @@ def _reserve_capacity(
 
 def _network_container_metadata(
     network,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
 ) -> dict[str, dict]:
     network_id = getattr(network, "id", None)
-    if inspect_memo is not None and isinstance(network_id, str) and network_id in inspect_memo:
-        return inspect_memo[network_id]
+    memo_key = f"members:{network_id}"
+    cached = inspect_memo.get(memo_key) if inspect_memo is not None else None
+    if isinstance(cached, dict):
+        return cached
     try:
         network.reload()
         member_ids = network.attrs.get("Containers", {})
@@ -542,7 +568,7 @@ def _network_container_metadata(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     "cannot verify Team network isolation",
                 )
-            inspect_memo[network_id] = containers
+            inspect_memo[memo_key] = containers
         return containers
 
 
@@ -553,7 +579,7 @@ def _require_network_policy(
     *,
     require_brain: bool,
     require_dependencies: bool,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
 ) -> None:
     containers = _network_container_metadata(network, inspect_memo)
     if not network_policy.network_members_valid(

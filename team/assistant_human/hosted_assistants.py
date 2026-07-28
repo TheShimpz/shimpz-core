@@ -117,10 +117,12 @@ def _close_exec_stream(stream) -> None:
 def _installed_assistant(
     team_id: str,
     assistant_id: object,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
     candidate=None,
+    dynamic_bindings: dict[str, object] | None = None,
+    egress_store=None,
 ):
-    assistant_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id)
+    assistant_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id, dynamic_bindings)
     contract = spec.assistant
     if contract is None:
         raise runtime_state.ApiError(HTTPStatus.NOT_FOUND, f"{assistant_id!r} is not an Assistant")
@@ -135,42 +137,47 @@ def _installed_assistant(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "Assistant Power execution is blocked until this Assistant is reinstalled",
             )
-    if candidate is None:
-        try:
-            container.reload()
-        except docker.errors.DockerException as exc:
-            raise runtime_state.ApiError(
-                HTTPStatus.SERVICE_UNAVAILABLE, "installed Assistant could not be verified"
-            ) from exc
     if (
         not network_policy.app_identity_valid(container.attrs, team_id, assistant_id)
         or str(container.attrs.get("Config", {}).get("Image", "")) != spec.image
     ):
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "installed Assistant failed its identity contract")
-    hosted_resources._require_running_team_isolation(container, inspect_memo)
+    hosted_resources._require_running_team_isolation(
+        container,
+        inspect_memo,
+        refreshed=True,
+        workload_spec=spec,
+    )
     allowed_hosts = hosted_apps._require_assistant_allowed_hosts(spec, container)
-    egress_store = hosted_apps._egress_store()
-    token = hosted_apps._validate_admitted_egress(team_id, assistant_id, allowed_hosts, egress_store)
-    hosted_apps._validate_assistant_proxy_environment(container, token, allowed_hosts, egress_store)
+    current_egress_store = egress_store if egress_store is not None else hosted_apps._egress_store()
+    token = hosted_apps._validate_admitted_egress(team_id, assistant_id, allowed_hosts, current_egress_store)
+    hosted_apps._validate_assistant_proxy_environment(container, token, allowed_hosts, current_egress_store)
     return assistant_id, contract, container
 
 
 def _active_team_assistants(team_id: str) -> tuple[_ActiveAssistant, ...]:
     active: list[_ActiveAssistant] = []
     seen: set[str] = set()
-    inspect_memo: dict[str, dict[str, dict]] = {}
+    inspect_memo: dict[str, object] = {}
     try:
         installed = hosted_apps._team_app_containers(team_id)
     except docker.errors.DockerException as exc:
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE, "installed Assistants could not be listed"
         ) from exc
+    candidate_ids = tuple(
+        assistant_id
+        for candidate in installed
+        if isinstance((assistant_id := (candidate.labels or {}).get("team.app")), str)
+    )
+    dynamic_bindings = hosted_apps._dynamic_binding_snapshot(team_id, candidate_ids)
+    egress_store = hosted_apps._egress_store() if candidate_ids else None
     for candidate in installed:
         assistant_id = (candidate.labels or {}).get("team.app")
         if not isinstance(assistant_id, str):
             continue
         try:
-            _resolved_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id)
+            _resolved_id, spec = hosted_apps._resolve_team_app(team_id, assistant_id, dynamic_bindings)
         except marketplace.MarketplaceError:
             continue
         if spec.assistant is None:
@@ -190,6 +197,8 @@ def _active_team_assistants(team_id: str) -> tuple[_ActiveAssistant, ...]:
             assistant_id,
             inspect_memo,
             candidate,
+            dynamic_bindings,
+            egress_store,
         )
         seen.add(current_id)
         active.append(_ActiveAssistant(current_id, contract, container, spec.image))
@@ -468,7 +477,7 @@ class PowerInvocationRequest:
     container: object
     power: object
     payload: object
-    inspect_memo: dict[str, dict[str, dict]] | None = None
+    inspect_memo: dict[str, object] | None = None
 
 
 def _invoke_assistant_power(request: PowerInvocationRequest) -> dict[str, object]:

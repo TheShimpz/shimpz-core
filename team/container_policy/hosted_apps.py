@@ -88,7 +88,11 @@ def _team_app_containers(team_id: str) -> list:
     return runtime_state._docker.containers.list(all=True, filters={"label": ["team.app.driver", f"team.id={team_id}"]})
 
 
-def _resolve_team_app(team_id: str, app_id: object) -> tuple[str, marketplace.AppSpec]:
+def _resolve_team_app(
+    team_id: str,
+    app_id: object,
+    dynamic_bindings: dict[str, dynamic_assistants.DynamicAssistantBinding] | None = None,
+) -> tuple[str, marketplace.AppSpec]:
     """Resolve a static catalog entry or this Team's exact durable dynamic binding."""
     assistant_id = marketplace.validate_app_id(app_id)
     if assistant_id in marketplace.RESERVED_APP_IDS:
@@ -97,10 +101,34 @@ def _resolve_team_app(team_id: str, app_id: object) -> tuple[str, marketplace.Ap
     if static is not None:
         return assistant_id, static
     try:
-        binding = runtime_state._dynamic_assistants.get(team_id, assistant_id)
+        binding = (
+            runtime_state._dynamic_assistants.get(team_id, assistant_id)
+            if dynamic_bindings is None
+            else dynamic_bindings.get(assistant_id)
+        )
         if binding is None:
             raise marketplace.MarketplaceError(f"app {assistant_id!r} is not deployable in this Team")
         return assistant_id, dynamic_assistants.app_spec(binding)
+    except dynamic_assistants.DynamicAssistantError as exc:
+        raise runtime_state.ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "dynamic Assistant metadata is unavailable",
+        ) from exc
+
+
+def _dynamic_binding_snapshot(
+    team_id: str,
+    app_ids: tuple[str, ...],
+) -> dict[str, dynamic_assistants.DynamicAssistantBinding]:
+    dynamic_ids = frozenset(app_id for app_id in app_ids if app_id not in marketplace.APPS)
+    if not dynamic_ids:
+        return {}
+    try:
+        return {
+            binding.assistant_id: binding
+            for binding in runtime_state._dynamic_assistants.list(team_id)
+            if binding.assistant_id in dynamic_ids
+        }
     except dynamic_assistants.DynamicAssistantError as exc:
         raise runtime_state.ApiError(
             HTTPStatus.SERVICE_UNAVAILABLE,

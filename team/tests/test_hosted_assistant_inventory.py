@@ -36,7 +36,7 @@ class HostedAssistantInventoryTests(unittest.TestCase):
 
         admitted_candidates = []
 
-        def installed(_team_id: str, assistant_id: str, inspect_memo, candidate):
+        def installed(_team_id: str, assistant_id: str, inspect_memo, candidate, *_args):
             admitted_candidates.append(candidate)
             hosted_resources._network_container_metadata(network, inspect_memo)
             return assistant_id, spec.assistant, candidate

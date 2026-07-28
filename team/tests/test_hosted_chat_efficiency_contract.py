@@ -70,6 +70,10 @@ class CountingDynamicStore:
         self._calls["registry.read"] += 1
         return self._bindings.get(assistant_id) if team_id == TEAM_ID else None
 
+    def list(self, team_id: str):
+        self._calls["registry.read"] += 1
+        return tuple(self._bindings.values()) if team_id == TEAM_ID else ()
+
 
 class CountingEgressStore:
     def __init__(self, calls: Counter) -> None:
@@ -226,7 +230,7 @@ class HostedCheckHarness:
 
 
 class HostedChatEfficiencyContractTests(unittest.TestCase):
-    def test_one_context_check_records_the_complete_preoptimization_baseline(self) -> None:
+    def test_one_context_check_reuses_only_intraboundary_evidence(self) -> None:
         assistants = 2
         members = 3
         harness = HostedCheckHarness(assistants, members)
@@ -235,9 +239,9 @@ class HostedChatEfficiencyContractTests(unittest.TestCase):
 
         self.assertEqual(identity[0], ANCHOR_ID)
         self.assertEqual(harness.calls["docker.containers.get"], 1 + assistants + members)
-        self.assertEqual(harness.calls["container.reload"], 2 + 2 * assistants)
+        self.assertEqual(harness.calls["container.reload"], 0)
         self.assertEqual(harness.calls["docker.images.get"], 1 + assistants)
-        self.assertEqual(harness.calls["docker.networks.get"], 1 + assistants)
+        self.assertEqual(harness.calls["docker.networks.get"], 1)
         self.assertEqual(harness.calls["network.reload"], 1)
         self.assertEqual(
             sum(
@@ -245,16 +249,36 @@ class HostedChatEfficiencyContractTests(unittest.TestCase):
                 for name, value in harness.calls.items()
                 if name.startswith(("docker.", "container.", "network."))
             ),
-            6 + members + 5 * assistants,
+            4 + members + 2 * assistants,
         )
-        self.assertEqual(harness.calls["registry.read"], 2 * assistants)
-        self.assertEqual(harness.calls["registry.validate"], 2 * assistants)
-        self.assertEqual(harness.calls["egress.store"], assistants)
+        self.assertEqual(harness.calls["registry.read"], 1)
+        self.assertEqual(harness.calls["registry.validate"], assistants)
+        self.assertEqual(harness.calls["egress.store"], 1)
         self.assertEqual(harness.calls["egress.file-read"], 2 * assistants)
         self.assertEqual(harness.calls["sqlite.connect"], 1)
         self.assertEqual(harness.calls["sqlite.query"], 1)
         self.assertEqual(harness.calls["inference.read"], 1)
         self.assertEqual(harness.calls["credential.query"], 1)
+
+    def test_live_evidence_is_collected_again_on_the_next_context_check(self) -> None:
+        harness = HostedCheckHarness(2, 3)
+        evidence = (
+            "docker.containers.get",
+            "docker.images.get",
+            "docker.networks.get",
+            "network.reload",
+            "registry.read",
+            "egress.file-read",
+            "sqlite.query",
+            "inference.read",
+            "credential.query",
+        )
+
+        harness.run()
+        first = {name: harness.calls[name] for name in evidence}
+        harness.run()
+
+        self.assertTrue(all(harness.calls[name] == 2 * first[name] for name in evidence))
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ import assistant_account_flow
 import brain_runtime_client
 import chat_orchestrator
 import chat_turn_engine
-import docker.errors
 import inference_config
 import manifests
 import marketplace
@@ -29,22 +28,18 @@ def _current_team_anchor(
     team_id: str,
     container_id: str,
     owner: str,
-    inspect_memo: dict[str, dict[str, dict]] | None = None,
+    inspect_memo: dict[str, object] | None = None,
 ):
     container = hosted_resources._get_container(manifests.team_container_name(team_id))
     if container is None:
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team identity changed during the chat turn")
-    try:
-        container.reload()
-    except docker.errors.DockerException as exc:
-        raise runtime_state.ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "Team identity could not be inspected") from exc
     if (
         container.id != container_id
         or not network_policy.brain_identity_valid(container.attrs, team_id)
         or str(container.labels.get("team.owner", "")) != owner
     ):
         raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team identity changed during the chat turn")
-    hosted_resources._require_running_team_isolation(container, inspect_memo)
+    hosted_resources._require_running_team_isolation(container, inspect_memo, refreshed=True)
     return container
 
 
@@ -145,7 +140,7 @@ def _hosted_chat_current_identity(
     assistants: tuple[hosted_assistants._ActiveAssistant, ...],
     config: inference_config.InferenceConfig | None,
     generation: int,
-    inspect_memo: dict[str, dict[str, dict]],
+    inspect_memo: dict[str, object],
 ) -> tuple[object, ...]:
     if config is None:
         raise AssertionError("hosted chat segment was not prepared")
@@ -156,8 +151,19 @@ def _hosted_chat_current_identity(
         inspect_memo,
     )
     team_name = hosted_resources._team_name_from_anchor(current_anchor)
+    dynamic_bindings = hosted_apps._dynamic_binding_snapshot(
+        request.team_id,
+        tuple(active.assistant_id for active in assistants),
+    )
+    egress_store = hosted_apps._egress_store() if assistants else None
     current_assistants = tuple(
-        hosted_assistants._installed_assistant(request.team_id, active.assistant_id, inspect_memo)[2]
+        hosted_assistants._installed_assistant(
+            request.team_id,
+            active.assistant_id,
+            inspect_memo,
+            dynamic_bindings=dynamic_bindings,
+            egress_store=egress_store,
+        )[2]
         for active in assistants
     )
     files = hosted_assistants._chat_file_metadata(request.team_id, request.file_ids)
@@ -186,7 +192,7 @@ def _execute_hosted_power(
     team_id: str,
     token: str,
     bindings: dict[str, hosted_assistants._ActiveAssistant],
-    inspect_memo: dict[str, dict[str, dict]],
+    inspect_memo: dict[str, object],
     request: brain_runtime_client.PowerRequest,
 ) -> object:
     active = bindings.get(request.assistant_id)
@@ -220,7 +226,7 @@ def _run_hosted_chat_segment(request: HostedChatSegmentRequest) -> chat_turn_eng
     config: inference_config.InferenceConfig | None = None
     generation = 0
     prepared_assistants: tuple[hosted_assistants._ActiveAssistant, ...] = ()
-    inspect_memo: dict[str, dict[str, dict]] = {}
+    inspect_memo: dict[str, object] = {}
 
     def require_current_credential() -> None:
         if config is None:
