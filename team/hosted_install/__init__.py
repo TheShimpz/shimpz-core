@@ -1,3 +1,3 @@
 """Published Assistant installation and trust boundaries."""
 
-# Keep this package import-free: healthcheck loads dynamic_assistants with the SDK-free system interpreter.
+# Keep imports explicit so probes do not construct clients from unrelated sibling modules at package import time.

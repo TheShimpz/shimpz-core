@@ -96,10 +96,11 @@ class StaticTeamDriverImageContractTests(unittest.TestCase):
             hosted_files,
             {path for path in imported_paths if path.startswith("hosted_install/")},
         )
-        package_tree = ast.parse((ROOT / "hosted_install" / "__init__.py").read_text(encoding="utf-8"))
-        self.assertFalse(
-            [node for node in ast.walk(package_tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
-        )
+        for package in ("container_policy", "hosted_install"):
+            package_tree = ast.parse((ROOT / package / "__init__.py").read_text(encoding="utf-8"))
+            self.assertFalse(
+                [node for node in ast.walk(package_tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+            )
 
     def test_static_image_keeps_brain_access_and_private_state_narrow(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

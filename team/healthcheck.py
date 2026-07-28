@@ -1,12 +1,13 @@
-#!/usr/local/bin/python3
+#!/opt/venv/bin/python
 """Docker HEALTHCHECK probe: runtime/images/topology readiness and auth-gate enforcement.
 
-The system interpreter intentionally has no docker SDK, so daemon checks read Docker's local Unix
-socket with stdlib HTTP. The configured hostile-tenant runtime must remain bound to the reviewed absolute
-handler while Docker advertises its built-in seccomp and AppArmor defaults; every advertised Brain image
-must be present, and every existing Team Brain/App must actually use that runtime. The probe never
-accepts Docker's default runc, a legacy workload, or a missing provider as a fallback. Then an
-unauthenticated driver GET must be refused with 403 — a 2xx means the auth gate is not enforced.
+The probe reads raw Engine responses over Docker's local Unix socket with stdlib HTTP, avoiding client
+construction and keeping its startup dependency closure narrow. The configured hostile-tenant runtime
+must remain bound to the reviewed absolute handler while Docker advertises its built-in seccomp and
+AppArmor defaults; every advertised Brain image must be present, and every existing Team Brain/App
+must actually use that runtime. The probe never accepts Docker's default runc, a running workload left
+by an older controller, or a missing provider as a fallback. Then an unauthenticated driver GET must be
+refused with 403 — a 2xx means the auth gate is not enforced.
 """
 
 import http.client
@@ -177,7 +178,7 @@ def _stopped_unbound_dynamic_app(
     app_id = labels.get("team.app")
     if not isinstance(team_id, str) or not team_id or not isinstance(app_id, str) or not app_id:
         return False
-    return (team_id, app_id) not in bindings
+    return app_id not in marketplace.APPS and (team_id, app_id) not in bindings
 
 
 def _inspect_workloads(

@@ -491,6 +491,14 @@ def test_health_tolerates_only_stopped_unbound_dynamic_apps() -> None:
             "a stopped orphan that can restart automatically still fails closed",
         )
         orphan["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        orphan["Config"]["Labels"]["team.app"] = "notification-center"
+        orphan["HostConfig"]["IpcMode"] = "host"
+        check(
+            team_healthcheck._inspect_workloads(summaries) is None,
+            "a static App mislabeled as dynamic cannot use the stopped-orphan exception",
+        )
+        orphan["Config"]["Labels"]["team.app"] = "orphan"
+        orphan["HostConfig"].pop("IpcMode")
         team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(
             snapshot=lambda: (_ for _ in ()).throw(
                 team_healthcheck.dynamic_assistants.DynamicAssistantError("unavailable")
