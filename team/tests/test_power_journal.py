@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
+import os
 import sqlite3
 import stat
 import tempfile
@@ -13,6 +15,19 @@ import power_journal
 
 def operation(interrupt_id: str, value: str) -> power_journal.Operation:
     return power_journal.Operation(interrupt_id, hashlib.sha256(value.encode()).hexdigest())
+
+
+def _crash_after_acknowledged_transition(path: str, phase: str) -> None:
+    journal = power_journal.PowerJournal(Path(path))
+    selected = operation("interrupt-1", "validated-input-1")
+    batch = journal.prepare_batch("generation-1", "thread-1", [selected])
+    if phase in {"executing", "completed", "delivered"}:
+        journal.begin(batch, selected)
+    if phase in {"completed", "delivered"}:
+        journal.complete(batch, selected, {"answer": 1})
+    if phase == "delivered":
+        journal.delivered(batch)
+    os._exit(0)
 
 
 class PowerJournalTests(unittest.TestCase):
@@ -56,6 +71,32 @@ class PowerJournalTests(unittest.TestCase):
         same = reopened.prepare_batch("generation-1", "thread-1", [self.first])
         with self.assertRaises(power_journal.PowerJournalUncertainError):
             reopened.begin(same, self.first)
+
+    def test_process_crash_loses_no_acknowledged_transition(self) -> None:
+        expected = {
+            "prepared": ("prepared", None),
+            "executing": ("executing", None),
+            "completed": ("completed", b'{"answer":1}'),
+            "delivered": None,
+        }
+        context = multiprocessing.get_context("spawn")
+        for phase, persisted in expected.items():
+            with self.subTest(phase=phase):
+                path = Path(self.temporary.name) / phase / "journal.sqlite3"
+                process = context.Process(
+                    target=_crash_after_acknowledged_transition,
+                    args=(str(path), phase),
+                )
+                process.start()
+                process.join(timeout=10)
+                self.assertEqual(process.exitcode, 0)
+
+                reopened = power_journal.PowerJournal(path)
+                self.addCleanup(reopened.close)
+                row = reopened._connection.execute(
+                    "SELECT state, result FROM operations WHERE generation = 'generation-1'"
+                ).fetchone()
+                self.assertEqual(row, persisted)
 
     def test_changed_pending_batch_and_changed_completed_result_fail_closed(self) -> None:
         journal = self.journal()
