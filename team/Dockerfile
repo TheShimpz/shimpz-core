@@ -110,6 +110,7 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
         /var/lib/team-driver/dynamic-assistants \
+        /var/lib/team-driver/cosign \
         /app-egress-policy /run/shimpz-braincred-unseal /run/shimpz-accounts-brain-resolve \
         /run/shimpz-brain-runtime \
     && chown teamdriver:shimpzteamdriver-token /run/shimpz-teamdriver && chmod 750 /run/shimpz-teamdriver \
@@ -127,6 +128,7 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
         /var/lib/team-driver/assistant-accounts/state \
         /var/lib/team-driver/assistant-accounts/key \
         /var/lib/team-driver/dynamic-assistants \
+        /var/lib/team-driver/cosign \
     && chown teamdriver:shimpzapp-egress-policy /app-egress-policy \
     && chmod 0770 /app-egress-policy
 

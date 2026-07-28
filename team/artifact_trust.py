@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -33,11 +34,13 @@ class ArtifactTrustVerifier:
         *,
         container_id: str | None = None,
         credentials: registry_auth.RegistryAuth,
+        trust_root: Path,
     ) -> None:
         self._docker = docker_client
         self._binary = binary
         self._container_id = _self_container_id() if container_id is None else container_id
         self._credentials = credentials
+        self._trust_root = _ensure_private_directory(trust_root)
 
     def verify(self, resolution: dict[str, Any]) -> None:
         if resolution["trust"]["signer_identity"] != SIGNER_IDENTITY:
@@ -135,6 +138,7 @@ class ArtifactTrustVerifier:
                         f"PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
                         f"COSIGN_REPOSITORY={TRUST_REPOSITORY}",
                         f"DOCKER_CONFIG={docker_config}",
+                        f"TUF_ROOT={self._trust_root}",
                     ],
                 )
                 execution_id = execution["Id"]
@@ -158,6 +162,22 @@ class ArtifactTrustVerifier:
                 return bytes(output)
             except (KeyError, TypeError, docker.errors.DockerException) as exc:
                 raise ArtifactTrustError("Cosign verification is unavailable") from exc
+
+
+def _ensure_private_directory(path: Path) -> Path:
+    try:
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RuntimeError("Cosign trust cache is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or path.is_symlink()
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise RuntimeError("Cosign trust cache is not a private controller directory")
+    return path
 
 
 def _self_container_id() -> str:

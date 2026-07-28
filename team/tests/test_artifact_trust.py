@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import tempfile
 import types
 import unittest
 from contextlib import nullcontext
+from pathlib import Path
 from unittest import mock
 
 from artifact_trust import SIGNER_IDENTITY, ArtifactTrustError, ArtifactTrustVerifier
@@ -56,6 +58,11 @@ def _attestation(resolution: dict[str, object]) -> list[dict[str, str]]:
 
 
 class ArtifactTrustTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary_directory.cleanup)
+        self._trust_root = Path(self._temporary_directory.name) / "trust"
+
     def _verifier(self, resolution: dict[str, object]) -> ArtifactTrustVerifier:
         digests = iter(
             (
@@ -70,7 +77,63 @@ class ArtifactTrustTests(unittest.TestCase):
             types.SimpleNamespace(images=images),
             container_id="a" * 64,
             credentials=AUTH,
+            trust_root=self._trust_root,
         )
+
+    def test_reuses_private_tuf_cache_but_not_docker_configuration(self) -> None:
+        docker_configs: list[str] = []
+
+        class Credentials:
+            def docker_config(self) -> object:
+                directory = tempfile.TemporaryDirectory()
+                docker_configs.append(directory.name)
+                return directory
+
+        api = mock.Mock()
+        api.exec_create.side_effect = ({"Id": "first"}, {"Id": "second"})
+        api.exec_start.return_value = iter(())
+        api.exec_inspect.return_value = {"ExitCode": 0}
+        verifier = ArtifactTrustVerifier(
+            types.SimpleNamespace(api=api),
+            container_id="a" * 64,
+            credentials=Credentials(),
+            trust_root=self._trust_root,
+        )
+
+        verifier._run_cosign(("verify", "first"))
+        api.exec_start.return_value = iter(())
+        verifier._run_cosign(("verify", "second"))
+
+        environments = [call.kwargs["environment"] for call in api.exec_create.call_args_list]
+        tuf_roots = [
+            next(value for value in environment if value.startswith("TUF_ROOT="))
+            for environment in environments
+        ]
+        docker_roots = [
+            next(value for value in environment if value.startswith("DOCKER_CONFIG="))
+            for environment in environments
+        ]
+        homes = [
+            next(value for value in environment if value.startswith("HOME="))
+            for environment in environments
+        ]
+        self.assertEqual(tuf_roots, [f"TUF_ROOT={self._trust_root}"] * 2)
+        self.assertNotEqual(docker_roots[0], docker_roots[1])
+        self.assertNotEqual(homes[0], homes[1])
+        self.assertEqual(self._trust_root.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(all(not Path(path).exists() for path in docker_configs))
+        self.assertTrue(all(not Path(value.removeprefix("HOME=")).exists() for value in homes))
+
+    def test_rejects_a_non_private_tuf_cache(self) -> None:
+        self._trust_root.mkdir(mode=0o755)
+
+        with self.assertRaisesRegex(RuntimeError, "not a private"):
+            ArtifactTrustVerifier(
+                types.SimpleNamespace(),
+                container_id="a" * 64,
+                credentials=AUTH,
+                trust_root=self._trust_root,
+            )
 
     def test_accepts_signature_provenance_and_exact_attachment_digests(self) -> None:
         resolution = copy.deepcopy(RESOLUTION)

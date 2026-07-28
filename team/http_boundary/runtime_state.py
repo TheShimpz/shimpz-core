@@ -107,6 +107,12 @@ DYNAMIC_ASSISTANT_PATH = Path(
         "/var/lib/team-driver/dynamic-assistants/bindings.json",
     )
 )
+COSIGN_TRUST_ROOT = Path(
+    os.environ.get(
+        "SHIMPZ_TEAM_COSIGN_TRUST_ROOT",
+        "/var/lib/team-driver/cosign",
+    )
+)
 HEALTH_RETRIES = int(os.environ.get("SHIMPZ_HEALTH_RETRIES", "40"))
 HEALTH_DELAY_SECONDS = float(os.environ.get("SHIMPZ_HEALTH_DELAY_SECONDS", "1.5"))
 
@@ -259,6 +265,7 @@ def _initialize_developers_integration() -> None:
     _artifact_trust = artifact_trust.ArtifactTrustVerifier(
         _docker,
         credentials=_registry_auth,
+        trust_root=COSIGN_TRUST_ROOT,
     )
 
 
