@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import secrets
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -19,6 +21,10 @@ import validate
 from http_boundary import runtime_state
 
 from container_policy import network as network_policy
+
+_CAPACITY_SNAPSHOT_MAX_ATTEMPTS = 8
+_CAPACITY_RETRY_BASE_SECONDS = 0.002
+_CAPACITY_RETRY_MAX_SECONDS = 0.05
 
 
 def _validated_team_name(value: object) -> str:
@@ -508,7 +514,7 @@ def _reserve_capacity(
         memory_bytes=requested,
         team_slot=team_slot,
     )
-    while True:
+    for attempt in range(_CAPACITY_SNAPSHOT_MAX_ATTEMPTS):
         with runtime_state._capacity_lock:
             if key in runtime_state._capacity_reservations:
                 raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team resource admission is already in progress")
@@ -520,12 +526,23 @@ def _reserve_capacity(
         with runtime_state._capacity_lock:
             if key in runtime_state._capacity_reservations:
                 raise runtime_state.ApiError(HTTPStatus.CONFLICT, "Team resource admission is already in progress")
-            if generation != runtime_state._capacity_generation:
-                continue
-            _validate_capacity(reservation, physical, usage, existing)
-            runtime_state._capacity_reservations[key] = reservation
-            runtime_state._capacity_generation += 1
-            break
+            generation_changed = generation != runtime_state._capacity_generation
+            if not generation_changed:
+                _validate_capacity(reservation, physical, usage, existing)
+                runtime_state._capacity_reservations[key] = reservation
+                runtime_state._capacity_generation += 1
+                break
+        if attempt == _CAPACITY_SNAPSHOT_MAX_ATTEMPTS - 1:
+            raise runtime_state.ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Team resource admission is busy; retry",
+            )
+        ceiling = min(
+            _CAPACITY_RETRY_BASE_SECONDS * (2**attempt),
+            _CAPACITY_RETRY_MAX_SECONDS,
+        )
+        jitter = 0.5 + secrets.randbelow(501) / 1000
+        time.sleep(ceiling * jitter)
     try:
         yield
     finally:

@@ -84,6 +84,49 @@ class HostedLimitAndTeardownTests(unittest.TestCase):
 
         self.assertEqual(lock_observations, [("teams", False), ("memory", False)])
 
+    def test_capacity_retries_a_transient_snapshot_generation_change(self) -> None:
+        calls = 0
+
+        def memory_usage(**_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                with runtime_state._capacity_lock:
+                    runtime_state._capacity_generation += 1
+            return hosted_resources._MemoryUsage(total=0, by_owner={})
+
+        with (
+            mock.patch.object(hosted_resources, "_memory_usage", side_effect=memory_usage),
+            mock.patch.object(hosted_resources.secrets, "randbelow", return_value=0),
+            mock.patch.object(hosted_resources.time, "sleep") as sleep,
+            hosted_resources._reserve_capacity("team:one", "account_1", 10, team_slot=False),
+        ):
+            self.assertIn("team:one", runtime_state._capacity_reservations)
+
+        self.assertEqual(calls, 2)
+        sleep.assert_called_once_with(hosted_resources._CAPACITY_RETRY_BASE_SECONDS * 0.5)
+
+    def test_capacity_fails_closed_after_bounded_snapshot_churn(self) -> None:
+        def churn(**_kwargs):
+            with runtime_state._capacity_lock:
+                runtime_state._capacity_generation += 1
+            return hosted_resources._MemoryUsage(total=0, by_owner={})
+
+        with (
+            mock.patch.object(hosted_resources, "_CAPACITY_SNAPSHOT_MAX_ATTEMPTS", 3),
+            mock.patch.object(hosted_resources, "_memory_usage", side_effect=churn) as inventory,
+            mock.patch.object(hosted_resources.secrets, "randbelow", return_value=0),
+            mock.patch.object(hosted_resources.time, "sleep") as sleep,
+            self.assertRaises(runtime_state.ApiError) as caught,
+            hosted_resources._reserve_capacity("team:one", "account_1", 10, team_slot=False),
+        ):
+            self.fail("capacity churn was admitted")
+
+        self.assertEqual(caught.exception.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(inventory.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertNotIn("team:one", runtime_state._capacity_reservations)
+
     def test_teardown_advances_and_removes_real_durable_cleanup_record(self) -> None:
         events: list[object] = []
         brain = SimpleNamespace(id="a" * 64)
