@@ -809,6 +809,7 @@ def main() -> int:
     finally:
         server.server_close()
         client.close()
+        local_audit.close()
     return 0
 
 

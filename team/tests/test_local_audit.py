@@ -6,7 +6,10 @@ import json
 import multiprocessing
 import os
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +18,7 @@ from local_support import audit
 
 def _crash_after_acknowledged_audit(path: str, sync_marker: str) -> None:
     audit.AUDIT_PATH = Path(path)
+    audit.GROUP_COMMIT_MAX_SECONDS = 60
     real_fsync = os.fsync
 
     def mark_sync(descriptor: int) -> None:
@@ -28,11 +32,13 @@ def _crash_after_acknowledged_audit(path: str, sync_marker: str) -> None:
 
 class LocalAuditTests(unittest.TestCase):
     def setUp(self) -> None:
+        audit.close()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        self.addCleanup(audit.close)
         self.path = Path(self.temporary.name) / "audit" / "audit.jsonl"
 
-    def test_acknowledged_event_is_fsynced_before_process_crash(self) -> None:
+    def test_acknowledged_event_survives_process_crash_before_group_sync(self) -> None:
         marker = Path(self.temporary.name) / "sync-marker"
         process = multiprocessing.get_context("spawn").Process(
             target=_crash_after_acknowledged_audit,
@@ -43,20 +49,63 @@ class LocalAuditTests(unittest.TestCase):
         process.join(timeout=10)
 
         self.assertEqual(process.exitcode, 0)
-        self.assertEqual(marker.read_text(encoding="ascii"), "synced")
+        self.assertFalse(marker.exists())
         event = json.loads(self.path.read_bytes())
         self.assertEqual(event["operation"], "assistant-power")
         self.assertEqual(event["team_id"], "team_1")
 
-    def test_each_event_has_its_own_durability_sync(self) -> None:
+    def test_multiple_events_share_one_durability_sync(self) -> None:
         with (
             mock.patch.object(audit, "AUDIT_PATH", self.path),
+            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", 60),
             mock.patch.object(audit.os, "fsync", wraps=os.fsync) as sync,
         ):
             audit.record("first", result="ok")
             audit.record("second", result="ok")
+            self.assertEqual(sync.call_count, 0)
+            audit.flush()
 
-        self.assertEqual(sync.call_count, 2)
+        self.assertEqual(sync.call_count, 1)
+
+    def test_background_sync_bounds_the_acknowledged_loss_window(self) -> None:
+        synchronized = threading.Event()
+        real_fsync = os.fsync
+
+        def observe(descriptor: int) -> None:
+            real_fsync(descriptor)
+            synchronized.set()
+
+        with (
+            mock.patch.object(audit, "AUDIT_PATH", self.path),
+            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", 0.02),
+            mock.patch.object(audit.os, "fsync", side_effect=observe) as sync,
+        ):
+            started = time.monotonic()
+            audit.record("first", result="ok")
+            audit.record("second", result="ok")
+            self.assertTrue(synchronized.wait(timeout=1))
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(sync.call_count, 1)
+
+    def test_concurrent_records_are_complete_and_share_the_writer(self) -> None:
+        with (
+            mock.patch.object(audit, "AUDIT_PATH", self.path),
+            mock.patch.object(audit, "GROUP_COMMIT_MAX_SECONDS", 60),
+            ThreadPoolExecutor(max_workers=8) as executor,
+        ):
+            trace_ids = tuple(
+                executor.map(
+                    lambda index: audit.record("concurrent", result="ok", detail=str(index)),
+                    range(64),
+                )
+            )
+            audit.flush()
+
+        events = tuple(json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(len(events), 64)
+        self.assertEqual({event["trace_id"] for event in events}, set(trace_ids))
 
 
 if __name__ == "__main__":
