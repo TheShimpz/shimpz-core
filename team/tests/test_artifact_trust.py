@@ -106,17 +106,12 @@ class ArtifactTrustTests(unittest.TestCase):
 
         environments = [call.kwargs["environment"] for call in api.exec_create.call_args_list]
         tuf_roots = [
-            next(value for value in environment if value.startswith("TUF_ROOT="))
-            for environment in environments
+            next(value for value in environment if value.startswith("TUF_ROOT=")) for environment in environments
         ]
         docker_roots = [
-            next(value for value in environment if value.startswith("DOCKER_CONFIG="))
-            for environment in environments
+            next(value for value in environment if value.startswith("DOCKER_CONFIG=")) for environment in environments
         ]
-        homes = [
-            next(value for value in environment if value.startswith("HOME="))
-            for environment in environments
-        ]
+        homes = [next(value for value in environment if value.startswith("HOME=")) for environment in environments]
         self.assertEqual(tuf_roots, [f"TUF_ROOT={self._trust_root}"] * 2)
         self.assertNotEqual(docker_roots[0], docker_roots[1])
         self.assertNotEqual(homes[0], homes[1])

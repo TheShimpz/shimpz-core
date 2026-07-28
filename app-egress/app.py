@@ -118,7 +118,7 @@ def load_policy(policy_dir: Path, token: str) -> frozenset[str]:
         return frozenset()
     try:
         hosts = json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
+    except UnicodeError, json.JSONDecodeError:
         return frozenset()
     if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
         return frozenset()

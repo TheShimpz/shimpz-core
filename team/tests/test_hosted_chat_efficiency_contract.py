@@ -214,8 +214,7 @@ class HostedCheckHarness:
             mock.patch.multiple(
                 network_policy,
                 app_identity_valid=lambda *_args: True,
-                brain_identity_valid=lambda attrs, _team_id: "team.brain"
-                in attrs.get("Config", {}).get("Labels", {}),
+                brain_identity_valid=lambda attrs, _team_id: "team.brain" in attrs.get("Config", {}).get("Labels", {}),
                 network_members_valid=lambda *_args, **_kwargs: True,
                 workload_endpoint_valid=lambda *_args: True,
                 workload_live_membership_valid=lambda *_args: True,
@@ -247,9 +246,7 @@ class HostedChatEfficiencyContractTests(unittest.TestCase):
         self.assertEqual(harness.calls["network.reload"], 1)
         self.assertEqual(
             sum(
-                value
-                for name, value in harness.calls.items()
-                if name.startswith(("docker.", "container.", "network."))
+                value for name, value in harness.calls.items() if name.startswith(("docker.", "container.", "network."))
             ),
             4 + members + 2 * assistants,
         )

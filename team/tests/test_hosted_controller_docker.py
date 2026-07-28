@@ -59,9 +59,13 @@ def _developers_secrets(directory: Path) -> None:
         path = directory / name
         path.write_text(value, encoding="ascii")
         path.chmod(0o444)
-    public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
-        Encoding.PEM,
-        PublicFormat.SubjectPublicKeyInfo,
+    public_key = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            Encoding.PEM,
+            PublicFormat.SubjectPublicKeyInfo,
+        )
     )
     key_path = directory / "delegation-public.pem"
     key_path.write_bytes(public_key)

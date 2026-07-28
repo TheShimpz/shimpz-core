@@ -361,8 +361,7 @@ def test_shipping_healthcheck_constants_mirror_lifecycle_manifests() -> None:
         "shipping readiness and lifecycle admission use the same Brain image environment key",
     )
     check(
-        {name: brain["image"] for name, brain in manifests.BRAINS.items()}
-        == team_healthcheck.REQUIRED_BRAIN_IMAGES,
+        {name: brain["image"] for name, brain in manifests.BRAINS.items()} == team_healthcheck.REQUIRED_BRAIN_IMAGES,
         "shipping readiness pins the same Brain image registry as lifecycle admission",
     )
     health_port = _environment_get(ROOT / "healthcheck.py", "LISTEN_PORT")
@@ -546,8 +545,7 @@ def test_health_tolerates_only_stopped_unbound_dynamic_apps() -> None:
     team_healthcheck.DYNAMIC_ASSISTANTS = types.SimpleNamespace(snapshot=lambda: ())
     try:
         check(
-            team_healthcheck._inspect_workloads(summaries)
-            == ({}, set(), {}, set(), {}),
+            team_healthcheck._inspect_workloads(summaries) == ({}, set(), {}, set(), {}),
             "a stopped unbound dynamic App remains cleanup drift without failing global readiness",
         )
         orphan["State"]["Running"] = True
