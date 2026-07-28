@@ -82,9 +82,11 @@ RUN groupadd -g "${DOCKER_GID}" dockersock \
         -M -s /usr/sbin/nologin teamdriver
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-# The frozen lock binds Docker SDK's complete transitive graph and artifact hashes.
-RUN UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
+# BuildKit is required: read-only bind mounts keep dependency metadata out of every image layer while the
+# frozen lock binds Docker SDK's complete transitive graph and artifact hashes.
+RUN --mount=type=bind,source=pyproject.toml,target=/app/pyproject.toml,ro \
+    --mount=type=bind,source=uv.lock,target=/app/uv.lock,ro \
+    UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-install-project --no-dev --python 3.14 && \
     rm -rf /root/.cache/uv
 
 COPY app.py validate.py manifests.py marketplace.py assistant_registry.py assistant_catalog.json assistant_genesis.py assistant_manifest.py cleanup_state.py audit.py token_store.py \
@@ -93,11 +95,19 @@ COPY app.py validate.py manifests.py marketplace.py assistant_registry.py assist
      oauth_broker_client.py oauth_http_client.py oauth_pkce_challenges.py oauth_providers.py \
      team_storage.py brain_runtime_client.py brain_runtime_token_store.py chat_orchestrator.py chat_turn_engine.py inference_config.py \
      model_catalog.json egress_policy.py power_execution.py power_journal.py strict_json.py pgdriver_client.py accounts_client.py brain_credentials_client.py healthcheck.py ./
-COPY assistant_human ./assistant_human
-COPY container_policy ./container_policy
+COPY assistant_human/__init__.py assistant_human/challenge_store.py assistant_human/hosted_assistants.py \
+     assistant_human/hosted_chat_api.py assistant_human/hosted_chat_segment.py assistant_human/private_state.py \
+     ./assistant_human/
+COPY container_policy/__init__.py container_policy/hosted_apps.py container_policy/hosted_lifecycle.py \
+     container_policy/hosted_resources.py container_policy/network.py ./container_policy/
+# Keep the vendored contract authority byte-complete for its independent digest re-verification.
 COPY contracts ./contracts
-COPY hosted_install ./hosted_install
-COPY http_boundary ./http_boundary
+COPY hosted_install/__init__.py hosted_install/artifact_trust.py hosted_install/developers_client.py \
+     hosted_install/developers_controller_contract.py hosted_install/developers_delegation.py \
+     hosted_install/dynamic_assistants.py hosted_install/marketplace_image.py hosted_install/registry_auth.py \
+     ./hosted_install/
+COPY http_boundary/__init__.py http_boundary/hosted.py http_boundary/hosted_controller.py \
+     http_boundary/runtime_state.py http_boundary/stdlib.py http_boundary/strict.py ./http_boundary/
 
 # Pre-create + own every named-volume mountpoint so the fresh (root:root) volume is writable by the
 # non-root user. /run/shimpz-teamdriver gets GROUP `shimpzteamdriver-token` so the fresh volume's
@@ -134,4 +144,5 @@ RUN mkdir -p /run/shimpz-teamdriver /var/log/team-driver /var/lib/team-driver/pg
 
 USER teamdriver
 EXPOSE 7077
+# The umbrella Compose deployment owns liveness and invokes /app/healthcheck.py.
 ENTRYPOINT ["/opt/venv/bin/python", "/app/app.py"]

@@ -27,11 +27,17 @@ COPY local_app.py local_registry.py local_token_store.py local_healthcheck.py te
     local_chat_continuation_store.py \
     model_catalog.json \
     egress_policy.py power_execution.py power_journal.py strict_json.py ./
-COPY assistant_human ./assistant_human
-COPY container_policy ./container_policy
-COPY http_boundary ./http_boundary
+COPY assistant_human/__init__.py assistant_human/challenge_store.py assistant_human/private_state.py ./assistant_human/
+COPY container_policy/__init__.py container_policy/local.py ./container_policy/
+COPY http_boundary/__init__.py http_boundary/local.py http_boundary/stdlib.py http_boundary/strict.py ./http_boundary/
 COPY local_chat_continuations.py ./
-COPY local_support ./local_support
+COPY local_support/__init__.py local_support/assistant_api.py local_support/assistant_lifecycle.py \
+    local_support/assistant_resources.py local_support/assistant_rpc.py local_support/audit.py \
+    local_support/chat_api.py local_support/chat_execution.py local_support/chat_pause.py \
+    local_support/chat_private.py local_support/chat_resume.py local_support/chat_segment.py \
+    local_support/chat_state.py local_support/chat_types.py local_support/egress.py local_support/errors.py \
+    local_support/http.py local_support/labels.py local_support/team_lifecycle.py local_support/validation.py \
+    ./local_support/
 
 # A normal source build remains possible, but cannot start until release automation supplies the
 # published Cloudflare Assistant digest with `--build-arg SHIMPZ_CLOUDFLARE_ASSISTANT_IMAGE=repo@sha256:...`.
