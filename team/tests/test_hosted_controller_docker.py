@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -12,6 +13,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 TEAM = Path(__file__).resolve().parents[1]
 
@@ -41,6 +45,27 @@ class _AccountsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+
+def _developers_secrets(directory: Path) -> None:
+    directory.chmod(0o755)
+    values = {
+        "developers-to-controller-token": uuid.uuid4().hex,
+        "controller-to-developers-token": uuid.uuid4().hex,
+        "assistant-registry-username": "registry-reader",
+        "assistant-registry-token": uuid.uuid4().hex,
+    }
+    for name, value in values.items():
+        path = directory / name
+        path.write_text(value, encoding="ascii")
+        path.chmod(0o444)
+    public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+        Encoding.PEM,
+        PublicFormat.SubjectPublicKeyInfo,
+    )
+    key_path = directory / "delegation-public.pem"
+    key_path.write_bytes(public_key)
+    key_path.chmod(0o444)
 
 
 class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
@@ -87,6 +112,9 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
             daemon=True,
         )
         accounts_thread.start()
+        developers_secrets = tempfile.TemporaryDirectory()
+        developers_secrets_path = Path(developers_secrets.name)
+        _developers_secrets(developers_secrets_path)
 
         try:
             self._run(
@@ -145,6 +173,8 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
                 socket_gid,
                 "--volume",
                 "/var/run/docker.sock:/var/run/docker.sock",
+                "--volume",
+                f"{developers_secrets_path}:/run/shimpz-developers-controller:ro",
                 "--env",
                 f"SHIMPZ_ACCOUNTS_URL=http://{bridge_gateway}:{accounts.server_port}",
                 "--publish",
@@ -175,7 +205,6 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
                 ("GET", f"{base}/assistant-accounts"),
                 ("POST", f"{base}/assistant-accounts/challenges/{'a' * 32}/authorize"),
                 ("DELETE", f"{base}/assistant-accounts/shimpz-cloudflare/cloudflare"),
-                ("GET", f"{base}/assistants/shimpz-cloudflare/help/en"),
                 ("GET", f"{base}/inference"),
                 ("PUT", f"{base}/inference"),
                 ("POST", f"{base}/chat"),
@@ -200,6 +229,7 @@ class HostedControllerDockerTests(DockerHarnessMixin, unittest.TestCase):
             accounts_thread.join(timeout=2)
             self._remove("rm", "--force", controller, anchor)
             self._remove("image", "rm", "--force", image)
+            developers_secrets.cleanup()
 
 
 if __name__ == "__main__":
