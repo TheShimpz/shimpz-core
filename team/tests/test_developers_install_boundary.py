@@ -59,11 +59,31 @@ class DevelopersInstallBoundaryTests(unittest.TestCase):
     def test_install_binds_owner_trust_final_authorization_and_response(self) -> None:
         handler = self._handler()
         client = _Client()
-        trust = types.SimpleNamespace(verify=mock.Mock())
+        events: list[str] = []
+        original_resolve = client.resolve
+        original_authorize_install = client.authorize_install
+        client.resolve = mock.Mock(
+            side_effect=lambda source_digest: (
+                events.append("resolve"),
+                original_resolve(source_digest),
+            )[1]
+        )
+        client.authorize_install = mock.Mock(
+            side_effect=lambda request: (
+                events.append("authorize-start"),
+                original_authorize_install(request),
+            )[1]
+        )
+        trust = types.SimpleNamespace(verify=mock.Mock(side_effect=lambda _resolution: events.append("trust")))
         delegation = _Delegation()
         lease = types.SimpleNamespace(owner=CLAIMS["account_id"])
+        materialized_spec = types.SimpleNamespace(
+            image=RESOLUTION["image_reference"],
+            assistant=types.SimpleNamespace(assistant_id=RESOLUTION["assistant_id"]),
+        )
 
         def install(team_id, binding, owner, supplied_lease, *, authorize_start):
+            events.append("install")
             self.assertEqual(team_id, REQUEST["team_id"])
             self.assertEqual(owner, CLAIMS["account_id"])
             self.assertIs(supplied_lease, lease)
@@ -74,6 +94,11 @@ class DevelopersInstallBoundaryTests(unittest.TestCase):
                 "binding_digest": binding.binding_digest,
             }
 
+        def prepare_image(spec):
+            events.append("prepare-image")
+            self.assertEqual(spec.image, RESOLUTION["image_reference"])
+            self.assertEqual(spec.assistant.assistant_id, RESOLUTION["assistant_id"])
+
         with (
             mock.patch.multiple(
                 runtime_state,
@@ -83,6 +108,12 @@ class DevelopersInstallBoundaryTests(unittest.TestCase):
                 _enforce_rate=lambda *_args: None,
             ),
             mock.patch.object(hosted_resources, "_authorize", return_value=lease) as authorize,
+            mock.patch.object(
+                hosted_controller.dynamic_assistants,
+                "app_spec",
+                return_value=materialized_spec,
+            ) as app_spec,
+            mock.patch.object(hosted_resources, "_prepare_marketplace_image", side_effect=prepare_image),
             mock.patch.object(hosted_apps, "_install_dynamic_assistant", side_effect=install),
         ):
             handler._route_developers_install()
@@ -92,6 +123,8 @@ class DevelopersInstallBoundaryTests(unittest.TestCase):
             ("account", CLAIMS["account_id"]),
         )
         trust.verify.assert_called_once_with(RESOLUTION)
+        app_spec.assert_called_once()
+        self.assertEqual(events, ["resolve", "trust", "prepare-image", "install", "authorize-start"])
         self.assertEqual(client.authorization["delegation_jti"], CLAIMS["jti"])
         status, response = handler._send_json.call_args.args
         self.assertEqual(status, HTTPStatus.OK)

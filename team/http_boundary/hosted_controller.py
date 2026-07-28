@@ -327,6 +327,9 @@ class Handler(BaseHTTPRequestHandler):
         resolution = client.resolve(body["source_digest"])
         trust.verify(resolution)
         binding = dynamic_assistants.binding_from_resolution(body["team_id"], resolution)
+        # Pull outside the Team lifecycle lock; the in-lock install path re-resolves the same
+        # digest locally immediately before create, preserving the execution-boundary proof.
+        hosted_resources._prepare_marketplace_image(dynamic_assistants.app_spec(binding))
 
         def authorize_start() -> None:
             request = {
