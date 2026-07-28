@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import secrets
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import brain_credentials_client
@@ -51,7 +53,7 @@ class BrainCredentialsClientTests(unittest.TestCase):
         secret = secrets.token_urlsafe(32)
         requests: list[tuple[str, dict]] = []
 
-        def post(_base_url, path, payload, _token_file):
+        def post(_base_url, path, payload, _token_file, _session=None):
             requests.append((path, payload))
             if path == "/v1/internal/brains/resolve":
                 return 200, {
@@ -112,6 +114,77 @@ class BrainCredentialsClientTests(unittest.TestCase):
             with self.assertRaises(brain_credentials_client.BrainCredentialError):
                 brain_credentials_client.generation_is_current("account-1", "codex", 3)
             post.assert_not_called()
+
+    def test_session_reuses_transport_without_reusing_authorization_results(self):
+        class Response:
+            status = 200
+
+            @staticmethod
+            def read(_maximum):
+                return b'{"valid":true}'
+
+        class Connection:
+            def __init__(self) -> None:
+                self.requests = 0
+                self.closes = 0
+
+            def request(self, *_args) -> None:
+                self.requests += 1
+
+            @staticmethod
+            def getresponse():
+                return Response()
+
+            def close(self) -> None:
+                self.closes += 1
+
+        connection = Connection()
+        constructors = mock.Mock(return_value=connection)
+        with tempfile.TemporaryDirectory() as directory:
+            token_path = Path(directory) / "token"
+            token_path.write_text("service-token", encoding="utf-8")
+            with (
+                mock.patch.object(brain_credentials_client.http.client, "HTTPConnection", constructors),
+                brain_credentials_client.BrainCredentialSession() as session,
+            ):
+                first = brain_credentials_client._post(
+                    "http://accounts:7079",
+                    "/v1/internal/brains/generation-check",
+                    {"generation": 1},
+                    token_path,
+                    session,
+                )
+                second = brain_credentials_client._post(
+                    "http://accounts:7079",
+                    "/v1/internal/brains/generation-check",
+                    {"generation": 1},
+                    token_path,
+                    session,
+                )
+
+        self.assertEqual(first, (200, {"valid": True}))
+        self.assertEqual(second, first)
+        constructors.assert_called_once_with("accounts", 7079, timeout=10)
+        self.assertEqual(connection.requests, 2)
+        self.assertEqual(connection.closes, 1)
+
+    def test_token_cache_reopens_metadata_and_rereads_only_after_replacement(self):
+        brain_credentials_client._token_cache.clear()
+        with tempfile.TemporaryDirectory() as directory:
+            token_path = Path(directory) / "token"
+            token_path.write_text("first-token", encoding="utf-8")
+            original_read = brain_credentials_client.os.read
+            with mock.patch.object(brain_credentials_client.os, "read", wraps=original_read) as read:
+                self.assertEqual(brain_credentials_client._token(token_path), "first-token")
+                self.assertEqual(brain_credentials_client._token(token_path), "first-token")
+                first_read_count = read.call_count
+                replacement = token_path.with_name("replacement")
+                replacement.write_text("second-token", encoding="utf-8")
+                replacement.replace(token_path)
+                self.assertEqual(brain_credentials_client._token(token_path), "second-token")
+
+        self.assertEqual(first_read_count, 1)
+        self.assertEqual(read.call_count, 2)
 
     def test_volume_archive_helpers_are_not_part_of_the_runtime_contract(self):
         for legacy_name in ("credential_file", "credential_archive", "resolve_archive"):
