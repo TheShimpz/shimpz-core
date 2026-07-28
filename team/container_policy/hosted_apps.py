@@ -657,9 +657,6 @@ def _provision_app_transaction(
     binding: dynamic_assistants.DynamicAssistantBinding | None = None,
     authorize_start: Callable[[], None] | None = None,
 ) -> str:
-    # Return the same explicit admission error as Team create instead of relying on a
-    # lower-level Docker create failure when the hostile-tenant runtime is unavailable.
-    hosted_resources._require_team_runtime()
     egress_store = _egress_store()
     try:
         database_url = pgdriver_client.create_app_db(team_id, app_id)["database_url"] if spec.db else ""
@@ -684,6 +681,8 @@ def _provision_app_transaction(
                 owner=owner,
                 source_digest=binding.resolution["source_digest"],
             )
+        # Check hostile-tenant runtime posture at the Docker create boundary. Earlier setup does
+        # not execute tenant code and the transaction rolls it back if this admission fails.
         hosted_resources._require_team_runtime()
         container = runtime_state._docker.containers.create(**kwargs)
         network.disconnect(container)

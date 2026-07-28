@@ -249,6 +249,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
             events.append("admit")
             raise runtime_state.ApiError(HTTPStatus.CONFLICT, "allowed_hosts mismatch")
 
+        require_runtime = mock.Mock(side_effect=lambda: events.append("runtime"))
         with tempfile.TemporaryDirectory() as directory:
             Path(directory).chmod(0o770)
             with (
@@ -267,7 +268,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
                     _prepare_marketplace_image=lambda _spec: None,
                     _get_container=lambda _name: container if state["created"] else None,
                     _reserve_capacity=lambda *_args, **_kwargs: contextlib.nullcontext(),
-                    _require_team_runtime=lambda: None,
+                    _require_team_runtime=require_runtime,
                     _ensure_team_network=lambda _team_id: network,
                     _safe_connect=lambda *_args, **_kwargs: events.append("connect-proxy"),
                     _start_team_with_isolation=lambda _container: events.append("start"),
@@ -297,6 +298,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
+                "runtime",
                 "create",
                 ("disconnect", "assistant-generation"),
                 ("connect-app", "assistant-generation", ("shimpz-cloudflare", "shimpz-cloudflare.team")),
@@ -304,6 +306,7 @@ class HostedAllowedHostsAdmissionTests(unittest.TestCase):
                 ("remove-container", "assistant-generation"),
             ],
         )
+        require_runtime.assert_called_once_with()
 
     def test_existing_policy_bytes_must_match_the_admitted_hosts(self) -> None:
         hosts = ("api.open-meteo.com", "geocoding-api.open-meteo.com")
