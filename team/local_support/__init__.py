@@ -1,1 +1,0 @@
-"""Shared local-controller contracts."""

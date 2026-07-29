@@ -1,18 +1,15 @@
-# Shimpz core Drivers
+# Shimpz Services
 
-This repository contains the narrow privilege brokers used by the hosted and local Shimpz control
-planes:
+This repository is the source of the Space-scoped Services consumed by Shimpz.
 
-- `team/` owns Team and Assistant lifecycle, Brain turns, Power execution, storage, inference,
-  secrets, accounts, approvals, and the restricted Docker socket boundary;
 - `pg/` provisions Team-scoped PostgreSQL principals and databases without exposing the superuser;
-- `egress/` provides audited Brain HTTP CONNECT egress; and
-- `app-egress/` enforces per-App and per-Assistant destination policies.
+- `egress/` is the current shared enforcement engine for Brain and Assistant-release traffic; and
+- `app-egress/` is the current shared enforcement engine for Assistant destination policies.
 
-Each service exposes named, bounded operations rather than a generic passthrough. Authentication,
-tenant ownership, network membership, resource limits, schema validation, metadata-only audit, and
-secret redaction fail closed at these boundaries. Hosted and local Team controllers share domain
-modules while retaining their different authority and deployment contracts.
+PostgreSQL moves to `postgresql/` when the umbrella checkout moves from `drivers/` to `services/`.
+The two enforcement engines remain current only until their already-decided Assistant and Brain
+responsibilities are extracted. They are not classified as Services merely because they temporarily
+share this repository.
 
-See [`team/LOCAL_CONTROLLER.md`](team/LOCAL_CONTROLLER.md) for the installed local controller and each
-directory's tests for its executable contract.
+Each current component preserves its fail-closed authentication, isolation, network, audit, and
+secret-redaction boundaries during that transition.

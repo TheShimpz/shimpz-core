@@ -1,6 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.shimpz.com/developers-controller/v1/controller-install-request.schema.json",
-  "title": "Shimpz hosted Controller install request v1",
-  "$ref": "definitions.schema.json#/$defs/controllerInstallRequest"
-}

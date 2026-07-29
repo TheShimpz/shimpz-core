@@ -1,6 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.shimpz.com/developers-controller/v1/resolve-response.schema.json",
-  "title": "Shimpz dynamic Assistant resolve response v1",
-  "$ref": "definitions.schema.json#/$defs/resolveResponse"
-}
