@@ -9,7 +9,7 @@ credential_policy = "managed"
 data_plane = "direct"
 port = 7072
 health_path = "/healthz"
-metadata_path = "/v1/driver"
+metadata_path = "/v1/service"
 
 [capabilities]
 operations = [

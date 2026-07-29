@@ -1,7 +1,7 @@
-"""Allowlist validation for pg-driver — runs BEFORE any psql/createdb/dropdb call.
+"""Allowlist validation for postgresql-service — runs BEFORE any psql/createdb/dropdb call.
 
 Nothing here touches Postgres; it only decides yes/no and returns a validated project name the
-caller (app.py) turns into pg_client.py calls. This validator is the actual security boundary,
+caller (app.py) turns into postgresql_client.py calls. This validator is the actual security boundary,
 not the client that acts on its output.
 """
 
@@ -19,7 +19,7 @@ DATABASE_NAMESPACE_RE = re.compile(r"^[a-f0-9]{12}$")
 
 
 class ValidationError(Exception):
-    """A pg-driver request failed the allowlist — nothing was touched."""
+    """A postgresql-service request failed the allowlist — nothing was touched."""
 
 
 def sanitize_proj(name: str) -> str:

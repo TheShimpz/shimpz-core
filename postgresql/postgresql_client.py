@@ -1,4 +1,4 @@
-"""The ONLY place SHIMPZ_PG_DSN is ever read or sent.
+"""The ONLY place SHIMPZ_POSTGRESQL_DSN is ever read or sent.
 
 Shells out to fixed psql/createdb/dropdb CLI invocations inside the sole Postgres-superuser holder.
 SQL is delivered on psql stdin so a derived tenant password never appears in process argv. Every
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from urllib.parse import urlsplit
 
-_dsn = urlsplit(os.environ.get("SHIMPZ_PG_DSN", ""))
+_dsn = urlsplit(os.environ.get("SHIMPZ_POSTGRESQL_DSN", ""))
 PGHOST = _dsn.hostname or "postgres"
 PGPORT = _dsn.port or 5432
 PGUSER = _dsn.username or ""
@@ -29,7 +29,7 @@ _ENV = {**os.environ, "PGPASSWORD": PGPASSWORD}
 _mutation_guard = threading.RLock()
 
 
-class PgError(Exception):
+class PostgreSQLError(Exception):
     """A psql/createdb/dropdb invocation failed."""
 
 
@@ -47,7 +47,7 @@ class ProvisionResult:
 
 @contextmanager
 def mutation_lock() -> Iterator[None]:
-    """Serialize Postgres and principal-registry mutations in the single driver process."""
+    """Serialize Postgres and principal-registry mutations in the single Service process."""
     with _mutation_guard:
         yield
 
@@ -57,7 +57,7 @@ def _run(cmd: list[str], *, stdin: str | None = None) -> str:
     if result.returncode != 0:
         # stderr can echo the failing SQL (including CREATE/ALTER ROLE PASSWORD). The numeric verdict
         # is sufficient for the private typed failure; command text and stderr never cross this seam.
-        raise PgError(f"Postgres command failed (rc={result.returncode})")
+        raise PostgreSQLError(f"Postgres command failed (rc={result.returncode})")
     return result.stdout
 
 
@@ -115,15 +115,15 @@ def _cleanup_created_resources(project: str, *, database_created: bool, role_cre
     if database_created:
         try:
             _run(["dropdb", *_PG_ARGS, "--if-exists", db])
-        except PgError as exc:
+        except PostgreSQLError as exc:
             failures.append(str(exc))
     if role_created:
         try:
             _psql("postgres", f'DROP ROLE IF EXISTS "{db}"')
-        except PgError as exc:
+        except PostgreSQLError as exc:
             failures.append(str(exc))
     if failures:
-        raise PgError("; ".join(failures))
+        raise PostgreSQLError("; ".join(failures))
 
 
 def create_db_and_role(project: str, *, allow_existing: bool = False) -> ProvisionResult:
@@ -134,11 +134,11 @@ def create_db_and_role(project: str, *, allow_existing: bool = False) -> Provisi
         role_existed = _role_exists(role)
         database_existed = _db_exists(db)
         if role_existed != database_existed:
-            raise PgError(f'Postgres resources for "{db}" are incomplete')
+            raise PostgreSQLError(f'Postgres resources for "{db}" are incomplete')
         if database_existed and not allow_existing:
-            raise PgError(f'Postgres resources for "{db}" already exist without registry ownership')
+            raise PostgreSQLError(f'Postgres resources for "{db}" already exist without registry ownership')
         if allow_existing and not database_existed:
-            raise PgError(f'registered Postgres resources for "{db}" are missing')
+            raise PostgreSQLError(f'registered Postgres resources for "{db}" are missing')
 
         role_created = False
         database_created = False
@@ -157,11 +157,11 @@ def create_db_and_role(project: str, *, allow_existing: bool = False) -> Provisi
             _psql("postgres", f'REVOKE CONNECT ON DATABASE "{db}" FROM PUBLIC')
             _psql("postgres", f'GRANT ALL ON DATABASE "{db}" TO "{role}"')
             _psql(db, f'ALTER SCHEMA public OWNER TO "{role}"')
-        except PgError as provision_error:
+        except PostgreSQLError as provision_error:
             try:
                 _cleanup_created_resources(project, database_created=database_created, role_created=role_created)
-            except PgError as cleanup_error:
-                raise PgError(
+            except PostgreSQLError as cleanup_error:
+                raise PostgreSQLError(
                     f"Postgres provisioning failed ({provision_error}); compensation also failed ({cleanup_error})"
                 ) from cleanup_error
             raise

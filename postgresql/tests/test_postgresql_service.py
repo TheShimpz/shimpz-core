@@ -15,24 +15,24 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-PG = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PG))
+POSTGRESQL = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(POSTGRESQL))
 
-MODULE_STATE = tempfile.TemporaryDirectory(prefix="pg-driver-module-test-")
-os.environ.setdefault("SHIMPZ_PG_DSN", "postgresql://shimpz-brain:test-superuser-secret@postgres:5432/postgres")
-os.environ["SHIMPZ_PGDRIVER_TOKEN_FILE"] = str(Path(MODULE_STATE.name) / "token")
-os.environ["SHIMPZ_PGDRIVER_TOKEN_GROUP"] = grp.getgrgid(os.getgid()).gr_name
-os.environ["SHIMPZ_PGDRIVER_PRINCIPALS_FILE"] = str(Path(MODULE_STATE.name) / "principals.json")
-os.environ["SHIMPZ_PGDRIVER_AUDIT_LOG"] = str(Path(MODULE_STATE.name) / "audit.jsonl")
+MODULE_STATE = tempfile.TemporaryDirectory(prefix="postgresql-service-module-test-")
+os.environ.setdefault("SHIMPZ_POSTGRESQL_DSN", "postgresql://shimpz-brain:test-superuser-secret@postgres:5432/postgres")
+os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_FILE"] = str(Path(MODULE_STATE.name) / "token")
+os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GROUP"] = grp.getgrgid(os.getgid()).gr_name
+os.environ["SHIMPZ_POSTGRESQL_SERVICE_PRINCIPALS_FILE"] = str(Path(MODULE_STATE.name) / "principals.json")
+os.environ["SHIMPZ_POSTGRESQL_SERVICE_AUDIT_LOG"] = str(Path(MODULE_STATE.name) / "audit.jsonl")
 
 import app
-import driver_manifest
-import pg_client
+import postgresql_client
 import principal_store
+import service_manifest
 import validate
 
 
-class PgDriverTests(unittest.TestCase):
+class PostgreSQLServiceTests(unittest.TestCase):
     def test_rejects_excess_connections_without_starting_threads(self) -> None:
         server = app.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0),
@@ -50,7 +50,7 @@ class PgDriverTests(unittest.TestCase):
             server.server_close()
 
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="pg-driver-test-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="postgresql-service-test-")
         principal_store.STATE_PATH = Path(self.temporary.name) / "principals.json"
 
     def tearDown(self) -> None:
@@ -77,7 +77,7 @@ class PgDriverTests(unittest.TestCase):
         second = validate.team_app_project("b" * 12, "notification-center")
         self.assertTrue(first.startswith("team_") and first.endswith("_notification_center"))
         self.assertNotEqual(first, second)
-        self.assertLessEqual(len(pg_client.dbname(validate.team_app_project("f" * 12, "a" * 40))), 63)
+        self.assertLessEqual(len(postgresql_client.dbname(validate.team_app_project("f" * 12, "a" * 40))), 63)
 
         token = "a" * 64
         self.assertEqual(validate.validate_principal_token(token), token)
@@ -88,28 +88,28 @@ class PgDriverTests(unittest.TestCase):
                 validate.validate_principal_token(invalid)
 
     def test_database_credentials_are_deterministic_and_keyed(self) -> None:
-        password = pg_client.role_password("website")
+        password = postgresql_client.role_password("website")
         expected = hmac.new(
-            pg_client.PGPASSWORD.encode(),
-            pg_client.dbname("website").encode(),
+            postgresql_client.PGPASSWORD.encode(),
+            postgresql_client.dbname("website").encode(),
             sha256,
         ).hexdigest()[:32]
 
         self.assertEqual(password, expected)
         self.assertEqual(len(password), 32)
-        self.assertNotEqual(password, pg_client.role_password("other"))
+        self.assertNotEqual(password, postgresql_client.role_password("other"))
         self.assertEqual(
-            pg_client.database_url("website"),
+            postgresql_client.database_url("website"),
             f"postgresql://proj_website:{password}@postgres:5432/proj_website",
         )
 
     def test_database_failures_do_not_reflect_commands_sql_or_stderr(self) -> None:
         completed = mock.Mock(returncode=23, stdout="", stderr="database-secret")
         with (
-            mock.patch.object(pg_client.subprocess, "run", return_value=completed) as run,
-            self.assertRaisesRegex(pg_client.PgError, r"^Postgres command failed \(rc=23\)$") as raised,
+            mock.patch.object(postgresql_client.subprocess, "run", return_value=completed) as run,
+            self.assertRaisesRegex(postgresql_client.PostgreSQLError, r"^Postgres command failed \(rc=23\)$") as raised,
         ):
-            pg_client._run(["psql", "command-secret"], stdin="sql-secret")
+            postgresql_client._run(["psql", "command-secret"], stdin="sql-secret")
 
         detail = str(raised.exception)
         for secret in ("command-secret", "sql-secret", "database-secret"):
@@ -117,8 +117,8 @@ class PgDriverTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["input"], "sql-secret")
 
     def test_psql_sends_sql_on_stdin_with_fail_fast_literal_variables(self) -> None:
-        with mock.patch.object(pg_client, "_run", return_value="ok") as run:
-            result = pg_client._psql(
+        with mock.patch.object(postgresql_client, "_run", return_value="ok") as run:
+            result = postgresql_client._psql(
                 "postgres",
                 "SELECT 1 WHERE rolname = :'role_name'",
                 {"role_name": "proj_website"},
@@ -168,7 +168,7 @@ class PgDriverTests(unittest.TestCase):
         principal_store.add_database(token, "alpha", app_database)
 
         with mock.patch.object(
-            pg_client,
+            postgresql_client,
             "drop_db_and_role",
             side_effect=lambda project: {"dropped": f"proj_{project}"},
         ) as drop:
@@ -189,10 +189,10 @@ class PgDriverTests(unittest.TestCase):
         principal_store.register("alpha", token, "proj_team_alpha")
         body = {"team_id": "alpha", "app_id": "notification-center"}
 
-        with mock.patch.object(pg_client, "project_resources_exist", return_value=False):
+        with mock.patch.object(postgresql_client, "project_resources_exist", return_value=False):
             self.assertTrue(app._drop_app(body, token)["already_absent"])
         with (
-            mock.patch.object(pg_client, "project_resources_exist", return_value=True),
+            mock.patch.object(postgresql_client, "project_resources_exist", return_value=True),
             self.assertRaises(principal_store.PrincipalError),
         ):
             app._drop_app(body, token)
@@ -205,8 +205,8 @@ class PgDriverTests(unittest.TestCase):
         project = validate.team_app_project(principal_store.database_namespace(token, team_id), app_id)
 
         with (
-            mock.patch.object(pg_client, "project_resources_exist", return_value=True) as exists,
-            mock.patch.object(pg_client, "create_db_and_role") as create,
+            mock.patch.object(postgresql_client, "project_resources_exist", return_value=True) as exists,
+            mock.patch.object(postgresql_client, "create_db_and_role") as create,
             self.assertRaisesRegex(principal_store.PrincipalError, "unregistered App database"),
         ):
             app._create_app({"team_id": team_id, "app_id": app_id}, token)
@@ -220,13 +220,13 @@ class PgDriverTests(unittest.TestCase):
         app_id = "notification-center"
         principal_store.register(team_id, token, "proj_team_alpha")
         project = validate.team_app_project(principal_store.database_namespace(token, team_id), app_id)
-        database = pg_client.dbname(project)
+        database = postgresql_client.dbname(project)
         principal_store.add_database(token, team_id, database)
-        provisioned = pg_client.ProvisionResult("postgresql://redacted", False, False)
+        provisioned = postgresql_client.ProvisionResult("postgresql://redacted", False, False)
 
         with (
-            mock.patch.object(pg_client, "project_resources_exist") as exists,
-            mock.patch.object(pg_client, "create_db_and_role", return_value=provisioned) as create,
+            mock.patch.object(postgresql_client, "project_resources_exist") as exists,
+            mock.patch.object(postgresql_client, "create_db_and_role", return_value=provisioned) as create,
         ):
             result = app._create_app({"team_id": team_id, "app_id": app_id}, token)
 
@@ -236,23 +236,23 @@ class PgDriverTests(unittest.TestCase):
 
     def test_client_refuses_foreign_or_incomplete_existing_resources(self) -> None:
         with (
-            mock.patch.object(pg_client, "_role_exists", return_value=True),
-            mock.patch.object(pg_client, "_db_exists", return_value=True),
-            mock.patch.object(pg_client, "_psql") as psql,
-            self.assertRaisesRegex(pg_client.PgError, "without registry ownership"),
+            mock.patch.object(postgresql_client, "_role_exists", return_value=True),
+            mock.patch.object(postgresql_client, "_db_exists", return_value=True),
+            mock.patch.object(postgresql_client, "_psql") as psql,
+            self.assertRaisesRegex(postgresql_client.PostgreSQLError, "without registry ownership"),
         ):
-            pg_client.create_db_and_role("team_foreign_app")
+            postgresql_client.create_db_and_role("team_foreign_app")
         psql.assert_not_called()
 
         with (
-            mock.patch.object(pg_client, "_role_exists", return_value=True),
-            mock.patch.object(pg_client, "_db_exists", return_value=False),
-            self.assertRaisesRegex(pg_client.PgError, "are incomplete"),
+            mock.patch.object(postgresql_client, "_role_exists", return_value=True),
+            mock.patch.object(postgresql_client, "_db_exists", return_value=False),
+            self.assertRaisesRegex(postgresql_client.PostgreSQLError, "are incomplete"),
         ):
-            pg_client.create_db_and_role("team_incomplete_app")
+            postgresql_client.create_db_and_role("team_incomplete_app")
 
     def test_manifest_is_closed_and_public_metadata_contains_no_credentials(self) -> None:
-        manifest = driver_manifest.load()
+        manifest = service_manifest.load()
         self.assertEqual(manifest.id, "postgresql")
         self.assertEqual(manifest.scope, "space")
         self.assertEqual(manifest.credential_policy, "managed")
@@ -263,7 +263,7 @@ class PgDriverTests(unittest.TestCase):
         )
         self.assertTrue({"credentials", "secrets"}.isdisjoint(manifest.public()))
 
-        canonical = driver_manifest.MANIFEST_PATH.read_text(encoding="utf-8")
+        canonical = service_manifest.MANIFEST_PATH.read_text(encoding="utf-8")
         invalid = (
             canonical.replace("[capabilities]", "unsupported = true\n\n[capabilities]"),
             canonical.replace('scope = "space"', 'scope = "team"'),
@@ -273,25 +273,33 @@ class PgDriverTests(unittest.TestCase):
         for index, source in enumerate(invalid):
             path = Path(self.temporary.name) / f"invalid-{index}.toml"
             path.write_text(source, encoding="utf-8")
-            with self.subTest(index=index), self.assertRaises(driver_manifest.ManifestError):
-                driver_manifest.load(path)
+            with self.subTest(index=index), self.assertRaises(service_manifest.ManifestError):
+                service_manifest.load(path)
 
     def test_http_discovery_is_public_while_mutation_requires_a_bearer(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         try:
-            for path, expected in (("/healthz", {"status": "ok"}), ("/v1/driver", app.DRIVER.public())):
+            for path, expected in (("/healthz", {"status": "ok"}), ("/v1/service", app.SERVICE.public())):
                 with self.subTest(path=path):
                     status, payload = self.http(server, "GET", path)
                     self.assertEqual(status, 200)
                     self.assertEqual(payload, expected)
 
+            status, payload = self.http(server, "GET", "/v1/driver")
+            self.assertEqual(status, 404)
+            self.assertEqual(payload, {"error": "no route for GET /v1/driver"})
+
             status, payload = self.http(server, "POST", "/v1/teams/provision", body={})
             self.assertEqual(status, 403)
             self.assertEqual(payload, {"error": "bearer required"})
 
-            with mock.patch.object(app, "_provision_team", side_effect=pg_client.PgError("database-secret")):
+            with mock.patch.object(
+                app,
+                "_provision_team",
+                side_effect=postgresql_client.PostgreSQLError("database-secret"),
+            ):
                 status, payload = self.http(
                     server,
                     "POST",

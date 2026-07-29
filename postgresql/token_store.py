@@ -1,6 +1,6 @@
-"""The local provisioner bearer token team-driver uses to call this driver.
+"""The local provisioner bearer token Team uses to call this Service.
 
-Generated once on first boot, on a volume shared only between team-driver and this sidecar; never stored in .env.
+Generated once on first boot, on a volume shared only between Team and this sidecar; never stored in .env.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import os
 import secrets
 from pathlib import Path
 
-TOKEN_PATH = Path(os.environ.get("SHIMPZ_PGDRIVER_TOKEN_FILE", "/run/shimpz-pgdriver/token"))
-TOKEN_GROUP = os.environ.get("SHIMPZ_PGDRIVER_TOKEN_GROUP", "shimpzpgdriver-token")
+TOKEN_PATH = Path(os.environ.get("SHIMPZ_POSTGRESQL_SERVICE_TOKEN_FILE", "/run/shimpz-postgresql-service/token"))
+TOKEN_GROUP = os.environ.get("SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GROUP", "shimpzpostgresql-token")
 
 
 def _group_readable(path: Path) -> None:

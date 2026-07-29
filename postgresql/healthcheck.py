@@ -5,9 +5,9 @@ import http.client
 import json
 import sys
 
-import driver_manifest
+import service_manifest
 
-manifest = driver_manifest.load()
+manifest = service_manifest.load()
 
 connection = http.client.HTTPConnection("127.0.0.1", manifest.port, timeout=3)
 try:

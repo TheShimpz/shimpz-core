@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/*_TOKEN_* ARGs here hold numeric group IDs and file paths, never secret values
 #
-# pg-driver — the ONLY container that holds SHIMPZ_PG_DSN (the Postgres superuser DSN).
-# Neither the platform Brain nor a Team sees it. Team-driver provisions a random hashed principal,
+# postgresql-service — the ONLY container that holds SHIMPZ_POSTGRESQL_DSN (the Postgres superuser DSN).
+# Neither the platform Brain nor a Team sees it. Team provisions a random hashed principal,
 # and each Team principal can mutate only its exact registered database set. This sidecar deliberately
 # holds no Cloudflare, Docker, or account credential.
-# The only third-party piece is postgresql-client (psql/createdb/dropdb); no Python DB driver is needed.
+# The only third-party piece is postgresql-client (psql/createdb/dropdb); no Python database adapter is needed.
 # Pinned by digest (not just the `3.14-slim` tag, which can move). `docker pull
 # python:3.14-slim` resolved to this exact digest; bump both together.
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
@@ -27,9 +27,9 @@ RUN set -eux; \
     test "$(grep -Fc "https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 2; \
     test "$(grep -Fc "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 1
 
-# Fixed GID for the provisioner-token group. Only team-driver joins it; neither the platform
+# Fixed GID for the provisioner-token group. Only Team joins it; neither the platform
 # brain nor any Team can read this control-plane credential.
-ARG SHIMPZ_PGDRIVER_TOKEN_GID=10004
+ARG SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GID=10004
 
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && \
     apt-get clean && \
@@ -37,20 +37,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-clie
         /var/cache/ldconfig/aux-cache /var/cache/man/* /var/log/apt/* \
         /var/log/alternatives.log /var/log/dpkg.log
 
-RUN groupadd -g "${SHIMPZ_PGDRIVER_TOKEN_GID}" shimpzpgdriver-token \
-    && useradd -u 10001 -G shimpzpgdriver-token -M -s /usr/sbin/nologin pgdriver
+RUN groupadd -g "${SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GID}" shimpzpostgresql-token \
+    && useradd -u 10001 -G shimpzpostgresql-token -M -s /usr/sbin/nologin postgresqlservice
 
 WORKDIR /app
-COPY app.py validate.py pg_client.py principal_store.py audit.py token_store.py healthcheck.py \
-    driver_manifest.py stdlib_http.py shimpz.driver.toml ./
+COPY app.py validate.py postgresql_client.py principal_store.py audit.py token_store.py healthcheck.py \
+    service_manifest.py stdlib_http.py shimpz.service.toml ./
 
 # Pre-create + own every path a NAMED VOLUME will be mounted onto — Docker copies an image
 # directory's ownership/content into a fresh empty volume on first mount, which is otherwise
-# root:root/0755 and unwritable by the non-root `pgdriver` user.
-RUN mkdir -p /run/shimpz-pgdriver /var/log/pg-driver /var/lib/pg-driver \
-    && chown pgdriver:shimpzpgdriver-token /run/shimpz-pgdriver && chmod 750 /run/shimpz-pgdriver \
-    && chown -R pgdriver:shimpzpgdriver-token /var/log/pg-driver /var/lib/pg-driver
+# root:root/0755 and unwritable by the non-root `postgresqlservice` user.
+RUN mkdir -p /run/shimpz-postgresql-service /var/log/postgresql-service /var/lib/postgresql-service \
+    && chown postgresqlservice:shimpzpostgresql-token /run/shimpz-postgresql-service && chmod 750 /run/shimpz-postgresql-service \
+    && chown -R postgresqlservice:shimpzpostgresql-token /var/log/postgresql-service /var/lib/postgresql-service
 
-USER pgdriver
+USER postgresqlservice
 EXPOSE 7072
 ENTRYPOINT ["python3", "/app/app.py"]

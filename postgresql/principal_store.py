@@ -1,4 +1,4 @@
-"""Hashed pg-driver principals scoped to one Team and its exact database set."""
+"""Hashed postgresql-service principals scoped to one Team and its exact database set."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ import secrets
 import threading
 from pathlib import Path
 
-STATE_PATH = Path(os.environ.get("SHIMPZ_PGDRIVER_PRINCIPALS_FILE", "/var/lib/pg-driver/principals.json"))
+STATE_PATH = Path(
+    os.environ.get(
+        "SHIMPZ_POSTGRESQL_SERVICE_PRINCIPALS_FILE",
+        "/var/lib/postgresql-service/principals.json",
+    )
+)
 _lock = threading.RLock()
 _DATABASE_NAMESPACE_RE = re.compile(r"[a-f0-9]{12}\Z")
 

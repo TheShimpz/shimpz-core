@@ -1,4 +1,4 @@
-"""Strict, dependency-free parser for the Shimpz Driver Spec v1 manifest."""
+"""Strict, dependency-free parser for the Shimpz Service Spec v1 manifest."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-MANIFEST_PATH = Path(__file__).with_name("shimpz.driver.toml")
+MANIFEST_PATH = Path(__file__).with_name("shimpz.service.toml")
 
 _TOP_LEVEL_KEYS = {
     "schema_version",
@@ -36,11 +36,11 @@ _PATH_PATTERN = re.compile(r"^/[a-z0-9][a-z0-9/-]*$")
 
 
 class ManifestError(ValueError):
-    """The driver manifest does not satisfy the closed Driver Spec v1 contract."""
+    """The service manifest does not satisfy the closed Service Spec v1 contract."""
 
 
 @dataclass(frozen=True)
-class DriverManifest:
+class ServiceManifest:
     schema_version: int
     id: str
     title: str
@@ -107,12 +107,12 @@ def _choice(value: object, field: str, allowed: set[str]) -> str:
     return selected
 
 
-def load(path: Path = MANIFEST_PATH) -> DriverManifest:
+def load(path: Path = MANIFEST_PATH) -> ServiceManifest:
     """Load a v1 manifest, rejecting missing fields, unknown fields, and invalid values."""
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        raise ManifestError(f"cannot read driver manifest: {exc}") from exc
+        raise ManifestError(f"cannot read service manifest: {exc}") from exc
 
     values = _closed_keys(raw, _TOP_LEVEL_KEYS, "manifest")
     capabilities = _closed_keys(values["capabilities"], _CAPABILITY_KEYS, "capabilities")
@@ -121,8 +121,8 @@ def load(path: Path = MANIFEST_PATH) -> DriverManifest:
     if type(schema_version) is not int or schema_version != 1:
         raise ManifestError("schema_version must be the integer 1")
 
-    driver_id = _string(values["id"], "id")
-    if not _ID_PATTERN.fullmatch(driver_id):
+    service_id = _string(values["id"], "id")
+    if not _ID_PATTERN.fullmatch(service_id):
         raise ManifestError("id must be a lowercase kebab-case identifier")
 
     title = _string(values["title"], "title")
@@ -155,9 +155,9 @@ def load(path: Path = MANIFEST_PATH) -> DriverManifest:
     if len(operations) != len(set(operations)):
         raise ManifestError("capability operations must be unique")
 
-    return DriverManifest(
+    return ServiceManifest(
         schema_version=schema_version,
-        id=driver_id,
+        id=service_id,
         title=title,
         version=version,
         summary=summary,

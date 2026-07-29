@@ -1,4 +1,4 @@
-"""Structured audit log for every mutating pg-driver operation.
+"""Structured audit log for every mutating postgresql-service operation.
 
 Matches the repo-wide structlog JSON schema `logq` expects (ts/level/service/trace_id/msg/…extra).
 """
@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-AUDIT_PATH = Path(os.environ.get("SHIMPZ_PGDRIVER_AUDIT_LOG", "/var/log/pg-driver/audit.jsonl"))
+AUDIT_PATH = Path(os.environ.get("SHIMPZ_POSTGRESQL_SERVICE_AUDIT_LOG", "/var/log/postgresql-service/audit.jsonl"))
 MAX_BYTES = 10 * 1024 * 1024
 BACKUPS = 3
 
@@ -40,7 +40,7 @@ def log(
     event = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "level": level or ("info" if result == "ok" else "warn"),
-        "service": "pg-driver",
+        "service": "postgresql-service",
         "trace_id": trace_id,
         "msg": f"{op} {subject}: {result}",
         "op": op,
