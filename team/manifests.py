@@ -116,9 +116,8 @@ APP_MEM_LIMIT_BYTES = network_policy.APP_MEMORY_BYTES
 # when an installed App declares egress.
 APP_EGRESS_CONTAINER = network_policy.APP_EGRESS_CONTAINER
 
-# Vector reads Docker's json-file logs and derives the team from the line's own label (no Docker API).
-# Keep the required json-file driver, but never inherit its unbounded default: a hostile workload can
-# otherwise fill the host filesystem without exceeding its cgroup memory/PID admission envelope.
+# Keep Docker's json-file logs bounded: a hostile workload could otherwise fill the host filesystem
+# without exceeding its cgroup memory or PID admission envelope.
 TEAM_LOG_MAX_SIZE = network_policy.TEAM_LOG_MAX_SIZE
 TEAM_LOG_MAX_FILE = network_policy.TEAM_LOG_MAX_FILE
 TEAM_LOG_CONFIG = docker.types.LogConfig(
