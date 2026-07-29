@@ -6,7 +6,6 @@ planes:
 - `team/` owns Team and Assistant lifecycle, Brain turns, Power execution, storage, inference,
   secrets, accounts, approvals, and the restricted Docker socket boundary;
 - `pg/` provisions Team-scoped PostgreSQL principals and databases without exposing the superuser;
-- `apps/` admits and operates deployed App containers through validated manifests and isolated networks;
 - `egress/` provides audited Brain HTTP CONNECT egress; and
 - `app-egress/` enforces per-App and per-Assistant destination policies.
 

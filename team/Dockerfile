@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/DOCKER_GID ARGs are numeric group IDs, never secrets
 #
-# team-driver — the SECOND container (besides shimpz-driver) holding /var/run/docker.sock, dedicated
-# to Team lifecycle. `shimpz-brain` never mounts the socket; the
+# team-driver — the only container holding /var/run/docker.sock, dedicated to Team lifecycle.
+# `shimpz-brain` never mounts the socket; the
 # authenticated admin panel calls this driver's restricted, allowlisted, audited API instead. This
 # process's own UID is unprivileged (10001) — defense-in-depth against trivial filesystem tampering,
 # not a claim that socket access itself is contained (holding the socket is host-root-equivalent).
-# Pinned by digest (same as drivers/apps/Dockerfile — bump both together).
+# Pinned by digest; bump deliberately.
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 ARG SOURCE_DATE_EPOCH=0
 
@@ -27,7 +27,7 @@ RUN set -eux; \
     test "$(grep -Fc "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian-snapshot.list)" -eq 1
 
 ARG UV_VERSION=0.11.25
-# Same version AND hash as drivers/apps/Dockerfile (astral.sh serves an immutable versioned artifact).
+# The hash pins the immutable versioned installer served by astral.sh.
 ARG UV_INSTALL_SHA256=ca2de1bca2913ba30ce88658b6d90a663c627ecac378803aa58084a9adb35a46
 ARG COSIGN_VERSION=3.0.6
 ARG COSIGN_AMD64_SHA256=c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
@@ -39,7 +39,7 @@ ARG DOCKER_GID=989
 # Distinct from every other sidecar's (10002–10009) so no token is readable via another's group.
 ARG SHIMPZ_TEAMDRIVER_TOKEN_GID=10010
 # The pg-driver token group — this driver joins it (read-only) to request a scoped DB from pg-driver.
-# MUST match drivers/apps + brain's SHIMPZ_PGDRIVER_TOKEN_GID so the shared 0440 token is readable.
+# MUST match pg/Dockerfile and Brain's SHIMPZ_PGDRIVER_TOKEN_GID so the shared 0440 token is readable.
 ARG SHIMPZ_PGDRIVER_TOKEN_GID=10004
 ARG SHIMPZ_BRAINCRED_UNSEAL_TOKEN_GID=10012
 ARG SHIMPZ_ACCOUNTS_BRAIN_RESOLVE_TOKEN_GID=10013

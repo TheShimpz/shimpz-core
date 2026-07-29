@@ -23,9 +23,9 @@ class ValidationError(Exception):
 
 
 def sanitize_proj(name: str) -> str:
-    """Port of shimpzdetect.sh's _sanitize_proj / drivers/apps/validate.py's sanitize_proj.
+    """Port of shimpzdetect.sh's _sanitize_proj.
 
-    MUST match both exactly — shimpz-app and the server-side drivers independently derive the same
+    MUST match it exactly so Shimpz Apps and the server-side service independently derive the same
     proj_<name> identity from a raw project name.
     """
     lowered = re.sub(r"[^a-z0-9_]+", "_", str(name).lower())

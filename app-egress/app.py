@@ -4,10 +4,9 @@
 Every app container is on an `internal:true` network (no NAT to the internet). Its ONLY egress is
 `HTTPS_PROXY=http://<app-egress-token>@app-egress-proxy:8889`, reached over an internal proxy network.
 Unlike the brain's single-tenant egress-proxy (one global allowlist, network-gated), this proxy serves
-MANY apps, so it is PER-APP TOKEN-GATED: each app carries its own token (issued by shimpz-driver at
-deploy) and the proxy forwards a CONNECT only to the hosts THAT app declared in `[needs].egress` (plus
-`pay.shimpz.com` iff the app is paid — its `effective_egress`). The driver writes each app's
-allowlist to the policy dir as `<token>.json`.
+MANY apps, so it is PER-APP TOKEN-GATED: each app carries its own token (issued by the Team controller
+at deploy) and the proxy forwards a CONNECT only to the hosts THAT app declared in `[needs].egress`.
+The Team controller writes each app's allowlist to the policy dir as `<token>.json`.
 
 Deny-by-default and fail-closed: an unknown token, an app that declared no egress, an unlisted host, a
 non-:443 port, or this process being down all mean the app reaches NOTHING external. Same CONNECT-only,

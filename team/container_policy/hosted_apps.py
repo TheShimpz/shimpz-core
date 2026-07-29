@@ -141,8 +141,8 @@ def _app_egress_token(
 ) -> str | None:
     """The app instance's stable egress token (its Proxy-Authorization to app-egress-proxy).
 
-    Kept in the policy volume (drivers + proxy only) and reused across reinstalls, exactly like
-    shimpz-driver's per-app tokens — the proxy maps token → this instance's own allowlist.
+    Kept in the policy volume (Team controller + proxy only) and reused across reinstalls. The proxy
+    maps the token to this App instance's own allowlist.
     """
     try:
         current_store = store if store is not None else _egress_store()

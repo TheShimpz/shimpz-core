@@ -106,8 +106,8 @@ def model_for_brain(brain: str, value: object = None) -> str:
     return model
 
 
-# Per-team APP envelope (mirrors drivers/apps: 1g because real uvicorn backends idle near 500 MiB —
-# R125; 0.5 vCPU; pids capped). One installed app = one container INSIDE the team's own network.
+# Per-Team App envelope: 1g because real uvicorn backends idle near 500 MiB, 0.5 vCPU, and capped
+# PIDs. One installed App is one container inside the Team's own network.
 APP_MEM_LIMIT = os.environ.get("SHIMPZ_TEAM_APP_MEM_LIMIT", "1g")
 APP_NANO_CPUS = int(os.environ.get("SHIMPZ_TEAM_APP_NANO_CPUS", str(500_000_000)))
 APP_PIDS_LIMIT = int(os.environ.get("SHIMPZ_TEAM_APP_PIDS_LIMIT", "256"))
