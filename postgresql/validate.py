@@ -8,35 +8,13 @@ not the client that acts on its output.
 from __future__ import annotations
 
 import re
-import secrets
 
-# Postgres identifier limit is 63 bytes; dbname/role are "proj_" + this, so leave room for the prefix.
-PROJECT_NAME_RE = re.compile(r"^[a-z0-9_]{1,58}$")
 TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 PRINCIPAL_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 class ValidationError(Exception):
     """A postgresql-service request failed the allowlist — nothing was touched."""
-
-
-def sanitize_proj(name: str) -> str:
-    """Port of shimpzdetect.sh's _sanitize_proj.
-
-    MUST match it exactly so Shimpz Apps and the server-side service independently derive the same
-    proj_<name> identity from a raw project name.
-    """
-    lowered = re.sub(r"[^a-z0-9_]+", "_", str(name).lower())
-    return lowered.strip("_")
-
-
-def validate_project(name: object) -> str:
-    if not isinstance(name, str) or not name:
-        raise ValidationError(f"project name must be a non-empty string: {name!r}")
-    sanitized = sanitize_proj(name)
-    if not sanitized or not PROJECT_NAME_RE.match(sanitized):
-        raise ValidationError(f"project name sanitizes to empty or invalid: {name!r} -> {sanitized!r}")
-    return sanitized
 
 
 def validate_team_id(value: object) -> str:
@@ -53,8 +31,3 @@ def validate_principal_token(value: object) -> str:
 
 def team_project(team_id: str) -> str:
     return f"team_{validate_team_id(team_id)}"
-
-
-def tokens_equal(left: str, right: str) -> bool:
-    """Constant-time comparison for the control-plane bearer."""
-    return secrets.compare_digest(left, right)

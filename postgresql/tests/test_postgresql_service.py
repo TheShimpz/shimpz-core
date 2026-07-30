@@ -21,7 +21,10 @@ sys.path.insert(0, str(POSTGRESQL))
 MODULE_STATE = tempfile.TemporaryDirectory(prefix="postgresql-service-module-test-")
 PASSWORD_FILE = Path(MODULE_STATE.name) / "postgres-password"
 PASSWORD_FILE.write_text("test-superuser-secret-long-enough\n", encoding="ascii")
-os.environ.setdefault("SHIMPZ_POSTGRESQL_DSN", "postgresql://shimpz-brain@postgres:5432/postgres")
+os.environ.setdefault(
+    "SHIMPZ_POSTGRESQL_DSN",
+    "postgresql://shimpz-postgresql-service@postgres:5432/postgres",
+)
 os.environ["SHIMPZ_POSTGRESQL_PASSWORD_FILE"] = str(PASSWORD_FILE)
 os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_FILE"] = str(Path(MODULE_STATE.name) / "token")
 os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GROUP"] = grp.getgrgid(os.getgid()).gr_name
@@ -68,28 +71,11 @@ class PostgreSQLServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_project_validation_matches_postgres_identifier_limits(self) -> None:
-        cases = {
-            "Laudoctor": "laudoctor",
-            "my project!!": "my_project",
-            "  leading-trailing  ": "leading_trailing",
-            "UP--PER": "up_per",
-        }
-        for raw, expected in cases.items():
-            with self.subTest(raw=raw):
-                self.assertEqual(validate.validate_project(raw), expected)
-
-        for invalid in ("", None, 123, "!!!", "a" * 59):
-            with self.subTest(invalid=invalid), self.assertRaises(validate.ValidationError):
-                validate.validate_project(invalid)
-
     def test_team_and_principal_identifiers_are_server_derived(self) -> None:
-        self.assertEqual(validate.team_project("captain_01"), "team_captain_01")
+        self.assertEqual(validate.team_project("alpha_01"), "team_alpha_01")
 
         token = "a" * 64
         self.assertEqual(validate.validate_principal_token(token), token)
-        self.assertTrue(validate.tokens_equal(token, token))
-        self.assertFalse(validate.tokens_equal(token, "b" * 64))
         for invalid in ("", "a" * 63, "A" * 64, "z" * 64, None):
             with self.subTest(invalid=invalid), self.assertRaises(validate.ValidationError):
                 validate.validate_principal_token(invalid)

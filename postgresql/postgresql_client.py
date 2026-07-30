@@ -2,7 +2,7 @@
 
 Shells out to fixed psql/createdb/dropdb CLI invocations inside the sole Postgres-superuser holder.
 SQL is delivered on psql stdin so a derived tenant password never appears in process argv. Every
-identifier interpolated into SQL comes from validate.py's sanitize_proj first (`[a-z0-9_]` only).
+identifier interpolated into SQL is derived from validate.py's strict Team ID allowlist.
 """
 
 from __future__ import annotations
@@ -210,10 +210,3 @@ def drop_db_and_role(project: str) -> dict:
         _run(["dropdb", *_PG_ARGS, "--if-exists", db])
         _psql("postgres", f'DROP ROLE IF EXISTS "{role}"')
         return {"dropped": db}
-
-
-def project_resources_exist(project: str) -> bool:
-    """Whether either exact Postgres artifact remains for an unregistered idempotent drop."""
-    with mutation_lock():
-        database = dbname(project)
-        return _db_exists(database) or _role_exists(database)
