@@ -1,4 +1,4 @@
-#!/opt/venv/bin/python
+#!/usr/local/bin/python3
 """Tenant-scoped postgresql-service: one hashed principal and exact DB set per Team."""
 
 from __future__ import annotations
