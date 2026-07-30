@@ -1,4 +1,4 @@
-"""The ONLY place SHIMPZ_POSTGRESQL_DSN is ever read or sent.
+"""The only place the PostgreSQL administrator endpoint and password file are combined.
 
 Shells out to fixed psql/createdb/dropdb CLI invocations inside the sole Postgres-superuser holder.
 SQL is delivered on psql stdin so a derived tenant password never appears in process argv. Every
@@ -9,19 +9,44 @@ from __future__ import annotations
 
 import hmac
 import os
+import stat
 import subprocess
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from urllib.parse import urlsplit
 
 _dsn = urlsplit(os.environ.get("SHIMPZ_POSTGRESQL_DSN", ""))
+if _dsn.password is not None:
+    raise RuntimeError("SHIMPZ_POSTGRESQL_DSN must not contain a password")
 PGHOST = _dsn.hostname or "postgres"
 PGPORT = _dsn.port or 5432
 PGUSER = _dsn.username or ""
-PGPASSWORD = _dsn.password or ""
+PASSWORD_PATH = Path(
+    os.environ.get(
+        "SHIMPZ_POSTGRESQL_PASSWORD_FILE",
+        "/run/shimpz-postgresql/password",
+    )
+)
+
+
+def _load_password(path: Path) -> str:
+    try:
+        metadata = path.lstat()
+        password = path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError("PostgreSQL administrator password file is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise RuntimeError("PostgreSQL administrator password path is not a regular file")
+    if not 24 <= len(password) <= 256 or any(character.isspace() for character in password):
+        raise RuntimeError("PostgreSQL administrator password file is invalid")
+    return password
+
+
+PGPASSWORD = _load_password(PASSWORD_PATH)
 
 _PG_ARGS = ["-h", PGHOST, "-p", str(PGPORT), "-U", PGUSER]
 _ENV = {**os.environ, "PGPASSWORD": PGPASSWORD}

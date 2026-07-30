@@ -19,7 +19,10 @@ POSTGRESQL = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(POSTGRESQL))
 
 MODULE_STATE = tempfile.TemporaryDirectory(prefix="postgresql-service-module-test-")
-os.environ.setdefault("SHIMPZ_POSTGRESQL_DSN", "postgresql://shimpz-brain:test-superuser-secret@postgres:5432/postgres")
+PASSWORD_FILE = Path(MODULE_STATE.name) / "postgres-password"
+PASSWORD_FILE.write_text("test-superuser-secret-long-enough\n", encoding="ascii")
+os.environ.setdefault("SHIMPZ_POSTGRESQL_DSN", "postgresql://shimpz-brain@postgres:5432/postgres")
+os.environ["SHIMPZ_POSTGRESQL_PASSWORD_FILE"] = str(PASSWORD_FILE)
 os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_FILE"] = str(Path(MODULE_STATE.name) / "token")
 os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GROUP"] = grp.getgrgid(os.getgid()).gr_name
 os.environ["SHIMPZ_POSTGRESQL_SERVICE_PRINCIPALS_FILE"] = str(Path(MODULE_STATE.name) / "principals.json")
@@ -33,6 +36,15 @@ import validate
 
 
 class PostgreSQLServiceTests(unittest.TestCase):
+    def test_administrator_password_is_file_backed_and_strict(self) -> None:
+        self.assertEqual(postgresql_client.PGPASSWORD, "test-superuser-secret-long-enough")
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            postgresql_client._load_password(Path(self.temporary.name) / "missing")
+        short = Path(self.temporary.name) / "short"
+        short.write_text("too-short\n", encoding="ascii")
+        with self.assertRaisesRegex(RuntimeError, "invalid"):
+            postgresql_client._load_password(short)
+
     def test_rejects_excess_connections_without_starting_threads(self) -> None:
         server = app.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0),

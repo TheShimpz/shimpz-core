@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # check=skip=SecretsUsedInArgOrEnv ; false positive: the *_TOKEN_GID/*_TOKEN_* ARGs here hold numeric group IDs and file paths, never secret values
 #
-# postgresql-service — the ONLY container that holds SHIMPZ_POSTGRESQL_DSN (the Postgres superuser DSN).
+# postgresql-service — the only container that reads the PostgreSQL administrator password file.
 # Neither the platform Brain nor a Team sees it. Team provisions a random hashed principal,
 # and each Team principal can mutate only its exact registered database set. This sidecar deliberately
 # holds no Cloudflare, Docker, or account credential.
