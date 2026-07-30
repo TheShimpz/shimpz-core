@@ -45,11 +45,7 @@ def _read() -> dict[str, dict[str, object]]:
             raise PrincipalStoreError("principal registry contains an invalid record")
         team_id = record.get("team_id")
         database = record.get("database")
-        if (
-            not isinstance(team_id, str)
-            or not isinstance(database, str)
-            or _DATABASE_RE.fullmatch(database) is None
-        ):
+        if not isinstance(team_id, str) or not isinstance(database, str) or _DATABASE_RE.fullmatch(database) is None:
             raise PrincipalStoreError("principal registry contains an invalid record")
         if not isinstance(record.get("retired", False), bool):
             raise PrincipalStoreError("principal registry contains an invalid retirement state")
@@ -81,10 +77,7 @@ def register(team_id: str, token: str, database: str) -> None:
             raise PrincipalStoreError("principal registry contains duplicate Team identities")
         if existing and existing[0].get("retired", False):
             raise PrincipalError("Team principal must be finalized before reprovisioning")
-        if any(
-            record.get("database") == database and record.get("team_id") != team_id
-            for record in data.values()
-        ):
+        if any(record.get("database") == database and record.get("team_id") != team_id for record in data.values()):
             raise PrincipalStoreError("Team database is already assigned to another principal")
         for digest, record in list(data.items()):
             if record.get("team_id") == team_id:
