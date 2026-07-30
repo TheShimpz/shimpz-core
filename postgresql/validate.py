@@ -13,9 +13,7 @@ import secrets
 # Postgres identifier limit is 63 bytes; dbname/role are "proj_" + this, so leave room for the prefix.
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_]{1,58}$")
 TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 PRINCIPAL_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
-DATABASE_NAMESPACE_RE = re.compile(r"^[a-f0-9]{12}$")
 
 
 class ValidationError(Exception):
@@ -47,12 +45,6 @@ def validate_team_id(value: object) -> str:
     return value
 
 
-def validate_app_id(value: object) -> str:
-    if not isinstance(value, str) or not APP_ID_RE.fullmatch(value):
-        raise ValidationError("app_id must match [a-z0-9][a-z0-9-]{0,39}")
-    return value
-
-
 def validate_principal_token(value: object) -> str:
     if not isinstance(value, str) or not PRINCIPAL_TOKEN_RE.fullmatch(value):
         raise ValidationError("principal_token must be a 256-bit lowercase hex token")
@@ -61,13 +53,6 @@ def validate_principal_token(value: object) -> str:
 
 def team_project(team_id: str) -> str:
     return f"team_{validate_team_id(team_id)}"
-
-
-def team_app_project(database_namespace: str, app_id: str) -> str:
-    if not isinstance(database_namespace, str) or DATABASE_NAMESPACE_RE.fullmatch(database_namespace) is None:
-        raise ValidationError("database namespace must be 48-bit lowercase hex")
-    app = validate_app_id(app_id).replace("-", "_")
-    return f"team_{database_namespace}_{app}"
 
 
 def tokens_equal(left: str, right: str) -> bool:

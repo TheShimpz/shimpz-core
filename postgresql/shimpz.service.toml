@@ -2,7 +2,7 @@ schema_version = 1
 id = "postgresql"
 title = "PostgreSQL"
 version = "3.0.0"
-summary = "Managed PostgreSQL databases isolated per Team and App."
+summary = "One managed PostgreSQL database isolated per Hosted Team."
 interface = "shimpz.postgresql/v1"
 scope = "space"
 credential_policy = "managed"
@@ -16,6 +16,4 @@ operations = [
   "team.provision",
   "team.finalize",
   "team.drop",
-  "team.app.create",
-  "team.app.drop",
 ]

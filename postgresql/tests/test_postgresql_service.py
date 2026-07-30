@@ -71,13 +71,8 @@ class PostgreSQLServiceTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(validate.ValidationError):
                 validate.validate_project(invalid)
 
-    def test_team_app_and_principal_identifiers_are_server_derived(self) -> None:
+    def test_team_and_principal_identifiers_are_server_derived(self) -> None:
         self.assertEqual(validate.team_project("captain_01"), "team_captain_01")
-        first = validate.team_app_project("a" * 12, "notification-center")
-        second = validate.team_app_project("b" * 12, "notification-center")
-        self.assertTrue(first.startswith("team_") and first.endswith("_notification_center"))
-        self.assertNotEqual(first, second)
-        self.assertLessEqual(len(postgresql_client.dbname(validate.team_app_project("f" * 12, "a" * 40))), 63)
 
         token = "a" * 64
         self.assertEqual(validate.validate_principal_token(token), token)
@@ -132,40 +127,54 @@ class PostgreSQLServiceTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["stdin"], "SELECT 1 WHERE rolname = :'role_name'\n")
         self.assertIn("role_name=proj_website", command)
 
-    def test_principal_registry_hashes_tokens_and_enforces_exact_scope(self) -> None:
+    def test_principal_registry_hashes_tokens_and_enforces_one_exact_database(self) -> None:
         token_a, token_b = "a" * 64, "b" * 64
         main_database = "proj_team_alpha"
-        app_database = "proj_team_hash_application"
         principal_store.register("alpha", token_a, main_database)
-        namespace_a = principal_store.database_namespace(token_a, "alpha")
 
         stored = principal_store.STATE_PATH.read_text(encoding="utf-8")
         self.assertNotIn(token_a, stored)
         self.assertEqual(principal_store.STATE_PATH.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(principal_store.databases(token_a, "alpha"), {main_database})
-
-        principal_store.add_database(token_a, "alpha", app_database)
-        self.assertEqual(principal_store.databases(token_a, "alpha"), {main_database, app_database})
+        self.assertEqual(principal_store.database(token_a, "alpha"), main_database)
+        self.assertTrue(principal_store.owns_database("alpha", main_database))
+        self.assertFalse(principal_store.owns_database("alpha", "proj_team_other"))
         with self.assertRaises(principal_store.PrincipalError):
-            principal_store.databases(token_b, "alpha")
+            principal_store.database(token_b, "alpha")
         with self.assertRaises(principal_store.PrincipalError):
-            principal_store.databases(token_a, "other")
+            principal_store.database(token_a, "other")
 
         principal_store.register("alpha", token_b, main_database)
         with self.assertRaises(principal_store.PrincipalError):
-            principal_store.databases(token_a, "alpha")
-        self.assertEqual(principal_store.databases(token_b, "alpha"), {main_database})
-        self.assertEqual(principal_store.database_namespace(token_b, "alpha"), namespace_a)
+            principal_store.database(token_a, "alpha")
+        self.assertEqual(principal_store.database(token_b, "alpha"), main_database)
 
         principal_store.register("beta", token_a, "proj_team_beta")
-        self.assertNotEqual(principal_store.database_namespace(token_a, "beta"), namespace_a)
+        with self.assertRaises(principal_store.PrincipalStoreError):
+            principal_store.register("beta", token_a, main_database)
+        with self.assertRaises(principal_store.PrincipalStoreError):
+            principal_store.register("gamma", "c" * 64, "unscoped")
+
+    def test_retired_multi_database_registry_shape_is_rejected(self) -> None:
+        principal_store.STATE_PATH.write_text(
+            json.dumps(
+                {
+                    "a" * 64: {
+                        "team_id": "alpha",
+                        "databases": ["proj_team_alpha"],
+                        "database_namespace": "b" * 12,
+                        "retired": False,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(principal_store.PrincipalStoreError):
+            principal_store._read()
 
     def test_team_drop_is_idempotent_until_finalization(self) -> None:
         token = "c" * 64
         main_database = "proj_team_alpha"
-        app_database = "proj_team_hash_application"
         principal_store.register("alpha", token, main_database)
-        principal_store.add_database(token, "alpha", app_database)
 
         with mock.patch.object(
             postgresql_client,
@@ -175,64 +184,37 @@ class PostgreSQLServiceTests(unittest.TestCase):
             first = app._drop_team({"team_id": "alpha"}, token)
             retry = app._drop_team({"team_id": "alpha"}, token)
 
-        self.assertEqual(set(first["dropped"]), {main_database, app_database})
-        self.assertEqual(retry["dropped"], [])
+        self.assertEqual(first["dropped"], [main_database])
+        self.assertEqual(retry["dropped"], [main_database])
         self.assertEqual(drop.call_count, 2)
-        self.assertEqual(principal_store.databases(token, "alpha", allow_retired=True), set())
+        self.assertEqual(principal_store.database(token, "alpha", allow_retired=True), main_database)
         with self.assertRaises(principal_store.PrincipalError):
-            principal_store.databases(token, "alpha")
+            principal_store.database(token, "alpha")
         self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
         self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
 
-    def test_app_drop_requires_physical_absence_before_idempotent_success(self) -> None:
+    def test_retired_principal_blocks_reprovision_until_finalized(self) -> None:
         token = "d" * 64
-        principal_store.register("alpha", token, "proj_team_alpha")
-        body = {"team_id": "alpha", "app_id": "notification-center"}
+        database = "proj_team_alpha"
+        principal_store.register("alpha", token, database)
+        principal_store.retire(token, "alpha")
 
-        with mock.patch.object(postgresql_client, "project_resources_exist", return_value=False):
-            self.assertTrue(app._drop_app(body, token)["already_absent"])
+        with self.assertRaisesRegex(principal_store.PrincipalError, "finalized"):
+            principal_store.owns_database("alpha", database)
+        with self.assertRaisesRegex(principal_store.PrincipalError, "finalized"):
+            principal_store.register("alpha", "e" * 64, database)
+
+        principal_store.finalize("alpha")
+        principal_store.register("alpha", "e" * 64, database)
+        self.assertEqual(principal_store.database("e" * 64, "alpha"), database)
+
+    def test_unknown_internal_operation_cannot_fall_through_to_drop(self) -> None:
         with (
-            mock.patch.object(postgresql_client, "project_resources_exist", return_value=True),
-            self.assertRaises(principal_store.PrincipalError),
+            mock.patch.object(app, "_drop_team") as drop,
+            self.assertRaisesRegex(app.ApiError, "unsupported operation"),
         ):
-            app._drop_app(body, token)
-
-    def test_app_create_refuses_to_adopt_an_unregistered_database(self) -> None:
-        token = "e" * 64
-        team_id = "attacker"
-        app_id = "notification-center"
-        principal_store.register(team_id, token, "proj_team_attacker")
-        project = validate.team_app_project(principal_store.database_namespace(token, team_id), app_id)
-
-        with (
-            mock.patch.object(postgresql_client, "project_resources_exist", return_value=True) as exists,
-            mock.patch.object(postgresql_client, "create_db_and_role") as create,
-            self.assertRaisesRegex(principal_store.PrincipalError, "unregistered App database"),
-        ):
-            app._create_app({"team_id": team_id, "app_id": app_id}, token)
-
-        exists.assert_called_once_with(project)
-        create.assert_not_called()
-
-    def test_app_create_allows_a_registered_same_team_retry(self) -> None:
-        token = "f" * 64
-        team_id = "alpha"
-        app_id = "notification-center"
-        principal_store.register(team_id, token, "proj_team_alpha")
-        project = validate.team_app_project(principal_store.database_namespace(token, team_id), app_id)
-        database = postgresql_client.dbname(project)
-        principal_store.add_database(token, team_id, database)
-        provisioned = postgresql_client.ProvisionResult("postgresql://redacted", False, False)
-
-        with (
-            mock.patch.object(postgresql_client, "project_resources_exist") as exists,
-            mock.patch.object(postgresql_client, "create_db_and_role", return_value=provisioned) as create,
-        ):
-            result = app._create_app({"team_id": team_id, "app_id": app_id}, token)
-
-        exists.assert_not_called()
-        create.assert_called_once_with(project, allow_existing=True)
-        self.assertEqual(result, {"database_url": "postgresql://redacted", "created": False})
+            app._run_operation("future.operation", {"team_id": "alpha"}, "a" * 64)
+        drop.assert_not_called()
 
     def test_client_refuses_foreign_or_incomplete_existing_resources(self) -> None:
         with (
@@ -259,7 +241,7 @@ class PostgreSQLServiceTests(unittest.TestCase):
         self.assertEqual(manifest.data_plane, "direct")
         self.assertEqual(
             set(manifest.operations),
-            {"team.provision", "team.finalize", "team.drop", "team.app.create", "team.app.drop"},
+            {"team.provision", "team.finalize", "team.drop"},
         )
         self.assertTrue({"credentials", "secrets"}.isdisjoint(manifest.public()))
 
@@ -294,6 +276,12 @@ class PostgreSQLServiceTests(unittest.TestCase):
             status, payload = self.http(server, "POST", "/v1/teams/provision", body={})
             self.assertEqual(status, 403)
             self.assertEqual(payload, {"error": "bearer required"})
+
+            for retired_path in ("/v1/teams/apps/create", "/v1/teams/apps/drop"):
+                with self.subTest(retired_path=retired_path):
+                    status, payload = self.http(server, "POST", retired_path, body={})
+                    self.assertEqual(status, 404)
+                    self.assertEqual(payload, {"error": f"no route for POST {retired_path}"})
 
             with mock.patch.object(
                 app,

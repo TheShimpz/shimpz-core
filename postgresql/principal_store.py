@@ -1,4 +1,4 @@
-"""Hashed postgresql-service principals scoped to one Team and its exact database set."""
+"""Hashed postgresql-service principals scoped to one Hosted Team database."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import threading
 from pathlib import Path
 
@@ -17,7 +16,7 @@ STATE_PATH = Path(
     )
 )
 _lock = threading.RLock()
-_DATABASE_NAMESPACE_RE = re.compile(r"[a-f0-9]{12}\Z")
+_DATABASE_RE = re.compile(r"proj_[a-z0-9_]{1,58}\Z")
 
 
 class PrincipalError(Exception):
@@ -45,22 +44,18 @@ def _read() -> dict[str, dict[str, object]]:
         if not isinstance(digest, str) or not isinstance(record, dict):
             raise PrincipalStoreError("principal registry contains an invalid record")
         team_id = record.get("team_id")
-        databases = record.get("databases")
-        database_namespace = record.get("database_namespace")
+        database = record.get("database")
         if (
             not isinstance(team_id, str)
-            or not isinstance(databases, list)
-            or not isinstance(database_namespace, str)
-            or _DATABASE_NAMESPACE_RE.fullmatch(database_namespace) is None
+            or not isinstance(database, str)
+            or _DATABASE_RE.fullmatch(database) is None
         ):
             raise PrincipalStoreError("principal registry contains an invalid record")
-        if not all(isinstance(database, str) for database in databases):
-            raise PrincipalStoreError("principal registry contains an invalid database set")
         if not isinstance(record.get("retired", False), bool):
             raise PrincipalStoreError("principal registry contains an invalid retirement state")
-    namespaces = [record["database_namespace"] for record in data.values()]
-    if len(namespaces) != len(set(namespaces)):
-        raise PrincipalStoreError("principal registry contains a duplicate database namespace")
+    databases = [record["database"] for record in data.values()]
+    if len(databases) != len(set(databases)):
+        raise PrincipalStoreError("principal registry contains a duplicate Team database")
     return data
 
 
@@ -78,38 +73,28 @@ def _write(data: dict[str, dict[str, object]]) -> None:
 def register(team_id: str, token: str, database: str) -> None:
     """Register or rotate exactly one principal for `team_id`; cleartext is never stored."""
     with _lock:
+        if not isinstance(database, str) or _DATABASE_RE.fullmatch(database) is None:
+            raise PrincipalStoreError("cannot register an invalid Team database")
         data = _read()
         existing = [record for record in data.values() if record.get("team_id") == team_id]
         if len(existing) > 1:
             raise PrincipalStoreError("principal registry contains duplicate Team identities")
-        if existing:
-            database_namespace = existing[0]["database_namespace"]
-        else:
-            used = {record["database_namespace"] for record in data.values()}
-            while (database_namespace := secrets.token_hex(6)) in used:
-                pass
+        if existing and existing[0].get("retired", False):
+            raise PrincipalError("Team principal must be finalized before reprovisioning")
+        if any(
+            record.get("database") == database and record.get("team_id") != team_id
+            for record in data.values()
+        ):
+            raise PrincipalStoreError("Team database is already assigned to another principal")
         for digest, record in list(data.items()):
             if record.get("team_id") == team_id:
                 del data[digest]
         data[_digest(token)] = {
             "team_id": team_id,
-            "databases": [database],
-            "database_namespace": database_namespace,
+            "database": database,
             "retired": False,
         }
         _write(data)
-
-
-def database_namespace(token: str, team_id: str) -> str:
-    """Return the registry-assigned namespace only to its exact active principal."""
-    with _lock:
-        record = _read().get(_digest(token))
-        if record is None or record.get("team_id") != team_id or record.get("retired", False):
-            raise PrincipalError("unknown principal or team scope mismatch")
-        value = record.get("database_namespace")
-        if not isinstance(value, str) or _DATABASE_NAMESPACE_RE.fullmatch(value) is None:
-            raise PrincipalError("principal registry contains an invalid database namespace")
-        return value
 
 
 def owns_database(team_id: str, database: str) -> bool:
@@ -120,64 +105,32 @@ def owns_database(team_id: str, database: str) -> bool:
             raise PrincipalStoreError("principal registry contains duplicate Team identities")
         if not matches:
             return False
-        databases = matches[0].get("databases")
-        if not isinstance(databases, list):
-            raise PrincipalStoreError("principal registry contains an invalid database set")
-        return database in databases
+        if matches[0].get("retired", False):
+            raise PrincipalError("Team principal must be finalized before reprovisioning")
+        return matches[0].get("database") == database
 
 
-def databases(token: str, team_id: str, *, allow_retired: bool = False) -> frozenset[str]:
+def database(token: str, team_id: str, *, allow_retired: bool = False) -> str:
     with _lock:
         record = _read().get(_digest(token))
         if record is None or record.get("team_id") != team_id:
             raise PrincipalError("unknown principal or team scope mismatch")
         if record.get("retired", False) and not allow_retired:
             raise PrincipalError("Team principal is retired")
-        values = record.get("databases")
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-            raise PrincipalError("principal registry contains an invalid database set")
-        return frozenset(values)
-
-
-def add_database(token: str, team_id: str, database: str) -> None:
-    with _lock:
-        data = _read()
-        digest = _digest(token)
-        record = data.get(digest)
-        if record is None or record.get("team_id") != team_id or record.get("retired", False):
-            raise PrincipalError("unknown principal or team scope mismatch")
-        values = record.get("databases")
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-            raise PrincipalError("principal registry contains an invalid database set")
-        record["databases"] = sorted({*values, database})
-        _write(data)
-
-
-def remove_database(token: str, team_id: str, database: str) -> None:
-    with _lock:
-        data = _read()
-        digest = _digest(token)
-        record = data.get(digest)
-        if record is None or record.get("team_id") != team_id or record.get("retired", False):
-            raise PrincipalError("unknown principal or team scope mismatch")
-        values = record.get("databases")
-        if not isinstance(values, list) or database not in values:
-            raise PrincipalError("database is outside this principal's scope")
-        record["databases"] = [value for value in values if value != database]
-        _write(data)
+        value = record.get("database")
+        if not isinstance(value, str) or _DATABASE_RE.fullmatch(value) is None:
+            raise PrincipalError("principal registry contains an invalid database")
+        return value
 
 
 def retire(token: str, team_id: str) -> None:
-    """Keep an empty, idempotent drop proof until the controller finalizes runtime cleanup."""
+    """Keep the exact dropped database as an idempotent proof until runtime cleanup finalizes."""
     with _lock:
         data = _read()
         digest = _digest(token)
         record = data.get(digest)
         if record is None or record.get("team_id") != team_id:
             raise PrincipalError("unknown principal or team scope mismatch")
-        values = record.get("databases")
-        if not isinstance(values, list) or values:
-            raise PrincipalError("cannot retire a principal with registered databases")
         record["retired"] = True
         _write(data)
 
@@ -189,20 +142,9 @@ def finalize(team_id: str) -> None:
         matched = [digest for digest, record in data.items() if record.get("team_id") == team_id]
         for digest in matched:
             record = data[digest]
-            if not record.get("retired", False) or record.get("databases"):
+            if not record.get("retired", False):
                 raise PrincipalError("Team principal is still active")
         if matched:
             for digest in matched:
                 del data[digest]
             _write(data)
-
-
-def remove(token: str, team_id: str) -> None:
-    with _lock:
-        data = _read()
-        digest = _digest(token)
-        record = data.get(digest)
-        if record is None or record.get("team_id") != team_id:
-            raise PrincipalError("unknown principal or team scope mismatch")
-        del data[digest]
-        _write(data)
