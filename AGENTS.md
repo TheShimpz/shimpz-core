@@ -5,7 +5,7 @@
 - This repository owns Space-scoped Services. PostgreSQL is currently the only Service.
 - A Service exposes one common platform API while preserving isolated Team bindings. This repository does not own
   Team lifecycle, Assistant egress, Assistant release, Brain egress, or generic shared daemons.
-- Read the canonical [Shimpz architecture](https://github.com/TheShimpz/shimpz/blob/main/docs/ARCHITECTURE.md)
+- Read the canonical [Shimpz architecture](https://github.com/TheShimpz/shimpz/blob/main/.context/ARCHITECTURE.md)
   before adding a Service or changing authority, protocols, runtime topology, or source placement. Adding a Service
   requires an ADR.
 
