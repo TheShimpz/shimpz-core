@@ -11,7 +11,7 @@
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
 ARG SOURCE_DATE_EPOCH=0
 
-ARG DEBIAN_SNAPSHOT=20260623T000000Z
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
 RUN set -eux; \
     . /etc/os-release; \
     archive_keyring="$(find /usr/share/keyrings -maxdepth 1 -type f -name 'debian-archive-keyring.*' -print -quit)"; \
