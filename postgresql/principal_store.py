@@ -110,10 +110,7 @@ def database(token: str, team_id: str, *, allow_retired: bool = False) -> str:
             raise PrincipalError("unknown principal or team scope mismatch")
         if record.get("retired", False) and not allow_retired:
             raise PrincipalError("Team principal is retired")
-        value = record.get("database")
-        if not isinstance(value, str) or _DATABASE_RE.fullmatch(value) is None:
-            raise PrincipalError("principal registry contains an invalid database")
-        return value
+        return record["database"]
 
 
 def retire(token: str, team_id: str) -> None:
