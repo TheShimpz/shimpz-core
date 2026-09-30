@@ -172,6 +172,8 @@ def create_db_and_role(project: str, *, allow_existing: bool = False) -> Provisi
         if allow_existing and not database_existed:
             raise PostgreSQLError(f'registered Postgres resources for "{db}" are missing')
 
+        # A creation counts as attempted before its command runs: a command that fails or times out may still have
+        # committed, and absence was proven above under the mutation lock, so compensation drops it if present.
         role_created = False
         database_created = False
         try:
@@ -179,12 +181,12 @@ def create_db_and_role(project: str, *, allow_existing: bool = False) -> Provisi
             if role_existed:
                 _psql("postgres", f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
             else:
-                _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
                 role_created = True
+                _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
             # 2) database OWNED by that role — the project is never the superuser.
             if not database_existed:
-                _run(["createdb", *_PG_ARGS, "-O", role, db])
                 database_created = True
+                _run(["createdb", *_PG_ARGS, "-O", role, db])
             # 3) lock it down: ONLY this role may connect; it owns public so it can create tables.
             _psql("postgres", f'REVOKE CONNECT ON DATABASE "{db}" FROM PUBLIC')
             _psql("postgres", f'GRANT ALL ON DATABASE "{db}" TO "{role}"')
