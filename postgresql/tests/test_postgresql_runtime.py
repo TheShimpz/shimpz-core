@@ -93,14 +93,20 @@ class _FakePostgres:
         self.roles = set(roles or ())
         self.databases = set(databases or ())
         self.crash_on_createdb = False
+        self.fail_after: str | None = None
         self.commands: list[str] = []
+
+    def _record(self, command: str) -> None:
+        """Record an applied command; `fail_after` models a command that committed and then timed out."""
+        self.commands.append(command)
+        if command == self.fail_after:
+            raise postgresql_client.PostgreSQLError("Postgres command timed out")
 
     def psql(self, _database: str, sql: str, variables: dict[str, str] | None = None) -> str:
         if "FROM pg_roles" in sql:
             return "1\n" if variables["role_name"] in self.roles else ""
         if "FROM pg_database" in sql:
             return "1\n" if variables["database_name"] in self.databases else ""
-        self.commands.append(sql.split(' "')[0])
         name = sql.split('"')[1]
         if sql.startswith("CREATE ROLE"):
             if name in self.roles:
@@ -108,11 +114,11 @@ class _FakePostgres:
             self.roles.add(name)
         elif sql.startswith("DROP ROLE IF EXISTS"):
             self.roles.discard(name)
+        self._record(sql.split(' "')[0])
         return ""
 
     def run(self, command: list[str], *, stdin: str | None = None) -> str:
         tool, name = command[0], command[-1]
-        self.commands.append(tool)
         if tool == "createdb":
             if self.crash_on_createdb:
                 raise _Crash
@@ -121,6 +127,7 @@ class _FakePostgres:
             self.databases.add(name)
         elif tool == "dropdb":
             self.databases.discard(name)
+        self._record(tool)
         return ""
 
     @contextlib.contextmanager
@@ -484,7 +491,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
         with mock.patch.object(postgresql_client.subprocess, "run", return_value=completed):
             self.assertEqual(postgresql_client._run(["psql"]), "result")
         self.assertEqual(
-            postgresql_client.ProvisionResult("url", True, False).public(),
+            postgresql_client.ProvisionResult("url", created=True).public(),
             {"database_url": "url", "created": True},
         )
         with mock.patch.object(postgresql_client, "_psql", side_effect=("1\n", "0\n")):
@@ -500,8 +507,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             ):
                 result = postgresql_client.create_db_and_role("team_alpha", existing=existing)
             commands = [call.args[0] for call in run.call_args_list]
-            self.assertEqual(result.database_created, not existing)
-            self.assertEqual(result.role_created, not existing)
+            self.assertEqual(result.created, not existing)
             self.assertEqual(any(command[0] == "createdb" for command in commands), not existing)
             self.assertIn("ALTER ROLE" if existing else "CREATE ROLE", psql.call_args_list[0].args[1])
 
@@ -519,103 +525,57 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             ):
                 postgresql_client.require_resources("team_alpha", registered=exists)
 
-    def test_postgresql_client_compensates_failures_and_reports_failed_compensation(self) -> None:
-        for cleanup_failure in (False, True):
-            cleanup_error = postgresql_client.PostgreSQLError("cleanup") if cleanup_failure else None
-            with (
-                self.subTest(cleanup_failure=cleanup_failure),
-                mock.patch.object(
-                    postgresql_client,
-                    "_psql",
-                    side_effect=postgresql_client.PostgreSQLError("provision"),
-                ),
-                mock.patch.object(
-                    postgresql_client,
-                    "_cleanup_created_resources",
-                    side_effect=cleanup_error,
-                ) as cleanup,
-                self.assertRaises(postgresql_client.PostgreSQLError) as raised,
-            ):
-                postgresql_client.create_db_and_role("team_alpha", existing=False)
-            cleanup.assert_called_once()
-            self.assertEqual("compensation also failed" in str(raised.exception), cleanup_failure)
-
-    def test_a_creation_that_times_out_may_have_committed_and_is_still_compensated(self) -> None:
-        # A timed-out CREATE ROLE or createdb may have committed. Absence was proven under the mutation lock, so the
-        # compensation drops whatever the attempt may have created.
-        completed = mock.Mock(returncode=0, stdout="", stderr="")
-        role_timeout = postgresql_client.subprocess.TimeoutExpired(["psql"], 20)
-        database_timeout = postgresql_client.subprocess.TimeoutExpired(["createdb"], 20)
-        for name, outcomes, compensation in (
-            ("role", (role_timeout, completed), [("psql", 'DROP ROLE IF EXISTS "proj_team_alpha"\n')]),
-            (
-                "database",
-                (completed, database_timeout, completed, completed),
-                [("dropdb", ""), ("psql", 'DROP ROLE IF EXISTS "proj_team_alpha"\n')],
-            ),
-        ):
-            with (
-                self.subTest(timed_out=name),
-                mock.patch.object(postgresql_client.subprocess, "run", side_effect=outcomes) as run,
-                self.assertRaisesRegex(postgresql_client.PostgreSQLError, "timed out"),
-            ):
-                postgresql_client.create_db_and_role("team_alpha", existing=False)
-            commands = [(call.args[0][0], call.kwargs.get("input") or "") for call in run.call_args_list]
-            self.assertIn('CREATE ROLE "proj_team_alpha"', commands[0][1])
-            self.assertEqual(commands[-len(compensation) :], compensation)
-            if name == "database":
-                self.assertIn("--if-exists", run.call_args_list[2].args[0])
-
-    def test_postgresql_client_cleanup_rollback_and_drop_cover_each_resource(self) -> None:
-        postgresql_client._cleanup_created_resources("team", database_created=False, role_created=False)
-        with (
-            mock.patch.object(postgresql_client, "_run", side_effect=postgresql_client.PostgreSQLError("database")),
-            mock.patch.object(postgresql_client, "_psql", side_effect=postgresql_client.PostgreSQLError("role")),
-            self.assertRaisesRegex(postgresql_client.PostgreSQLError, "database; role"),
-        ):
-            postgresql_client._cleanup_created_resources("team", database_created=True, role_created=True)
-
-        with (
-            mock.patch.object(postgresql_client, "_run", return_value="") as run,
-            mock.patch.object(postgresql_client, "_psql", return_value="") as psql,
-        ):
-            postgresql_client.rollback_provision(
-                "team",
-                postgresql_client.ProvisionResult("url", database_created=True, role_created=True),
-            )
+    def test_postgresql_client_drop_removes_database_then_role(self) -> None:
+        with _FakePostgres(roles={"proj_team"}, databases={"proj_team"}).serving() as postgres:
             self.assertEqual(postgresql_client.drop_db_and_role("team"), {"dropped": "proj_team"})
-        self.assertGreaterEqual(run.call_count, 2)
-        self.assertGreaterEqual(psql.call_count, 2)
+        self.assertEqual((postgres.roles, postgres.databases), (set(), set()))
+        self.assertEqual(postgres.commands, ["dropdb", "DROP ROLE IF EXISTS"])
 
-    def test_app_provision_compensates_registry_failure(self) -> None:
-        result = postgresql_client.ProvisionResult("url", True, True)
-        with (
-            mock.patch.object(postgresql_client, "create_db_and_role", return_value=result),
-            mock.patch.object(app, "_claim_resources", return_value=False),
-            mock.patch.object(principal_store, "register") as register,
-            mock.patch.object(postgresql_client, "rollback_provision") as rollback,
+    def test_failed_creation_keeps_its_pending_resources_for_retry(self) -> None:
+        # A failed or timed-out command may still have committed; the durable pending intent owns whatever it left.
+        for failed, left_behind in (
+            ("CREATE ROLE", ({_ALPHA_DATABASE}, set())),
+            ("createdb", ({_ALPHA_DATABASE}, {_ALPHA_DATABASE})),
+            ("GRANT ALL ON DATABASE", ({_ALPHA_DATABASE}, {_ALPHA_DATABASE})),
         ):
-            self.assertEqual(
-                app._provision_team({"team_id": "alpha", "principal_token": "a" * 64}),
-                {"database_url": "url", "created": True},
-            )
-            register.side_effect = principal_store.PrincipalStoreError("registry")
-            with self.assertRaises(principal_store.PrincipalStoreError):
-                app._provision_team({"team_id": "alpha", "principal_token": "a" * 64})
-            rollback.assert_called_once_with("team_alpha", result)
+            principal_store.STATE_PATH.unlink(missing_ok=True)
+            with self.subTest(failed=failed), _FakePostgres().serving() as postgres:
+                with (
+                    mock.patch.object(postgres, "fail_after", failed),
+                    self.assertRaisesRegex(postgresql_client.PostgreSQLError, "timed out"),
+                ):
+                    app._provision_team(_ALPHA)
+                self.assertEqual((postgres.roles, postgres.databases), left_behind)
+                self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), principal_store.PENDING)
 
-        with (
-            mock.patch.object(postgresql_client, "create_db_and_role", return_value=result),
-            mock.patch.object(app, "_claim_resources", return_value=False),
-            mock.patch.object(principal_store, "register", side_effect=principal_store.PrincipalError("registry")),
-            mock.patch.object(
-                postgresql_client,
-                "rollback_provision",
-                side_effect=postgresql_client.PostgreSQLError("rollback"),
-            ),
-            self.assertRaisesRegex(postgresql_client.PostgreSQLError, "compensation failed"),
+                self.assertTrue(app._provision_team(_ALPHA)["created"])
+                self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), principal_store.ACTIVE)
+                self.assertEqual((postgres.roles, postgres.databases), ({_ALPHA_DATABASE}, {_ALPHA_DATABASE}))
+
+    def test_failed_registration_keeps_owned_resources_for_retry(self) -> None:
+        # os.fsync order for a new Team: intent contents, intent directory, registration contents, registration
+        # directory. Failing the registration's contents fsync precedes its replace; failing its directory fsync
+        # follows the replace, so `active` ownership has already landed when the failure surfaces.
+        for boundary, fsyncs, committed, retry_creates in (
+            ("before replace", [None, None, OSError("disk")], principal_store.PENDING, True),
+            ("after replace", [None, None, None, OSError("disk")], principal_store.ACTIVE, False),
         ):
-            app._provision_team({"team_id": "alpha", "principal_token": "a" * 64})
+            principal_store.STATE_PATH.unlink(missing_ok=True)
+            with self.subTest(boundary=boundary), _FakePostgres().serving() as postgres:
+                with (
+                    mock.patch.object(principal_store.os, "fsync", side_effect=fsyncs),
+                    self.assertRaisesRegex(principal_store.PrincipalStoreError, "could not be committed"),
+                ):
+                    app._provision_team(_ALPHA)
+                self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), committed)
+                self.assertEqual((postgres.roles, postgres.databases), ({_ALPHA_DATABASE}, {_ALPHA_DATABASE}))
+                self.assertNotIn("dropdb", postgres.commands)
+
+                postgres.commands.clear()
+                self.assertEqual(app._provision_team(_ALPHA)["created"], retry_creates)
+                self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), principal_store.ACTIVE)
+                self.assertEqual((postgres.roles, postgres.databases), ({_ALPHA_DATABASE}, {_ALPHA_DATABASE}))
+                self.assertEqual("dropdb" in postgres.commands, retry_creates)
 
     def test_provisioning_interrupted_by_process_death_is_reconciled_by_retry_or_drop(self) -> None:
         crashes = {

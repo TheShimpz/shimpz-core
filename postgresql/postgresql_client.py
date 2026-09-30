@@ -60,14 +60,13 @@ class PostgreSQLError(Exception):
 
 @dataclass(frozen=True)
 class ProvisionResult:
-    """Postgres resources created by one provisioning attempt."""
+    """The Team database URL and whether this attempt created its role and database."""
 
     database_url: str
-    database_created: bool
-    role_created: bool
+    created: bool
 
     def public(self) -> dict[str, object]:
-        return {"database_url": self.database_url, "created": self.database_created}
+        return {"database_url": self.database_url, "created": self.created}
 
 
 @contextmanager
@@ -82,7 +81,7 @@ def _run(cmd: list[str], *, stdin: str | None = None) -> str:
         result = subprocess.run(cmd, env=_ENV, input=stdin, capture_output=True, text=True, timeout=20, check=False)
     except subprocess.TimeoutExpired:
         # A timed-out command still carries its argv and stdin SQL; the typed failure is the only thing that crosses,
-        # so provisioning compensates the resources it already created.
+        # while a pending intent still owns whatever the command may have committed.
         raise PostgreSQLError("Postgres command timed out") from None
     except OSError:
         raise PostgreSQLError("Postgres command could not start") from None
@@ -141,23 +140,6 @@ def _db_exists(db: str) -> bool:
     )
 
 
-def _cleanup_created_resources(project: str, *, database_created: bool, role_created: bool) -> None:
-    db = dbname(project)
-    failures: list[str] = []
-    if database_created:
-        try:
-            _run(["dropdb", *_PG_ARGS, "--if-exists", db])
-        except PostgreSQLError as exc:
-            failures.append(str(exc))
-    if role_created:
-        try:
-            _psql("postgres", f'DROP ROLE IF EXISTS "{db}"')
-        except PostgreSQLError as exc:
-            failures.append(str(exc))
-    if failures:
-        raise PostgreSQLError("; ".join(failures))
-
-
 def require_resources(project: str, *, registered: bool) -> None:
     """Prove this project's role and database exist together exactly when the registry already owns them."""
     with mutation_lock():
@@ -173,50 +155,27 @@ def require_resources(project: str, *, registered: bool) -> None:
 
 
 def create_db_and_role(project: str, *, existing: bool) -> ProvisionResult:
-    """Create or re-sync this project's resources; `existing` was proven by `require_resources` under the lock."""
+    """Create or re-sync this project's resources; `existing` was proven by `require_resources` under the lock.
+
+    A new creation runs only after its durable pending intent, so a failed or timed-out command that may still have
+    committed leaves owned resources that a provisioning retry reclaims and a Team drop removes.
+    """
     with mutation_lock():
         db = dbname(project)
         role = db
         pw = role_password(project)
-
-        # A creation counts as attempted before its command runs: a command that fails or times out may still have
-        # committed, and `require_resources` proved absence under the mutation lock, so compensation drops it if
-        # present.
-        role_created = False
-        database_created = False
-        try:
-            if existing:
-                # 1) re-sync the derived password of the existing least-privilege LOGIN role.
-                _psql("postgres", f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
-            else:
-                # 1) least-privilege LOGIN role, then 2) a database OWNED by it — the project is never the superuser.
-                role_created = True
-                _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
-                database_created = True
-                _run(["createdb", *_PG_ARGS, "-O", role, db])
-            # 3) lock it down: ONLY this role may connect; it owns public so it can create tables.
-            _psql("postgres", f'REVOKE CONNECT ON DATABASE "{db}" FROM PUBLIC')
-            _psql("postgres", f'GRANT ALL ON DATABASE "{db}" TO "{role}"')
-            _psql(db, f'ALTER SCHEMA public OWNER TO "{role}"')
-        except PostgreSQLError as provision_error:
-            try:
-                _cleanup_created_resources(project, database_created=database_created, role_created=role_created)
-            except PostgreSQLError as cleanup_error:
-                raise PostgreSQLError(
-                    f"Postgres provisioning failed ({provision_error}); compensation also failed ({cleanup_error})"
-                ) from cleanup_error
-            raise
-        return ProvisionResult(database_url(project), database_created, role_created)
-
-
-def rollback_provision(project: str, result: ProvisionResult) -> None:
-    """Remove only resources created by `result`, preserving every preexisting object."""
-    with mutation_lock():
-        _cleanup_created_resources(
-            project,
-            database_created=result.database_created,
-            role_created=result.role_created,
-        )
+        if existing:
+            # 1) re-sync the derived password of the existing least-privilege LOGIN role.
+            _psql("postgres", f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
+        else:
+            # 1) least-privilege LOGIN role, then 2) a database OWNED by it — the project is never the superuser.
+            _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
+            _run(["createdb", *_PG_ARGS, "-O", role, db])
+        # 3) lock it down: ONLY this role may connect; it owns public so it can create tables.
+        _psql("postgres", f'REVOKE CONNECT ON DATABASE "{db}" FROM PUBLIC')
+        _psql("postgres", f'GRANT ALL ON DATABASE "{db}" TO "{role}"')
+        _psql(db, f'ALTER SCHEMA public OWNER TO "{role}"')
+        return ProvisionResult(database_url(project), created=not existing)
 
 
 def drop_db_and_role(project: str) -> dict:

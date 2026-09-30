@@ -103,18 +103,9 @@ def _provision_team(body: dict) -> dict:
     with postgresql_client.mutation_lock():
         existing = _claim_resources(team_id, principal_token, project, database)
         result = postgresql_client.create_db_and_role(project, existing=existing)
-        try:
-            principal_store.register(team_id, principal_token, database)
-        except (principal_store.PrincipalError, principal_store.PrincipalStoreError) as registry_error:
-            try:
-                postgresql_client.rollback_provision(project, result)
-            except postgresql_client.PostgreSQLError as rollback_error:
-                message = (
-                    f"principal registry commit failed ({registry_error}); "
-                    f"Postgres compensation failed ({rollback_error})"
-                )
-                raise postgresql_client.PostgreSQLError(message) from rollback_error
-            raise
+        # A failed registration keeps the resources: its commit may have landed before the failure surfaced, and
+        # otherwise the pending intent still owns them, so a retry or Team drop reconciles them.
+        principal_store.register(team_id, principal_token, database)
         return result.public()
 
 
