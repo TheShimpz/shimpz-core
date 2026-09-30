@@ -11,6 +11,7 @@ import re
 
 TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 PRINCIPAL_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
+MAX_NOT_AFTER = 2**53
 
 
 class ValidationError(Exception):
@@ -31,3 +32,10 @@ def validate_principal_token(value: object) -> str:
 
 def team_project(team_id: str) -> str:
     return f"team_{validate_team_id(team_id)}"
+
+
+def validate_not_after(value: object) -> int:
+    """A provisioning fence in whole Unix seconds; 0 means no provisioning request can be in flight."""
+    if type(value) is not int or not 0 <= value <= MAX_NOT_AFTER:
+        raise ValidationError("not_after must be a non-negative integer Unix time")
+    return value

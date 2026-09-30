@@ -77,6 +77,11 @@ class PostgreSQLServiceTests(unittest.TestCase):
 
         token = "a" * 64
         self.assertEqual(validate.validate_principal_token(token), token)
+        for fence in (0, validate.MAX_NOT_AFTER):
+            self.assertEqual(validate.validate_not_after(fence), fence)
+        for invalid_fence in (None, True, -1, 1.5, "1", validate.MAX_NOT_AFTER + 1):
+            with self.subTest(fence=invalid_fence), self.assertRaises(validate.ValidationError):
+                validate.validate_not_after(invalid_fence)
         for invalid in ("", "a" * 63, "A" * 64, "z" * 64, None):
             with self.subTest(invalid=invalid), self.assertRaises(validate.ValidationError):
                 validate.validate_principal_token(invalid)

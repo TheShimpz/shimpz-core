@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -78,6 +79,25 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
+class _FenceClock:
+    """Wall-clock seconds that never run backward in this process; read only under the mutation lock.
+
+    A provision is admitted only at or before its `not_after`, and a Team is proven absent only after it, both on this
+    one clock. A wall-clock step backward therefore cannot reopen a fence the Service has already passed, and a
+    delayed request never outlives this process because its socket closes with it.
+    """
+
+    def __init__(self) -> None:
+        self._floor = 0.0
+
+    def now(self) -> float:
+        self._floor = max(self._floor, time.time())
+        return self._floor
+
+
+_fence_clock = _FenceClock()
+
+
 def _claim_resources(team_id: str, principal_token: str, project: str, database: str) -> bool:
     """Reconcile a recorded interrupted provisioning, then durably record this one before any DDL runs.
 
@@ -98,9 +118,14 @@ def _claim_resources(team_id: str, principal_token: str, project: str, database:
 def _provision_team(body: dict) -> dict:
     team_id = validate.validate_team_id(body.get("team_id"))
     principal_token = validate.validate_principal_token(body.get("principal_token"))
+    not_after = validate.validate_not_after(body.get("not_after"))
     project = validate.team_project(team_id)
     database = postgresql_client.dbname(project)
     with postgresql_client.mutation_lock():
+        # A delayed request must never land after Team may have proven this Team absent: once its fence has passed it
+        # is refused before any registry change or DDL.
+        if _fence_clock.now() > not_after:
+            raise ApiError(HTTPStatus.CONFLICT, "provisioning request expired")
         existing = _claim_resources(team_id, principal_token, project, database)
         result = postgresql_client.create_db_and_role(project, existing=existing)
         # A failed registration keeps the resources: its commit may have landed before the failure surfaced, and
@@ -119,14 +144,19 @@ def _drop_team(body: dict, token: str) -> dict:
 
 
 def _confirm_team_absent(body: dict) -> dict:
-    """The provisioner's `team.drop`: prove, without any DDL, that nothing of this Team exists to drop.
+    """The provisioner's `team.drop`: prove, without any DDL, that nothing of this Team exists or can still appear.
 
     Provisioning can fail before its pending intent is recorded, leaving Team holding a principal this registry never
-    admitted. Only when the Team has no registry record in any state and neither its database nor its role exists
-    does this succeed, so Team can finish its cleanup; every real drop still requires the Team's own principal.
+    admitted. `not_after` is the latest fence of every provisioning request Team may still have in flight. Absence is
+    terminal only once that fence has passed, because every later provision is refused, so this succeeds only then
+    and only when the Team has no registry record in any state and neither its database nor its role exists. Every
+    real drop still requires the Team's own principal.
     """
     team_id = validate.validate_team_id(body.get("team_id"))
+    not_after = validate.validate_not_after(body.get("not_after"))
     with postgresql_client.mutation_lock():
+        if _fence_clock.now() <= not_after:
+            raise ApiError(HTTPStatus.CONFLICT, "a provisioning request may still be in flight")
         principal_store.require_unregistered(team_id)
         postgresql_client.require_resources(validate.team_project(team_id), registered=False)
         return {"dropped": []}

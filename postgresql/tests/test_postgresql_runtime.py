@@ -139,7 +139,8 @@ class _FakePostgres:
             yield self
 
 
-_ALPHA = {"team_id": "alpha", "principal_token": "a" * 64}
+_ALPHA = {"team_id": "alpha", "principal_token": "a" * 64, "not_after": 2**53}
+_ALPHA_ABSENT = {"team_id": "alpha", "not_after": 0}
 _ALPHA_DATABASE = "proj_team_alpha"
 
 
@@ -154,6 +155,9 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
         audit.AUDIT_PATH = self.root / "audit" / "audit.jsonl"
         principal_store.STATE_PATH = self.root / "principals.json"
         token_store.TOKEN_PATH = self.root / "token" / "bearer"
+        clock = mock.patch.object(app, "_fence_clock", app._FenceClock())
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def tearDown(self) -> None:
         audit.AUDIT_PATH = self.original_audit_path
@@ -649,14 +653,47 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(principal_store.PrincipalError, "unknown principal"):
                     app._drop_team({"team_id": "alpha"}, "a" * 64)
 
-                self.assertEqual(app._confirm_team_absent({"team_id": "alpha"}), {"dropped": []})
-                self.assertEqual(app._confirm_team_absent({"team_id": "alpha"}), {"dropped": []})
+                self.assertEqual(app._confirm_team_absent(_ALPHA_ABSENT), {"dropped": []})
+                self.assertEqual(app._confirm_team_absent(_ALPHA_ABSENT), {"dropped": []})
                 self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
                 self.assertEqual(postgres.commands, [])
                 self.assertEqual((postgres.roles, postgres.databases), (set(), set()))
 
                 self.assertTrue(app._provision_team(_ALPHA)["created"])
                 self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), principal_store.ACTIVE)
+
+    def test_a_delayed_provision_can_never_land_once_absence_is_proven(self) -> None:
+        now = [1000.0]
+        delayed = {**_ALPHA, "not_after": 1030}
+        proof = {"team_id": "alpha", "not_after": 1030}
+        with mock.patch.object(app.time, "time", side_effect=lambda: now[0]), _FakePostgres().serving() as postgres:
+            now[0] = 1030.0
+            with self.assertRaisesRegex(app.ApiError, "may still be in flight"):
+                app._confirm_team_absent(proof)
+            now[0] = 1031.0
+            self.assertEqual(app._confirm_team_absent(proof), {"dropped": []})
+
+            # Window 1: the delayed request arrives after the proof but before finalization.
+            with self.assertRaisesRegex(app.ApiError, "expired") as expired:
+                app._provision_team(delayed)
+            self.assertEqual(expired.exception.status, HTTPStatus.CONFLICT)
+            self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
+            self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+
+            # Window 2: it arrives after finalization, even across a wall-clock step backward.
+            for current in (1032.0, 1000.0):
+                now[0] = current
+                with self.subTest(now=current), self.assertRaisesRegex(app.ApiError, "expired"):
+                    app._provision_team(delayed)
+            self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
+            self.assertEqual((postgres.roles, postgres.databases, postgres.commands), (set(), set(), []))
+            self.assertFalse(principal_store.STATE_PATH.exists())
+
+            # A request admitted before its fence is registered first, so the later proof refuses the Team.
+            now[0] = 1100.0
+            self.assertTrue(app._provision_team({**_ALPHA, "not_after": 1100})["created"])
+            with self.assertRaisesRegex(principal_store.PrincipalError, "only that principal may drop"):
+                app._confirm_team_absent({"team_id": "alpha", "not_after": 1100 - 1})
 
     def test_absence_proof_refuses_any_registered_or_existing_team_resource_without_ddl(self) -> None:
         for state in (principal_store.PENDING, principal_store.ACTIVE, principal_store.RETIRED):
@@ -671,7 +708,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 _FakePostgres().serving() as postgres,
                 self.assertRaisesRegex(principal_store.PrincipalError, "only that principal may drop"),
             ):
-                app._confirm_team_absent({"team_id": "alpha"})
+                app._confirm_team_absent(_ALPHA_ABSENT)
             self.assertEqual(postgres.commands, [])
 
         principal_store.STATE_PATH.unlink()
@@ -685,14 +722,14 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 _FakePostgres(roles=roles, databases=databases).serving() as postgres,
                 self.assertRaisesRegex(postgresql_client.PostgreSQLError, refusal),
             ):
-                app._confirm_team_absent({"team_id": "alpha"})
+                app._confirm_team_absent(_ALPHA_ABSENT)
             self.assertEqual((postgres.roles, postgres.databases, postgres.commands), (roles, databases, []))
 
     def test_active_team_reprovision_rotates_without_reclaiming_its_database(self) -> None:
         with _FakePostgres().serving() as postgres:
             self.assertTrue(app._provision_team(_ALPHA)["created"])
             postgres.commands.clear()
-            rotated = {"team_id": "alpha", "principal_token": "b" * 64}
+            rotated = {**_ALPHA, "principal_token": "b" * 64}
             self.assertFalse(app._provision_team(rotated)["created"])
         self.assertEqual((postgres.roles, postgres.databases), ({_ALPHA_DATABASE}, {_ALPHA_DATABASE}))
         self.assertNotIn("dropdb", postgres.commands)
