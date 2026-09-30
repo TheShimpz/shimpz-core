@@ -158,33 +158,40 @@ def _cleanup_created_resources(project: str, *, database_created: bool, role_cre
         raise PostgreSQLError("; ".join(failures))
 
 
-def create_db_and_role(project: str, *, allow_existing: bool = False) -> ProvisionResult:
+def require_resources(project: str, *, registered: bool) -> None:
+    """Prove this project's role and database exist together exactly when the registry already owns them."""
+    with mutation_lock():
+        db = dbname(project)
+        role_exists = _role_exists(db)
+        database_exists = _db_exists(db)
+    if role_exists != database_exists:
+        raise PostgreSQLError(f'Postgres resources for "{db}" are incomplete')
+    if database_exists and not registered:
+        raise PostgreSQLError(f'Postgres resources for "{db}" already exist without registry ownership')
+    if registered and not database_exists:
+        raise PostgreSQLError(f'registered Postgres resources for "{db}" are missing')
+
+
+def create_db_and_role(project: str, *, existing: bool) -> ProvisionResult:
+    """Create or re-sync this project's resources; `existing` was proven by `require_resources` under the lock."""
     with mutation_lock():
         db = dbname(project)
         role = db
         pw = role_password(project)
-        role_existed = _role_exists(role)
-        database_existed = _db_exists(db)
-        if role_existed != database_existed:
-            raise PostgreSQLError(f'Postgres resources for "{db}" are incomplete')
-        if database_existed and not allow_existing:
-            raise PostgreSQLError(f'Postgres resources for "{db}" already exist without registry ownership')
-        if allow_existing and not database_existed:
-            raise PostgreSQLError(f'registered Postgres resources for "{db}" are missing')
 
         # A creation counts as attempted before its command runs: a command that fails or times out may still have
-        # committed, and absence was proven above under the mutation lock, so compensation drops it if present.
+        # committed, and `require_resources` proved absence under the mutation lock, so compensation drops it if
+        # present.
         role_created = False
         database_created = False
         try:
-            # 1) least-privilege LOGIN role (idempotent: create it, or re-sync the derived password).
-            if role_existed:
+            if existing:
+                # 1) re-sync the derived password of the existing least-privilege LOGIN role.
                 _psql("postgres", f"ALTER ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
             else:
+                # 1) least-privilege LOGIN role, then 2) a database OWNED by it — the project is never the superuser.
                 role_created = True
                 _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
-            # 2) database OWNED by that role — the project is never the superuser.
-            if not database_existed:
                 database_created = True
                 _run(["createdb", *_PG_ARGS, "-O", role, db])
             # 3) lock it down: ONLY this role may connect; it owns public so it can create tables.

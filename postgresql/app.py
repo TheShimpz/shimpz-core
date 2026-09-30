@@ -78,18 +78,33 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
+def _claim_resources(team_id: str, principal_token: str, project: str, database: str) -> bool:
+    """Reconcile a recorded interrupted provisioning, then durably record this one before any DDL runs.
+
+    Returns whether the Team's resources already exist under an active principal. Names without a registry record
+    stay refused; names under a pending intent were proven absent before it was committed, so they belong to that
+    interrupted attempt, never reached a Team, and are reclaimed before this attempt recreates them.
+    """
+    state = principal_store.provision_state(team_id, database)
+    if state == principal_store.PENDING:
+        postgresql_client.drop_db_and_role(project)
+    existing = state == principal_store.ACTIVE
+    postgresql_client.require_resources(project, registered=existing)
+    if not existing:
+        principal_store.record_pending(team_id, principal_token, database)
+    return existing
+
+
 def _provision_team(body: dict) -> dict:
     team_id = validate.validate_team_id(body.get("team_id"))
     principal_token = validate.validate_principal_token(body.get("principal_token"))
     project = validate.team_project(team_id)
     database = postgresql_client.dbname(project)
     with postgresql_client.mutation_lock():
-        result = postgresql_client.create_db_and_role(
-            project,
-            allow_existing=principal_store.owns_database(team_id, database),
-        )
+        existing = _claim_resources(team_id, principal_token, project, database)
+        result = postgresql_client.create_db_and_role(project, existing=existing)
         try:
-            principal_store.register(team_id, principal_token, postgresql_client.dbname(project))
+            principal_store.register(team_id, principal_token, database)
         except (principal_store.PrincipalError, principal_store.PrincipalStoreError) as registry_error:
             try:
                 postgresql_client.rollback_provision(project, result)

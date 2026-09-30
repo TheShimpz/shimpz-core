@@ -145,14 +145,22 @@ class PostgreSQLServiceTests(unittest.TestCase):
     def test_principal_registry_hashes_tokens_and_enforces_one_exact_database(self) -> None:
         token_a, token_b = "a" * 64, "b" * 64
         main_database = "proj_team_alpha"
+        self.assertIsNone(principal_store.provision_state("alpha", main_database))
+        with self.assertRaisesRegex(principal_store.PrincipalError, "cannot become active while absent"):
+            principal_store.register("alpha", token_a, main_database)
+        principal_store.record_pending("alpha", token_a, main_database)
+        self.assertEqual(principal_store.provision_state("alpha", main_database), principal_store.PENDING)
         principal_store.register("alpha", token_a, main_database)
 
         stored = principal_store.STATE_PATH.read_text(encoding="utf-8")
         self.assertNotIn(token_a, stored)
         self.assertEqual(principal_store.STATE_PATH.stat().st_mode & 0o777, 0o600)
         self.assertEqual(principal_store.database(token_a, "alpha"), main_database)
-        self.assertTrue(principal_store.owns_database("alpha", main_database))
-        self.assertFalse(principal_store.owns_database("alpha", "proj_team_other"))
+        self.assertEqual(principal_store.provision_state("alpha", main_database), principal_store.ACTIVE)
+        with self.assertRaisesRegex(principal_store.PrincipalStoreError, "another database"):
+            principal_store.provision_state("alpha", "proj_team_other")
+        with self.assertRaisesRegex(principal_store.PrincipalError, "cannot become pending while active"):
+            principal_store.record_pending("alpha", token_a, main_database)
         with self.assertRaises(principal_store.PrincipalError):
             principal_store.database(token_b, "alpha")
         with self.assertRaises(principal_store.PrincipalError):
@@ -163,11 +171,13 @@ class PostgreSQLServiceTests(unittest.TestCase):
             principal_store.database(token_a, "alpha")
         self.assertEqual(principal_store.database(token_b, "alpha"), main_database)
 
-        principal_store.register("beta", token_a, "proj_team_beta")
-        with self.assertRaises(principal_store.PrincipalStoreError):
+        principal_store.record_pending("beta", token_a, "proj_team_beta")
+        with self.assertRaisesRegex(principal_store.PrincipalStoreError, "another Team"):
             principal_store.register("beta", token_a, main_database)
+        with self.assertRaisesRegex(principal_store.PrincipalStoreError, "another Team"):
+            principal_store.record_pending("gamma", token_b, "proj_team_gamma")
         with self.assertRaises(principal_store.PrincipalStoreError):
-            principal_store.register("gamma", "c" * 64, "unscoped")
+            principal_store.record_pending("gamma", "c" * 64, "unscoped")
 
     def test_retired_multi_database_registry_shape_is_rejected(self) -> None:
         principal_store.STATE_PATH.write_text(
@@ -189,6 +199,7 @@ class PostgreSQLServiceTests(unittest.TestCase):
     def test_team_drop_is_idempotent_until_finalization(self) -> None:
         token = "c" * 64
         main_database = "proj_team_alpha"
+        principal_store.record_pending("alpha", token, main_database)
         principal_store.register("alpha", token, main_database)
 
         with mock.patch.object(
@@ -211,15 +222,17 @@ class PostgreSQLServiceTests(unittest.TestCase):
     def test_retired_principal_blocks_reprovision_until_finalized(self) -> None:
         token = "d" * 64
         database = "proj_team_alpha"
+        principal_store.record_pending("alpha", token, database)
         principal_store.register("alpha", token, database)
         principal_store.retire(token, "alpha")
 
         with self.assertRaisesRegex(principal_store.PrincipalError, "finalized"):
-            principal_store.owns_database("alpha", database)
+            principal_store.provision_state("alpha", database)
         with self.assertRaisesRegex(principal_store.PrincipalError, "finalized"):
-            principal_store.register("alpha", "e" * 64, database)
+            principal_store.record_pending("alpha", "e" * 64, database)
 
         principal_store.finalize("alpha")
+        principal_store.record_pending("alpha", "e" * 64, database)
         principal_store.register("alpha", "e" * 64, database)
         self.assertEqual(principal_store.database("e" * 64, "alpha"), database)
 
@@ -238,7 +251,7 @@ class PostgreSQLServiceTests(unittest.TestCase):
             mock.patch.object(postgresql_client, "_psql") as psql,
             self.assertRaisesRegex(postgresql_client.PostgreSQLError, "without registry ownership"),
         ):
-            postgresql_client.create_db_and_role("team_foreign_app")
+            postgresql_client.require_resources("team_foreign_app", registered=False)
         psql.assert_not_called()
 
         with (
@@ -246,7 +259,7 @@ class PostgreSQLServiceTests(unittest.TestCase):
             mock.patch.object(postgresql_client, "_db_exists", return_value=False),
             self.assertRaisesRegex(postgresql_client.PostgreSQLError, "are incomplete"),
         ):
-            postgresql_client.create_db_and_role("team_incomplete_app")
+            postgresql_client.require_resources("team_incomplete_app", registered=True)
 
     def test_manifest_is_closed_and_public_metadata_contains_no_credentials(self) -> None:
         manifest = service_manifest.load()

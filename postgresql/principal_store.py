@@ -1,4 +1,11 @@
-"""Hashed postgresql-service principals scoped to one Hosted Team database."""
+"""Hashed postgresql-service principals scoped to one Hosted Team database.
+
+Each Team has at most one record, keyed by its principal digest, whose `state` is:
+- `pending`: a durable provisioning intent committed after proving the database and role absent and before any DDL,
+  so resources under its names belong to that interrupted attempt and may be reclaimed or dropped;
+- `active`: the committed principal for its database;
+- `retired`: the idempotent proof of a dropped database until runtime cleanup finalizes it.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +25,10 @@ STATE_PATH = Path(
 )
 _lock = threading.RLock()
 _DATABASE_RE = re.compile(r"proj_[a-z0-9_]{1,58}\Z")
+PENDING = "pending"
+ACTIVE = "active"
+RETIRED = "retired"
+_STATES = (PENDING, ACTIVE, RETIRED)
 
 
 class PrincipalError(Exception):
@@ -48,11 +59,15 @@ def _read() -> dict[str, dict[str, object]]:
         database = record.get("database")
         if not isinstance(team_id, str) or not isinstance(database, str) or _DATABASE_RE.fullmatch(database) is None:
             raise PrincipalStoreError("principal registry contains an invalid record")
-        if not isinstance(record.get("retired", False), bool):
-            raise PrincipalStoreError("principal registry contains an invalid retirement state")
+        state = record.get("state")
+        if not isinstance(state, str) or state not in _STATES:
+            raise PrincipalStoreError("principal registry contains an invalid principal state")
     databases = [record["database"] for record in data.values()]
     if len(databases) != len(set(databases)):
         raise PrincipalStoreError("principal registry contains a duplicate Team database")
+    team_ids = [record["team_id"] for record in data.values()]
+    if len(team_ids) != len(set(team_ids)):
+        raise PrincipalStoreError("principal registry contains duplicate Team identities")
     return data
 
 
@@ -86,49 +101,60 @@ def _write(data: dict[str, dict[str, object]]) -> None:
         raise PrincipalStoreError("principal registry could not be committed") from exc
 
 
-def register(team_id: str, token: str, database: str) -> None:
-    """Register or rotate exactly one principal for `team_id`; cleartext is never stored."""
+def _provisionable(data: dict[str, dict[str, object]], team_id: str) -> dict[str, object] | None:
+    """The Team's record, if any; a retired proof blocks reprovisioning until it is finalized."""
+    record = next((record for record in data.values() if record["team_id"] == team_id), None)
+    if record is not None and record["state"] == RETIRED:
+        raise PrincipalError("Team principal must be finalized before reprovisioning")
+    return record
+
+
+def _assign(team_id: str, token: str, database: str, state: str, *, prior: tuple[str | None, ...]) -> None:
+    """Durably move this Team's one record to `state`; cleartext is never stored."""
     with _lock:
         if not isinstance(database, str) or _DATABASE_RE.fullmatch(database) is None:
             raise PrincipalStoreError("cannot register an invalid Team database")
         data = _read()
-        existing = [record for record in data.values() if record.get("team_id") == team_id]
-        if len(existing) > 1:
-            raise PrincipalStoreError("principal registry contains duplicate Team identities")
-        if existing and existing[0].get("retired", False):
-            raise PrincipalError("Team principal must be finalized before reprovisioning")
-        if any(record.get("database") == database and record.get("team_id") != team_id for record in data.values()):
-            raise PrincipalStoreError("Team database is already assigned to another principal")
-        for digest, record in list(data.items()):
-            if record.get("team_id") == team_id:
-                del data[digest]
-        data[_digest(token)] = {
-            "team_id": team_id,
-            "database": database,
-            "retired": False,
-        }
+        record = _provisionable(data, team_id)
+        current = None if record is None else record["state"]
+        if current not in prior:
+            raise PrincipalError(f"Team principal cannot become {state} while {current or 'absent'}")
+        digest = _digest(token)
+        others = {other: record for other, record in data.items() if record["team_id"] != team_id}
+        if digest in others or any(record["database"] == database for record in others.values()):
+            raise PrincipalStoreError("Team database or principal is already assigned to another Team")
+        data = others
+        data[digest] = {"team_id": team_id, "database": database, "state": state}
         _write(data)
 
 
-def owns_database(team_id: str, database: str) -> bool:
-    """Whether the durable registry assigns one exact database to this Team."""
+def provision_state(team_id: str, database: str) -> str | None:
+    """This Team's `pending` or `active` state for its exact database, or None when it has no record."""
     with _lock:
-        matches = [record for record in _read().values() if record.get("team_id") == team_id]
-        if len(matches) > 1:
-            raise PrincipalStoreError("principal registry contains duplicate Team identities")
-        if not matches:
-            return False
-        if matches[0].get("retired", False):
-            raise PrincipalError("Team principal must be finalized before reprovisioning")
-        return matches[0].get("database") == database
+        record = _provisionable(_read(), team_id)
+        if record is None:
+            return None
+        if record["database"] != database:
+            raise PrincipalStoreError("principal registry assigns another database to this Team")
+        return record["state"]
+
+
+def record_pending(team_id: str, token: str, database: str) -> None:
+    """Commit the provisioning intent that makes this Team own `database` before any DDL can create it."""
+    _assign(team_id, token, database, PENDING, prior=(None, PENDING))
+
+
+def register(team_id: str, token: str, database: str) -> None:
+    """Complete a recorded provisioning intent, or rotate an active principal, for exactly `database`."""
+    _assign(team_id, token, database, ACTIVE, prior=(PENDING, ACTIVE))
 
 
 def database(token: str, team_id: str, *, allow_retired: bool = False) -> str:
     with _lock:
         record = _read().get(_digest(token))
-        if record is None or record.get("team_id") != team_id:
+        if record is None or record["team_id"] != team_id:
             raise PrincipalError("unknown principal or team scope mismatch")
-        if record.get("retired", False) and not allow_retired:
+        if record["state"] == RETIRED and not allow_retired:
             raise PrincipalError("Team principal is retired")
         return record["database"]
 
@@ -137,11 +163,10 @@ def retire(token: str, team_id: str) -> None:
     """Keep the exact dropped database as an idempotent proof until runtime cleanup finalizes."""
     with _lock:
         data = _read()
-        digest = _digest(token)
-        record = data.get(digest)
-        if record is None or record.get("team_id") != team_id:
+        record = data.get(_digest(token))
+        if record is None or record["team_id"] != team_id:
             raise PrincipalError("unknown principal or team scope mismatch")
-        record["retired"] = True
+        record["state"] = RETIRED
         _write(data)
 
 
@@ -149,12 +174,10 @@ def finalize(team_id: str) -> None:
     """Provisioner-authorized, retry-safe removal of this Team's retired principal proof."""
     with _lock:
         data = _read()
-        matched = [digest for digest, record in data.items() if record.get("team_id") == team_id]
-        for digest in matched:
-            record = data[digest]
-            if not record.get("retired", False):
-                raise PrincipalError("Team principal is still active")
-        if matched:
-            for digest in matched:
-                del data[digest]
-            _write(data)
+        digest = next((digest for digest, record in data.items() if record["team_id"] == team_id), None)
+        if digest is None:
+            return
+        if data[digest]["state"] != RETIRED:
+            raise PrincipalError("Team principal must be dropped before finalization")
+        del data[digest]
+        _write(data)
