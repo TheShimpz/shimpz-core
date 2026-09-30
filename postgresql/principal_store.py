@@ -159,6 +159,13 @@ def database(token: str, team_id: str, *, allow_retired: bool = False) -> str:
         return record["database"]
 
 
+def require_unregistered(team_id: str) -> None:
+    """Refuse when this Team has a record in any state: only its own principal may then drop its database."""
+    with _lock:
+        if any(record["team_id"] == team_id for record in _read().values()):
+            raise PrincipalError("Team principal is registered; only that principal may drop its database")
+
+
 def retire(token: str, team_id: str) -> None:
     """Keep the exact dropped database as an idempotent proof until runtime cleanup finalizes."""
     with _lock:

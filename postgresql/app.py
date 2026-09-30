@@ -118,6 +118,20 @@ def _drop_team(body: dict, token: str) -> dict:
         return {"dropped": [database]}
 
 
+def _confirm_team_absent(body: dict) -> dict:
+    """The provisioner's `team.drop`: prove, without any DDL, that nothing of this Team exists to drop.
+
+    Provisioning can fail before its pending intent is recorded, leaving Team holding a principal this registry never
+    admitted. Only when the Team has no registry record in any state and neither its database nor its role exists
+    does this succeed, so Team can finish its cleanup; every real drop still requires the Team's own principal.
+    """
+    team_id = validate.validate_team_id(body.get("team_id"))
+    with postgresql_client.mutation_lock():
+        principal_store.require_unregistered(team_id)
+        postgresql_client.require_resources(validate.team_project(team_id), registered=False)
+        return {"dropped": []}
+
+
 def _finalize_team(body: dict) -> dict:
     team_id = validate.validate_team_id(body.get("team_id"))
     principal_store.finalize(team_id)
@@ -164,7 +178,7 @@ def _run_operation(operation: str, body: dict, token: str) -> dict:
     if operation == "team.finalize":
         return _finalize_team(body)
     if operation == "team.drop":
-        return _drop_team(body, token)
+        return _drop_team(body, token) if token else _confirm_team_absent(body)
     raise ApiError(HTTPStatus.NOT_FOUND, f"unsupported operation: {operation}")
 
 
@@ -210,6 +224,9 @@ class Handler(BaseHTTPRequestHandler):
         if route.operation in {"team.provision", "team.finalize"}:
             if not self._is_provisioner():
                 raise ApiError(HTTPStatus.FORBIDDEN, "provisioner bearer required")
+            token = ""
+        elif self._is_provisioner():
+            # The provisioner can never drop a Team database; its `team.drop` only proves the Team absent.
             token = ""
         result = _run_operation(route.operation, body, token)
         trace = audit.log(route.operation, body.get("team_id", "?"), result="ok")

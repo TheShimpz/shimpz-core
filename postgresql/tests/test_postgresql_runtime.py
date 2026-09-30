@@ -628,6 +628,66 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             self.assertEqual((postgres.roles, postgres.databases, postgres.commands), (roles, databases, []))
             self.assertFalse(principal_store.STATE_PATH.exists())
 
+    def test_provisioning_failed_before_its_intent_is_cleared_only_by_the_absence_proof(self) -> None:
+        failures = {
+            "registry commit": mock.patch.object(
+                principal_store, "record_pending", side_effect=principal_store.PrincipalStoreError("commit")
+            ),
+            "catalog check": mock.patch.object(
+                postgresql_client, "require_resources", side_effect=postgresql_client.PostgreSQLError("down")
+            ),
+        }
+        for failure, interrupt in failures.items():
+            principal_store.STATE_PATH.unlink(missing_ok=True)
+            with self.subTest(failure=failure), _FakePostgres().serving() as postgres:
+                with (
+                    interrupt,
+                    self.assertRaises((principal_store.PrincipalStoreError, postgresql_client.PostgreSQLError)),
+                ):
+                    app._provision_team(_ALPHA)
+                self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
+                with self.assertRaisesRegex(principal_store.PrincipalError, "unknown principal"):
+                    app._drop_team({"team_id": "alpha"}, "a" * 64)
+
+                self.assertEqual(app._confirm_team_absent({"team_id": "alpha"}), {"dropped": []})
+                self.assertEqual(app._confirm_team_absent({"team_id": "alpha"}), {"dropped": []})
+                self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+                self.assertEqual(postgres.commands, [])
+                self.assertEqual((postgres.roles, postgres.databases), (set(), set()))
+
+                self.assertTrue(app._provision_team(_ALPHA)["created"])
+                self.assertEqual(principal_store.provision_state("alpha", _ALPHA_DATABASE), principal_store.ACTIVE)
+
+    def test_absence_proof_refuses_any_registered_or_existing_team_resource_without_ddl(self) -> None:
+        for state in (principal_store.PENDING, principal_store.ACTIVE, principal_store.RETIRED):
+            principal_store.STATE_PATH.unlink(missing_ok=True)
+            principal_store.record_pending("alpha", "a" * 64, _ALPHA_DATABASE)
+            if state != principal_store.PENDING:
+                principal_store.register("alpha", "a" * 64, _ALPHA_DATABASE)
+            if state == principal_store.RETIRED:
+                principal_store.retire("a" * 64, "alpha")
+            with (
+                self.subTest(state=state),
+                _FakePostgres().serving() as postgres,
+                self.assertRaisesRegex(principal_store.PrincipalError, "only that principal may drop"),
+            ):
+                app._confirm_team_absent({"team_id": "alpha"})
+            self.assertEqual(postgres.commands, [])
+
+        principal_store.STATE_PATH.unlink()
+        for roles, databases, refusal in (
+            ({_ALPHA_DATABASE}, {_ALPHA_DATABASE}, "without registry ownership"),
+            ({_ALPHA_DATABASE}, set(), "are incomplete"),
+            (set(), {_ALPHA_DATABASE}, "are incomplete"),
+        ):
+            with (
+                self.subTest(roles=roles, databases=databases),
+                _FakePostgres(roles=roles, databases=databases).serving() as postgres,
+                self.assertRaisesRegex(postgresql_client.PostgreSQLError, refusal),
+            ):
+                app._confirm_team_absent({"team_id": "alpha"})
+            self.assertEqual((postgres.roles, postgres.databases, postgres.commands), (roles, databases, []))
+
     def test_active_team_reprovision_rotates_without_reclaiming_its_database(self) -> None:
         with _FakePostgres().serving() as postgres:
             self.assertTrue(app._provision_team(_ALPHA)["created"])
@@ -683,6 +743,17 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                     status, payload = self._request(server, "POST", path, {"team_id": "alpha"}, bearer=bearer)
                 self.assertEqual(status, HTTPStatus.OK)
                 self.assertEqual(payload["trace_id"], "a" * 32)
+
+            with (
+                mock.patch.object(app, "_drop_team") as drop,
+                mock.patch.object(app, "_confirm_team_absent", return_value={"dropped": []}) as absent,
+            ):
+                status, payload = self._request(
+                    server, "POST", "/v1/teams/drop", {"team_id": "alpha"}, bearer=app._provisioner_token
+                )
+            self.assertEqual((status, payload["dropped"]), (HTTPStatus.OK, []))
+            drop.assert_not_called()
+            absent.assert_called_once_with({"team_id": "alpha"})
 
     def test_bounded_server_lifecycle_and_script_entrypoint(self) -> None:
         server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), app.Handler, max_concurrency=1)
