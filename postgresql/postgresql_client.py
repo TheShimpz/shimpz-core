@@ -78,7 +78,14 @@ def mutation_lock() -> Iterator[None]:
 
 
 def _run(cmd: list[str], *, stdin: str | None = None) -> str:
-    result = subprocess.run(cmd, env=_ENV, input=stdin, capture_output=True, text=True, timeout=20, check=False)
+    try:
+        result = subprocess.run(cmd, env=_ENV, input=stdin, capture_output=True, text=True, timeout=20, check=False)
+    except subprocess.TimeoutExpired:
+        # A timed-out command still carries its argv and stdin SQL; the typed failure is the only thing that crosses,
+        # so provisioning compensates the resources it already created.
+        raise PostgreSQLError("Postgres command timed out") from None
+    except OSError:
+        raise PostgreSQLError("Postgres command could not start") from None
     if result.returncode != 0:
         # stderr can echo the failing SQL (including CREATE/ALTER ROLE PASSWORD). The numeric verdict
         # is sufficient for the private typed failure; command text and stderr never cross this seam.

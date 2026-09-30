@@ -441,6 +441,23 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             cleanup.assert_called_once()
             self.assertEqual("compensation also failed" in str(raised.exception), cleanup_failure)
 
+    def test_a_command_timeout_after_creating_the_role_still_drops_it(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        timed_out = postgresql_client.subprocess.TimeoutExpired(["createdb"], 20)
+        with (
+            mock.patch.object(postgresql_client, "_role_exists", return_value=False),
+            mock.patch.object(postgresql_client, "_db_exists", return_value=False),
+            mock.patch.object(
+                postgresql_client.subprocess, "run", side_effect=(completed, timed_out, completed)
+            ) as run,
+            self.assertRaisesRegex(postgresql_client.PostgreSQLError, "timed out"),
+        ):
+            postgresql_client.create_db_and_role("team_alpha")
+        commands = [(call.args[0][0], call.kwargs.get("input") or "") for call in run.call_args_list]
+        self.assertIn('CREATE ROLE "proj_team_alpha"', commands[0][1])
+        self.assertEqual(commands[1][0], "createdb")
+        self.assertEqual(commands[2], ("psql", 'DROP ROLE IF EXISTS "proj_team_alpha"\n'))
+
     def test_postgresql_client_cleanup_rollback_and_drop_cover_each_resource(self) -> None:
         postgresql_client._cleanup_created_resources("team", database_created=False, role_created=False)
         with (

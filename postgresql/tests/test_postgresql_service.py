@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -108,6 +109,22 @@ class PostgreSQLServiceTests(unittest.TestCase):
         for secret in ("command-secret", "sql-secret", "database-secret"):
             self.assertNotIn(secret, detail)
         self.assertEqual(run.call_args.kwargs["input"], "sql-secret")
+
+    def test_timed_out_or_unlaunchable_commands_fail_typed_without_their_command_or_sql(self) -> None:
+        for failure, message in (
+            (subprocess.TimeoutExpired(["psql", "command-secret"], 20, output="sql-secret"), "timed out"),
+            (FileNotFoundError("psql command-secret"), "could not start"),
+        ):
+            with (
+                self.subTest(message=message),
+                mock.patch.object(postgresql_client.subprocess, "run", side_effect=failure),
+                self.assertRaisesRegex(postgresql_client.PostgreSQLError, message) as raised,
+            ):
+                postgresql_client._run(["psql", "command-secret"], stdin="sql-secret")
+            self.assertIsNone(raised.exception.__cause__)
+            self.assertTrue(raised.exception.__suppress_context__)
+            for secret in ("command-secret", "sql-secret"):
+                self.assertNotIn(secret, str(raised.exception))
 
     def test_psql_sends_sql_on_stdin_with_fail_fast_literal_variables(self) -> None:
         with mock.patch.object(postgresql_client, "_run", return_value="ok") as run:
