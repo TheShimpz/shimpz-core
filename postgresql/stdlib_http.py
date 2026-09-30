@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hmac
+import io
 import json
 import re
+import socket
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -40,6 +43,34 @@ class HttpFailure:
     audit_reason: str
     result: str
     public_code: str | None = None
+
+
+class DeadlineReader(io.RawIOBase):
+    """Receive one connection's request bytes only until an absolute monotonic deadline.
+
+    Each receive waits at most for the deadline's remainder, so bytes trickling inside every socket timeout cannot
+    stretch the request line, headers, or body past the deadline. The socket's own timeout is restored after each
+    receive so the response is still written under the ordinary connection timeout.
+    """
+
+    def __init__(self, connection: socket.socket, deadline: float) -> None:
+        super().__init__()
+        self._connection = connection
+        self._deadline = deadline
+        self._timeout = connection.gettimeout()
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("request deadline exceeded")
+        self._connection.settimeout(remaining)
+        try:
+            return self._connection.recv_into(buffer)
+        finally:
+            self._connection.settimeout(self._timeout)
 
 
 def bearer_token(headers: object) -> str:
@@ -78,7 +109,13 @@ def read_json_body(headers: object, stream: BinaryIO, *, max_bytes: int) -> dict
     if length == 0:
         return {}
     try:
-        body = json.loads(stream.read(length))
+        raw = stream.read(length)
+    except TimeoutError as exc:
+        raise HttpError(HTTPStatus.REQUEST_TIMEOUT, "request body read timed out") from exc
+    if len(raw) != length:
+        raise HttpError(HTTPStatus.BAD_REQUEST, "request body is incomplete")
+    try:
+        body = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise HttpError(HTTPStatus.BAD_REQUEST, "invalid JSON body") from exc
     if not isinstance(body, dict):

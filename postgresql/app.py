@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import subprocess
@@ -26,6 +27,7 @@ LISTEN_PORT = SERVICE.port
 MAX_BODY_BYTES = int(os.environ.get("SHIMPZ_POSTGRESQL_SERVICE_MAX_BODY_BYTES", str(64 * 1024)))
 MAX_HTTP_CONCURRENCY = 32
 HTTP_CONNECTION_TIMEOUT_SECONDS = 10
+REQUEST_DEADLINE_SECONDS = 10
 _provisioner_token = token_store.ensure_token()
 
 
@@ -226,7 +228,16 @@ def _run_operation(operation: str, body: dict, token: str) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    """Serve one HTTP/1.0 request per connection; its request line, headers, and body share one absolute deadline."""
+
     server_version = f"{SERVICE.id}-service/{SERVICE.version}"
+    request_deadline_seconds: float = REQUEST_DEADLINE_SECONDS
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        deadline = time.monotonic() + self.request_deadline_seconds
+        self.rfile = io.BufferedReader(stdlib_http.DeadlineReader(self.connection, deadline))
 
     def _bearer(self) -> str:
         return stdlib_http.bearer_token(self.headers)
@@ -260,18 +271,18 @@ class Handler(BaseHTTPRequestHandler):
         if route.operation == "metadata":
             self._send_json(HTTPStatus.OK, SERVICE.public())
             return
-        body = self._body()
+        # Authenticate before reading any body, so an unknown caller can never hold a worker with one.
         token = self._bearer()
         if not token:
             raise ApiError(HTTPStatus.FORBIDDEN, "bearer required")
-        if route.operation in {"team.provision", "team.finalize"}:
-            if not self._is_provisioner():
-                raise ApiError(HTTPStatus.FORBIDDEN, "provisioner bearer required")
-            token = ""
-        elif self._is_provisioner():
-            # The provisioner can never drop a Team database; its `team.drop` only proves the Team absent.
-            token = ""
-        result = _run_operation(route.operation, body, token)
+        provisioner = self._is_provisioner()
+        if route.operation in {"team.provision", "team.finalize"} and not provisioner:
+            raise ApiError(HTTPStatus.FORBIDDEN, "provisioner bearer required")
+        if not provisioner and not principal_store.is_principal(token):
+            raise principal_store.PrincipalError("unknown principal")
+        body = self._body()
+        # The provisioner can never drop a Team database; its `team.drop` only proves the Team absent.
+        result = _run_operation(route.operation, body, "" if provisioner else token)
         trace = audit.log(route.operation, body.get("team_id", "?"), result="ok")
         self._send_json(HTTPStatus.OK, {**result, "trace_id": trace})
 

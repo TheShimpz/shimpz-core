@@ -159,6 +159,12 @@ def database(token: str, team_id: str, *, allow_retired: bool = False) -> str:
         return record["database"]
 
 
+def is_principal(token: str) -> bool:
+    """Whether a bearer is any recorded Team principal, so a request body is read only for a known caller."""
+    with _lock:
+        return _digest(token) in _read()
+
+
 def require_unregistered(team_id: str) -> None:
     """Refuse when this Team has a record in any state: only its own principal may then drop its database."""
     with _lock:

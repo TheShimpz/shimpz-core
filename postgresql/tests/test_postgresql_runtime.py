@@ -10,6 +10,7 @@ import runpy
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from email.message import Message
 from http import HTTPStatus
@@ -223,12 +224,18 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             ({"Content-Length": "invalid"}, b"", "invalid Content-Length"),
             ({"Content-Length": "-1"}, b"", "too large"),
             ({"Content-Length": "5"}, b"{}", "too large"),
+            ({"Content-Length": "3"}, b"{}", "incomplete"),
             ({"Content-Length": "1"}, b"{", "invalid JSON"),
             ({"Content-Length": "2"}, b"[]", "must be an object"),
         )
         for malformed_headers, body, message in malformed:
             with self.subTest(message=message), self.assertRaisesRegex(stdlib_http.HttpError, message):
                 stdlib_http.read_json_body(malformed_headers, io.BytesIO(body), max_bytes=4)
+
+        stalled = mock.Mock(read=mock.Mock(side_effect=TimeoutError))
+        with self.assertRaisesRegex(stdlib_http.HttpError, "timed out") as timed_out:
+            stdlib_http.read_json_body({"Content-Length": "2"}, stalled, max_bytes=4)
+        self.assertEqual(timed_out.exception.status, HTTPStatus.REQUEST_TIMEOUT)
 
         route = stdlib_http.Route("GET", app.re.compile(r"^/items/(?P<item>[a-z]+)$"), "items.get")
         match = stdlib_http.resolve_route((route,), "GET", "/items/alpha?tag=a&tag=b")
@@ -257,6 +264,110 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
         self.assertEqual(emitted[0].public_message, "closed")
         self.assertEqual(emitted[0].audit_reason, "KeyError")
         self.assertIs(emitted[1], expected)
+
+    def test_deadline_reader_bounds_every_receive_by_the_remaining_time(self) -> None:
+        connection, peer = socket.socketpair()
+        try:
+            connection.settimeout(7)
+            peer.sendall(b"ab")
+            buffer = bytearray(4)
+            self.assertEqual(stdlib_http.DeadlineReader(connection, time.monotonic() + 5).readinto(buffer), 2)
+            self.assertEqual(bytes(buffer[:2]), b"ab")
+            self.assertEqual(connection.gettimeout(), 7)
+
+            started = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                stdlib_http.DeadlineReader(connection, started + 0.05).readinto(bytearray(1))
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(connection.gettimeout(), 7)
+
+            peer.sendall(b"c")
+            expired = stdlib_http.DeadlineReader(connection, time.monotonic() - 1)
+            self.assertTrue(expired.readable())
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
+                expired.readinto(bytearray(1))
+            self.assertEqual(connection.recv(1), b"c")
+        finally:
+            connection.close()
+            peer.close()
+
+    def test_request_line_headers_and_body_share_one_absolute_deadline(self) -> None:
+        # The idle timeout is far longer than the deadline, so only the absolute deadline can end a trickle.
+        handler = type("DeadlineHandler", (app.Handler,), {"request_deadline_seconds": 0.3})
+        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), handler, max_concurrency=1, connection_timeout=30)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        try:
+            trickled_headers = [b"GET /healthz HTTP/1.1\r\n", *([b"X-Trickle: 1\r\n"] * 200)]
+            elapsed, response = self._trickle(server, trickled_headers)
+            self.assertGreaterEqual(elapsed, 0.25)
+            self.assertLess(elapsed, 3)
+            self.assertEqual(response, b"")
+            self.assertEqual(self._request(server, "GET", "/healthz"), (HTTPStatus.OK, {"status": "ok"}))
+
+            authenticated = (
+                b"POST /v1/teams/finalize HTTP/1.1\r\nContent-Length: 200\r\n"
+                + f"Authorization: Bearer {app._provisioner_token}\r\n\r\n".encode()
+            )
+            with mock.patch.object(app, "_finalize_team") as finalize:
+                elapsed, response = self._trickle(server, [authenticated, *([b" "] * 200)])
+            finalize.assert_not_called()
+            self.assertLess(elapsed, 3)
+            self.assertIn(b" 408 ", response.partition(b"\r\n")[0])
+            self.assertIn(b"request body read timed out", response)
+            self.assertEqual(self._request(server, "GET", "/healthz"), (HTTPStatus.OK, {"status": "ok"}))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_unauthenticated_mutation_is_refused_before_its_body_is_read(self) -> None:
+        # The deadline is long and no body byte is ever sent: a prompt refusal proves the body was never awaited.
+        handler = type("DeadlineHandler", (app.Handler,), {"request_deadline_seconds": 30})
+        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), handler, max_concurrency=1)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        refusals = (
+            ("/v1/teams/drop", "", b"bearer required"),
+            ("/v1/teams/provision", "Authorization: Bearer wrong\r\n", b"provisioner bearer required"),
+            ("/v1/teams/drop", f"Authorization: Bearer {'b' * 64}\r\n", b"principal scope denied"),
+        )
+        try:
+            for path, authorization, error in refusals:
+                with self.subTest(error=error), mock.patch.object(stdlib_http, "read_json_body") as read_body:
+                    head = f"POST {path} HTTP/1.1\r\nContent-Length: 1024\r\n{authorization}\r\n".encode()
+                    elapsed, response = self._trickle(server, [head])
+                    read_body.assert_not_called()
+                    self.assertLess(elapsed, 3)
+                    self.assertIn(b" 403 ", response.partition(b"\r\n")[0])
+                    self.assertIn(error, response)
+            self.assertEqual(self._request(server, "GET", "/healthz"), (HTTPStatus.OK, {"status": "ok"}))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    @staticmethod
+    def _trickle(server: app.BoundedThreadingHTTPServer, parts: list[bytes]) -> tuple[float, bytes]:
+        """Send each part 20 ms apart until the server answers or closes; return the elapsed time and response."""
+        started = time.monotonic()
+        response = bytearray()
+        with socket.create_connection(server.server_address, timeout=0.02) as client:
+            for part in parts:
+                try:
+                    client.sendall(part)
+                    chunk = client.recv(65536)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                response.extend(chunk)
+                break
+            client.settimeout(5)
+            with contextlib.suppress(OSError):
+                while chunk := client.recv(65536):
+                    response.extend(chunk)
+        return time.monotonic() - started, bytes(response)
 
     def test_healthcheck_requires_liveness_and_a_protected_mutation_gate(self) -> None:
         healthcheck = POSTGRESQL / "healthcheck.py"
@@ -789,6 +900,10 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 bearer="wrong",
             )
             self.assertEqual((status, payload["error"]), (HTTPStatus.FORBIDDEN, "provisioner bearer required"))
+
+            status, payload = self._request(server, "POST", "/v1/teams/drop", {"team_id": "alpha"}, bearer="a" * 64)
+            self.assertEqual((status, payload["error"]), (HTTPStatus.FORBIDDEN, "principal scope denied"))
+            principal_store.record_pending("alpha", "a" * 64, _ALPHA_DATABASE)
 
             operations = (
                 ("team.provision", "/v1/teams/provision", "_provision_team", {"created": True}),
