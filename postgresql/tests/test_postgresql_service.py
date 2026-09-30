@@ -221,8 +221,8 @@ class PostgreSQLServiceTests(unittest.TestCase):
         self.assertEqual(principal_store.database(token, "alpha", allow_retired=True), main_database)
         with self.assertRaises(principal_store.PrincipalError):
             principal_store.database(token, "alpha")
-        self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
-        self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+        self.assertEqual(app._finalize_team({"team_id": "alpha", "not_after": 0}), {"finalized": True})
+        self.assertEqual(app._finalize_team({"team_id": "alpha", "not_after": 0}), {"finalized": True})
 
     def test_retired_principal_blocks_reprovision_until_finalized(self) -> None:
         token = "d" * 64

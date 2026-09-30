@@ -98,6 +98,12 @@ class _FenceClock:
 _fence_clock = _FenceClock()
 
 
+def _require_fence_passed(not_after: int) -> None:
+    """Refuse while a provisioning request fenced by `not_after` could still be admitted; hold the mutation lock."""
+    if _fence_clock.now() <= not_after:
+        raise ApiError(HTTPStatus.CONFLICT, "a provisioning request may still be in flight")
+
+
 def _claim_resources(team_id: str, principal_token: str, project: str, database: str) -> bool:
     """Reconcile a recorded interrupted provisioning, then durably record this one before any DDL runs.
 
@@ -155,16 +161,23 @@ def _confirm_team_absent(body: dict) -> dict:
     team_id = validate.validate_team_id(body.get("team_id"))
     not_after = validate.validate_not_after(body.get("not_after"))
     with postgresql_client.mutation_lock():
-        if _fence_clock.now() <= not_after:
-            raise ApiError(HTTPStatus.CONFLICT, "a provisioning request may still be in flight")
+        _require_fence_passed(not_after)
         principal_store.require_unregistered(team_id)
         postgresql_client.require_resources(validate.team_project(team_id), registered=False)
         return {"dropped": []}
 
 
 def _finalize_team(body: dict) -> dict:
+    """Remove the Team's retired proof only once no fenced provisioning request can still be admitted.
+
+    A retired or pending record refuses a delayed provision for its Team; removing it earlier would let that request
+    recreate a database after Team discarded its principal and cleanup record.
+    """
     team_id = validate.validate_team_id(body.get("team_id"))
-    principal_store.finalize(team_id)
+    not_after = validate.validate_not_after(body.get("not_after"))
+    with postgresql_client.mutation_lock():
+        _require_fence_passed(not_after)
+        principal_store.finalize(team_id)
     return {"finalized": True}
 
 

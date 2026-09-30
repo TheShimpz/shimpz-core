@@ -613,7 +613,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                         expected = ({_ALPHA_DATABASE}, {_ALPHA_DATABASE})
                     else:
                         self.assertEqual(app._drop_team({"team_id": "alpha"}, "a" * 64), {"dropped": [_ALPHA_DATABASE]})
-                        self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+                        self.assertEqual(app._finalize_team(_ALPHA_ABSENT), {"finalized": True})
                         self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
                         expected = (set(), set())
                     self.assertEqual((postgres.roles, postgres.databases), expected)
@@ -655,7 +655,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
 
                 self.assertEqual(app._confirm_team_absent(_ALPHA_ABSENT), {"dropped": []})
                 self.assertEqual(app._confirm_team_absent(_ALPHA_ABSENT), {"dropped": []})
-                self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+                self.assertEqual(app._finalize_team(_ALPHA_ABSENT), {"finalized": True})
                 self.assertEqual(postgres.commands, [])
                 self.assertEqual((postgres.roles, postgres.databases), (set(), set()))
 
@@ -678,7 +678,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 app._provision_team(delayed)
             self.assertEqual(expired.exception.status, HTTPStatus.CONFLICT)
             self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
-            self.assertEqual(app._finalize_team({"team_id": "alpha"}), {"finalized": True})
+            self.assertEqual(app._finalize_team(proof), {"finalized": True})
 
             # Window 2: it arrives after finalization, even across a wall-clock step backward.
             for current in (1032.0, 1000.0):
@@ -694,6 +694,27 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             self.assertTrue(app._provision_team({**_ALPHA, "not_after": 1100})["created"])
             with self.assertRaisesRegex(principal_store.PrincipalError, "only that principal may drop"):
                 app._confirm_team_absent({"team_id": "alpha", "not_after": 1100 - 1})
+
+    def test_a_retired_proof_is_finalized_only_after_the_delayed_provision_is_fenced(self) -> None:
+        now = [1000.0]
+        delayed = {**_ALPHA, "not_after": 1030}
+        fenced = {"team_id": "alpha", "not_after": 1030}
+        with mock.patch.object(app.time, "time", side_effect=lambda: now[0]), _FakePostgres().serving() as postgres:
+            self.assertTrue(app._provision_team({**_ALPHA, "not_after": 1001})["created"])
+            self.assertEqual(app._drop_team({"team_id": "alpha"}, "a" * 64), {"dropped": [_ALPHA_DATABASE]})
+            with self.assertRaisesRegex(principal_store.PrincipalError, "finalized before reprovisioning"):
+                app._provision_team(delayed)
+            with self.assertRaisesRegex(app.ApiError, "may still be in flight"):
+                app._finalize_team(fenced)
+            with self.assertRaisesRegex(principal_store.PrincipalError, "finalized"):
+                principal_store.provision_state("alpha", _ALPHA_DATABASE)
+
+            now[0] = 1031.0
+            self.assertEqual(app._finalize_team(fenced), {"finalized": True})
+            with self.assertRaisesRegex(app.ApiError, "expired"):
+                app._provision_team(delayed)
+            self.assertIsNone(principal_store.provision_state("alpha", _ALPHA_DATABASE))
+            self.assertEqual((postgres.roles, postgres.databases), (set(), set()))
 
     def test_absence_proof_refuses_any_registered_or_existing_team_resource_without_ddl(self) -> None:
         for state in (principal_store.PENDING, principal_store.ACTIVE, principal_store.RETIRED):
