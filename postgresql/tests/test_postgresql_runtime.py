@@ -343,6 +343,43 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(principal_store.PrincipalStoreError, "could not be committed"):
             principal_store._write({})
 
+    def test_principal_store_commit_is_fsynced_before_and_after_its_atomic_replace(self) -> None:
+        events: list[tuple[str, object]] = []
+        real_fsync, real_replace = os.fsync, Path.replace
+
+        def fsync(descriptor: int) -> None:
+            events.append(("fsync", Path(f"/proc/self/fd/{descriptor}").readlink()))
+            real_fsync(descriptor)
+
+        def replace(source: Path, destination: Path) -> Path:
+            events.append(("replace", source))
+            self.assertEqual(source.stat().st_mode & 0o777, 0o600)
+            self.assertNotEqual(source.name, principal_store.STATE_PATH.with_suffix(".tmp").name)
+            return real_replace(source, destination)
+
+        with (
+            mock.patch.object(principal_store.os, "fsync", side_effect=fsync),
+            mock.patch.object(Path, "replace", autospec=True, side_effect=replace),
+        ):
+            principal_store._write({})
+
+        temporary = events[1][1]
+        self.assertEqual(
+            events,
+            [("fsync", temporary), ("replace", temporary), ("fsync", principal_store.STATE_PATH.parent)],
+        )
+        self.assertEqual(json.loads(principal_store.STATE_PATH.read_text(encoding="utf-8")), {})
+        self.assertEqual(principal_store.STATE_PATH.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["principals.json"])
+
+        with (
+            mock.patch.object(principal_store.os, "fsync", side_effect=OSError("disk")),
+            self.assertRaisesRegex(principal_store.PrincipalStoreError, "could not be committed"),
+        ):
+            principal_store._write({"unsynced": {}})
+        self.assertEqual(json.loads(principal_store.STATE_PATH.read_text(encoding="utf-8")), {})
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["principals.json"])
+
     def test_principal_store_rejects_duplicate_scopes_and_active_finalization(self) -> None:
         data = {
             "one": {"team_id": "alpha", "database": "proj_alpha"},

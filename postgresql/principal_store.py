@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 
@@ -55,13 +56,32 @@ def _read() -> dict[str, dict[str, object]]:
     return data
 
 
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write(data: dict[str, dict[str, object]]) -> None:
+    """Durably replace the registry: a committed ownership record must survive power loss like the DDL it guards."""
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary = STATE_PATH.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-        temporary.chmod(0o600)
-        temporary.replace(STATE_PATH)
+        # mkstemp creates a unique 0600 file with O_EXCL, so no reader ever sees a broader mode or a shared name.
+        descriptor, name = tempfile.mkstemp(prefix=f".{STATE_PATH.name}.", suffix=".tmp", dir=STATE_PATH.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(STATE_PATH)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        _fsync_directory(STATE_PATH.parent)
     except OSError as exc:
         raise PrincipalStoreError("principal registry could not be committed") from exc
 
