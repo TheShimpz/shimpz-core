@@ -42,7 +42,7 @@ RUN groupadd -g "${SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GID}" shimpzpostgresql-token 
 
 WORKDIR /app
 COPY app.py validate.py postgresql_client.py principal_store.py audit.py token_store.py healthcheck.py \
-    service_manifest.py stdlib_http.py shimpz.service.toml ./
+    service_manifest.py stdlib_http.py deadline.py shimpz.service.toml ./
 
 # Pre-create + own every path a NAMED VOLUME will be mounted onto — Docker copies an image
 # directory's ownership/content into a fresh empty volume on first mount, which is otherwise

@@ -31,6 +31,7 @@ os.environ["SHIMPZ_POSTGRESQL_SERVICE_AUDIT_LOG"] = str(Path(MODULE_STATE.name) 
 
 import app
 import audit
+import deadline
 import postgresql_client
 import principal_store
 import service_manifest
@@ -224,7 +225,6 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             ({"Content-Length": "invalid"}, b"", "invalid Content-Length"),
             ({"Content-Length": "-1"}, b"", "too large"),
             ({"Content-Length": "5"}, b"{}", "too large"),
-            ({"Content-Length": "3"}, b"{}", "incomplete"),
             ({"Content-Length": "1"}, b"{", "invalid JSON"),
             ({"Content-Length": "2"}, b"[]", "must be an object"),
         )
@@ -232,7 +232,14 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(stdlib_http.HttpError, message):
                 stdlib_http.read_json_body(malformed_headers, io.BytesIO(body), max_bytes=4)
 
-        stalled = mock.Mock(read=mock.Mock(side_effect=TimeoutError))
+        self.assertEqual(
+            stdlib_http.read_json_body({"Content-Length": "2"}, deadline.ExactBody(io.BytesIO(b"{}")), max_bytes=4),
+            {},
+        )
+        with self.assertRaisesRegex(stdlib_http.HttpError, "incomplete") as incomplete:
+            stdlib_http.read_json_body({"Content-Length": "3"}, deadline.ExactBody(io.BytesIO(b"{}")), max_bytes=4)
+        self.assertEqual(incomplete.exception.status, HTTPStatus.BAD_REQUEST)
+        stalled = deadline.ExactBody(mock.Mock(read=mock.Mock(side_effect=TimeoutError)))
         with self.assertRaisesRegex(stdlib_http.HttpError, "timed out") as timed_out:
             stdlib_http.read_json_body({"Content-Length": "2"}, stalled, max_bytes=4)
         self.assertEqual(timed_out.exception.status, HTTPStatus.REQUEST_TIMEOUT)
@@ -271,18 +278,18 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
             connection.settimeout(7)
             peer.sendall(b"ab")
             buffer = bytearray(4)
-            self.assertEqual(stdlib_http.DeadlineReader(connection, time.monotonic() + 5).readinto(buffer), 2)
+            self.assertEqual(deadline.DeadlineReader(connection, time.monotonic() + 5).readinto(buffer), 2)
             self.assertEqual(bytes(buffer[:2]), b"ab")
             self.assertEqual(connection.gettimeout(), 7)
 
             started = time.monotonic()
             with self.assertRaises(TimeoutError):
-                stdlib_http.DeadlineReader(connection, started + 0.05).readinto(bytearray(1))
+                deadline.DeadlineReader(connection, started + 0.05).readinto(bytearray(1))
             self.assertLess(time.monotonic() - started, 2)
             self.assertEqual(connection.gettimeout(), 7)
 
             peer.sendall(b"c")
-            expired = stdlib_http.DeadlineReader(connection, time.monotonic() - 1)
+            expired = deadline.DeadlineReader(connection, time.monotonic() - 1)
             self.assertTrue(expired.readable())
             with self.assertRaisesRegex(TimeoutError, "deadline"):
                 expired.readinto(bytearray(1))

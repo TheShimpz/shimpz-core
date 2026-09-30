@@ -14,6 +14,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import audit
+import deadline
 import postgresql_client
 import principal_store
 import service_manifest
@@ -236,8 +237,8 @@ class Handler(BaseHTTPRequestHandler):
     def setup(self) -> None:
         super().setup()
         self.rfile.close()
-        deadline = time.monotonic() + self.request_deadline_seconds
-        self.rfile = io.BufferedReader(stdlib_http.DeadlineReader(self.connection, deadline))
+        expires = time.monotonic() + self.request_deadline_seconds
+        self.rfile = io.BufferedReader(deadline.DeadlineReader(self.connection, expires))
 
     def _bearer(self) -> str:
         return stdlib_http.bearer_token(self.headers)
@@ -249,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
         stdlib_http.send_json(self, status, payload)
 
     def _body(self) -> dict:
-        return stdlib_http.read_json_body(self.headers, self.rfile, max_bytes=MAX_BODY_BYTES)
+        return stdlib_http.read_json_body(self.headers, deadline.ExactBody(self.rfile), max_bytes=MAX_BODY_BYTES)
 
     def _dispatch(self, method: str) -> None:
         stdlib_http.dispatch(
