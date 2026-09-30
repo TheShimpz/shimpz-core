@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 _dsn = urlsplit(os.environ.get("SHIMPZ_POSTGRESQL_DSN", ""))
@@ -76,9 +77,12 @@ def mutation_lock() -> Iterator[None]:
         yield
 
 
-def _run(cmd: list[str], *, stdin: str | None = None) -> str:
+def _run(program: Literal["psql", "createdb", "dropdb"], args: list[str], *, stdin: str | None = None) -> str:
+    """Run one fixed PostgreSQL client program; request-derived values only ever reach its argument list."""
     try:
-        result = subprocess.run(cmd, env=_ENV, input=stdin, capture_output=True, text=True, timeout=20, check=False)
+        result = subprocess.run(
+            [program, *args], env=_ENV, input=stdin, capture_output=True, text=True, timeout=20, check=False
+        )
     except subprocess.TimeoutExpired:
         # A timed-out command still carries its argv and stdin SQL; the typed failure is the only thing that crosses,
         # while a pending intent still owns whatever the command may have committed.
@@ -113,7 +117,8 @@ def database_url(project: str) -> str:
 def _psql(db: str, sql: str, variables: Mapping[str, str] | None = None) -> str:
     variable_args = [item for name, value in (variables or {}).items() for item in ("--set", f"{name}={value}")]
     return _run(
-        ["psql", *_PG_ARGS, "-d", db, "-tA", "-v", "ON_ERROR_STOP=1", *variable_args, "-f", "-"],
+        "psql",
+        [*_PG_ARGS, "-d", db, "-tA", "-v", "ON_ERROR_STOP=1", *variable_args, "-f", "-"],
         stdin=f"{sql}\n",
     )
 
@@ -170,7 +175,7 @@ def create_db_and_role(project: str, *, existing: bool) -> ProvisionResult:
         else:
             # 1) least-privilege LOGIN role, then 2) a database OWNED by it — the project is never the superuser.
             _psql("postgres", f"CREATE ROLE \"{role}\" LOGIN PASSWORD '{pw}'")
-            _run(["createdb", *_PG_ARGS, "-O", role, db])
+            _run("createdb", [*_PG_ARGS, "-O", role, db])
         # 3) lock it down: ONLY this role may connect; it owns public so it can create tables.
         _psql("postgres", f'REVOKE CONNECT ON DATABASE "{db}" FROM PUBLIC')
         _psql("postgres", f'GRANT ALL ON DATABASE "{db}" TO "{role}"')
@@ -182,6 +187,6 @@ def drop_db_and_role(project: str) -> dict:
     with mutation_lock():
         db = dbname(project)
         role = db
-        _run(["dropdb", *_PG_ARGS, "--if-exists", db])
+        _run("dropdb", [*_PG_ARGS, "--if-exists", db])
         _psql("postgres", f'DROP ROLE IF EXISTS "{role}"')
         return {"dropped": db}

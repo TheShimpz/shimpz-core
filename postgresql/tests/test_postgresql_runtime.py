@@ -118,8 +118,8 @@ class _FakePostgres:
         self._record(sql.split(' "')[0])
         return ""
 
-    def run(self, command: list[str], *, stdin: str | None = None) -> str:
-        tool, name = command[0], command[-1]
+    def run(self, tool: str, args: list[str], *, stdin: str | None = None) -> str:
+        name = args[-1]
         if tool == "createdb":
             if self.crash_on_createdb:
                 raise _Crash
@@ -604,7 +604,7 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
     def test_postgresql_client_success_and_existence_checks(self) -> None:
         completed = mock.Mock(returncode=0, stdout="result", stderr="")
         with mock.patch.object(postgresql_client.subprocess, "run", return_value=completed):
-            self.assertEqual(postgresql_client._run(["psql"]), "result")
+            self.assertEqual(postgresql_client._run("psql", []), "result")
         self.assertEqual(
             postgresql_client.ProvisionResult("url", created=True).public(),
             {"database_url": "url", "created": True},
@@ -621,9 +621,9 @@ class PostgreSQLRuntimeTests(unittest.TestCase):
                 mock.patch.object(postgresql_client, "_run", return_value="") as run,
             ):
                 result = postgresql_client.create_db_and_role("team_alpha", existing=existing)
-            commands = [call.args[0] for call in run.call_args_list]
+            programs = [call.args[0] for call in run.call_args_list]
             self.assertEqual(result.created, not existing)
-            self.assertEqual(any(command[0] == "createdb" for command in commands), not existing)
+            self.assertEqual("createdb" in programs, not existing)
             self.assertIn("ALTER ROLE" if existing else "CREATE ROLE", psql.call_args_list[0].args[1])
 
         with (

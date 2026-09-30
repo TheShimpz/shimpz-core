@@ -108,11 +108,12 @@ class PostgreSQLServiceTests(unittest.TestCase):
             mock.patch.object(postgresql_client.subprocess, "run", return_value=completed) as run,
             self.assertRaisesRegex(postgresql_client.PostgreSQLError, r"^Postgres command failed \(rc=23\)$") as raised,
         ):
-            postgresql_client._run(["psql", "command-secret"], stdin="sql-secret")
+            postgresql_client._run("psql", ["command-secret"], stdin="sql-secret")
 
         detail = str(raised.exception)
         for secret in ("command-secret", "sql-secret", "database-secret"):
             self.assertNotIn(secret, detail)
+        self.assertEqual(run.call_args.args[0], ["psql", "command-secret"])
         self.assertEqual(run.call_args.kwargs["input"], "sql-secret")
 
     def test_timed_out_or_unlaunchable_commands_fail_typed_without_their_command_or_sql(self) -> None:
@@ -125,7 +126,7 @@ class PostgreSQLServiceTests(unittest.TestCase):
                 mock.patch.object(postgresql_client.subprocess, "run", side_effect=failure),
                 self.assertRaisesRegex(postgresql_client.PostgreSQLError, message) as raised,
             ):
-                postgresql_client._run(["psql", "command-secret"], stdin="sql-secret")
+                postgresql_client._run("psql", ["command-secret"], stdin="sql-secret")
             self.assertIsNone(raised.exception.__cause__)
             self.assertTrue(raised.exception.__suppress_context__)
             for secret in ("command-secret", "sql-secret"):
@@ -140,7 +141,8 @@ class PostgreSQLServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "ok")
-        command = run.call_args.args[0]
+        self.assertEqual(run.call_args.args[0], "psql")
+        command = run.call_args.args[1]
         self.assertNotIn("SELECT 1 WHERE rolname = :'role_name'", command)
         self.assertIn("ON_ERROR_STOP=1", command)
         self.assertEqual(command[-2:], ["-f", "-"])
