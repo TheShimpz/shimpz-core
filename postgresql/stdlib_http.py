@@ -55,7 +55,8 @@ def bearer_token(headers: object) -> str:
 def bearer_authorized(headers: object, token: str) -> bool:
     """Accept one exact bearer header and compare it in constant time."""
     supplied = bearer_token(headers)
-    return bool(supplied) and hmac.compare_digest(supplied, token)
+    # Headers decode as Latin-1, and compare_digest raises on non-ASCII text instead of refusing it.
+    return bool(supplied) and supplied.isascii() and hmac.compare_digest(supplied, token)
 
 
 def send_json(handler: object, status: HTTPStatus, payload: object) -> None:

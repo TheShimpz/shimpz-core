@@ -87,6 +87,9 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
             ("/v1/teams/drop", "", b"bearer required"),
             ("/v1/teams/provision", "Authorization: Bearer wrong\r\n", b"provisioner bearer required"),
             ("/v1/teams/drop", f"Authorization: Bearer {'b' * 64}\r\n", b"principal scope denied"),
+            # UTF-8 bearer bytes decode as non-ASCII Latin-1 text: refused, never a constant-time comparison error.
+            ("/v1/teams/provision", "Authorization: Bearer \u00e9\r\n", b"provisioner bearer required"),
+            ("/v1/teams/drop", f"Authorization: Bearer {'\u00e9' * 64}\r\n", b"principal scope denied"),
         )
         try:
             for path, authorization, error in refusals:
