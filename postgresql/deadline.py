@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import socket
 import time
@@ -9,6 +10,9 @@ from http import HTTPStatus
 from typing import BinaryIO
 
 from stdlib_http import HttpError
+
+LINGER_SECONDS = 1.0
+LINGER_MAX_BYTES = 64 * 1024
 
 
 class DeadlineReader(io.RawIOBase):
@@ -44,6 +48,7 @@ class ExactBody:
 
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
+        self.complete = False
 
     def read(self, length: int) -> bytes:
         try:
@@ -52,4 +57,21 @@ class ExactBody:
             raise HttpError(HTTPStatus.REQUEST_TIMEOUT, "request body read timed out") from exc
         if len(raw) != length:
             raise HttpError(HTTPStatus.BAD_REQUEST, "request body is incomplete")
+        self.complete = True
         return raw
+
+
+def linger_close(connection: socket.socket, expires: float) -> None:
+    """Half-close after a response that left a body unread, then discard a bounded remainder before the close.
+
+    Closing a socket that still holds unread request bytes makes the kernel reset the connection, which can destroy a
+    refusal the peer has not read yet. The discarded bytes are never parsed, at most LINGER_MAX_BYTES are read, and the
+    wait ends at the earlier of the request deadline and LINGER_SECONDS from now, so lingering cannot extend a trickle.
+    """
+    with contextlib.suppress(OSError):
+        connection.shutdown(socket.SHUT_WR)
+        reader = DeadlineReader(connection, min(expires, time.monotonic() + LINGER_SECONDS))
+        buffer = memoryview(bytearray(LINGER_MAX_BYTES))
+        discarded = 0
+        while discarded < LINGER_MAX_BYTES and (received := reader.readinto(buffer[discarded:])):
+            discarded += received

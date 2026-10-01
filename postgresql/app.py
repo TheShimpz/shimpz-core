@@ -237,8 +237,21 @@ class Handler(BaseHTTPRequestHandler):
     def setup(self) -> None:
         super().setup()
         self.rfile.close()
-        expires = time.monotonic() + self.request_deadline_seconds
-        self.rfile = io.BufferedReader(deadline.DeadlineReader(self.connection, expires))
+        self._expires = time.monotonic() + self.request_deadline_seconds
+        self.rfile = io.BufferedReader(deadline.DeadlineReader(self.connection, self._expires))
+        self._request_body = deadline.ExactBody(self.rfile)
+
+    def finish(self) -> None:
+        super().finish()
+        if self._body_unread():
+            deadline.linger_close(self.connection, self._expires)
+
+    def _body_unread(self) -> bool:
+        """Whether parsed headers declared a body that a refusal or failure left unread on the socket."""
+        headers = getattr(self, "headers", None)
+        if headers is None or self._request_body.complete:
+            return False
+        return headers.get("Content-Length", "0") not in {"", "0"} or "Transfer-Encoding" in headers
 
     def _bearer(self) -> str:
         return stdlib_http.bearer_token(self.headers)
@@ -250,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         stdlib_http.send_json(self, status, payload)
 
     def _body(self) -> dict:
-        return stdlib_http.read_json_body(self.headers, deadline.ExactBody(self.rfile), max_bytes=MAX_BODY_BYTES)
+        return stdlib_http.read_json_body(self.headers, self._request_body, max_bytes=MAX_BODY_BYTES)
 
     def _dispatch(self, method: str) -> None:
         stdlib_http.dispatch(
