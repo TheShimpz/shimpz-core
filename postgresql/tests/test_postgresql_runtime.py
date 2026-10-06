@@ -170,8 +170,8 @@ class RuntimeTestCase(unittest.TestCase):
         self.temporary.cleanup()
 
     @contextlib.contextmanager
-    def _server(self):
-        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+    def _server(self, handler: type = app.Handler, **options):
+        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), handler, **options)
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         try:

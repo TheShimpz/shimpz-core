@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import socket
-import threading
 import time
 import unittest
 from http import HTTPStatus
@@ -48,10 +47,7 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
     def test_request_line_headers_and_body_share_one_absolute_deadline(self) -> None:
         # The idle timeout is far longer than the deadline, so only the absolute deadline can end a trickle.
         handler = type("DeadlineHandler", (app.Handler,), {"request_deadline_seconds": 0.3})
-        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), handler, max_concurrency=1, connection_timeout=30)
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-        thread.start()
-        try:
+        with self._server(handler, max_concurrency=1, connection_timeout=30) as server:
             trickled_headers = [b"GET /healthz HTTP/1.1\r\n", *([b"X-Trickle: 1\r\n"] * 200)]
             elapsed, response = self._trickle(server, trickled_headers)
             self.assertGreaterEqual(elapsed, 0.25)
@@ -72,17 +68,10 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
             self.assertIn(b"request body read timed out", response)
             self._await_idle(server)
             self.assertEqual(self._request(server, "GET", "/healthz"), (HTTPStatus.OK, {"status": "ok"}))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
 
     def test_unauthenticated_mutation_is_refused_before_its_body_is_read(self) -> None:
         # The deadline is long and no body byte is ever sent: a prompt refusal proves the body was never awaited.
         handler = type("DeadlineHandler", (app.Handler,), {"request_deadline_seconds": 30})
-        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), handler, max_concurrency=1)
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-        thread.start()
         refusals = (
             ("/v1/teams/drop", "", b"bearer required"),
             ("/v1/teams/provision", "Authorization: Bearer wrong\r\n", b"provisioner bearer required"),
@@ -91,7 +80,7 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
             ("/v1/teams/provision", "Authorization: Bearer \u00e9\r\n", b"provisioner bearer required"),
             ("/v1/teams/drop", f"Authorization: Bearer {'\u00e9' * 64}\r\n", b"principal scope denied"),
         )
-        try:
+        with self._server(handler, max_concurrency=1) as server:
             for path, authorization, error in refusals:
                 with self.subTest(error=error), mock.patch.object(stdlib_http, "read_json_body") as read_body:
                     head = f"POST {path} HTTP/1.1\r\nContent-Length: 1024\r\n{authorization}\r\n".encode()
@@ -102,19 +91,12 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
                     self.assertIn(error, response)
             self._await_idle(server)
             self.assertEqual(self._request(server, "GET", "/healthz"), (HTTPStatus.OK, {"status": "ok"}))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
 
     def test_refused_client_that_sent_its_body_still_receives_the_refusal(self) -> None:
         # Closing with an unread body would reset the connection; the bounded linger lets the refusal arrive first.
-        server = app.BoundedThreadingHTTPServer(("127.0.0.1", 0), app.Handler, max_concurrency=1)
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-        thread.start()
         body = b"x" * (48 * 1024)
         head = f"POST /v1/teams/provision HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n".encode()
-        try:
+        with self._server(max_concurrency=1) as server:
             with mock.patch.object(stdlib_http, "read_json_body") as read_body:
                 for attempt in range(50):
                     self._await_idle(server)
@@ -127,10 +109,6 @@ class PostgreSQLRequestBoundsTests(runtime.RuntimeTestCase):
                         self.assertIn(b" 403 ", bytes(response).partition(b"\r\n")[0])
                         self.assertIn(b"bearer required", response)
             read_body.assert_not_called()
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=3)
 
     def test_linger_close_discards_only_a_bounded_unread_remainder(self) -> None:
         connection, peer = socket.socketpair()
