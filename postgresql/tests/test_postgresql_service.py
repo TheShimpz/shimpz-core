@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import grp
 import hmac
-import http.client
 import json
-import os
 import socket
 import subprocess
 import sys
@@ -18,19 +15,10 @@ from unittest import mock
 
 POSTGRESQL = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(POSTGRESQL))
+sys.path.insert(0, str(POSTGRESQL / "tests"))
 
-MODULE_STATE = tempfile.TemporaryDirectory(prefix="postgresql-service-module-test-")
-PASSWORD_FILE = Path(MODULE_STATE.name) / "postgres-password"
-PASSWORD_FILE.write_text("test-superuser-secret-long-enough\n", encoding="ascii")
-os.environ.setdefault(
-    "SHIMPZ_POSTGRESQL_DSN",
-    "postgresql://shimpz-postgresql-service@postgres:5432/postgres",
-)
-os.environ["SHIMPZ_POSTGRESQL_PASSWORD_FILE"] = str(PASSWORD_FILE)
-os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_FILE"] = str(Path(MODULE_STATE.name) / "token")
-os.environ["SHIMPZ_POSTGRESQL_SERVICE_TOKEN_GROUP"] = grp.getgrgid(os.getgid()).gr_name
-os.environ["SHIMPZ_POSTGRESQL_SERVICE_PRINCIPALS_FILE"] = str(Path(MODULE_STATE.name) / "principals.json")
-os.environ["SHIMPZ_POSTGRESQL_SERVICE_AUDIT_LOG"] = str(Path(MODULE_STATE.name) / "audit.jsonl")
+# Imported first: it prepares the file-backed environment the Service modules read at import time.
+import test_postgresql_runtime as runtime
 
 import app
 import postgresql_client
@@ -40,6 +28,9 @@ import validate
 
 
 class PostgreSQLServiceTests(unittest.TestCase):
+    # One loopback JSON request through the runtime suites' client.
+    http = staticmethod(runtime.RuntimeTestCase._request)
+
     def test_administrator_password_is_file_backed_and_strict(self) -> None:
         self.assertEqual(postgresql_client.PGPASSWORD, "test-superuser-secret-long-enough")
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
@@ -337,27 +328,6 @@ class PostgreSQLServiceTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
-
-    @staticmethod
-    def http(
-        server: ThreadingHTTPServer,
-        method: str,
-        path: str,
-        *,
-        body: dict[str, object] | None = None,
-        bearer: str | None = None,
-    ) -> tuple[int, dict[str, object]]:
-        connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
-        try:
-            encoded = None if body is None else json.dumps(body)
-            headers = {} if body is None else {"Content-Type": "application/json"}
-            if bearer is not None:
-                headers["Authorization"] = f"Bearer {bearer}"
-            connection.request(method, path, encoded, headers)
-            response = connection.getresponse()
-            return response.status, json.loads(response.read())
-        finally:
-            connection.close()
 
 
 if __name__ == "__main__":
