@@ -7,8 +7,6 @@ Each Team has at most one record, keyed by its principal digest, whose `state` i
 - `retired`: the idempotent proof of a dropped database until runtime cleanup finalizes it.
 """
 
-from __future__ import annotations
-
 import hashlib
 import json
 import os

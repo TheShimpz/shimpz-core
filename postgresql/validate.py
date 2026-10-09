@@ -5,8 +5,6 @@ caller (app.py) turns into postgresql_client.py calls. This validator is the act
 not the client that acts on its output.
 """
 
-from __future__ import annotations
-
 import re
 
 TEAM_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")

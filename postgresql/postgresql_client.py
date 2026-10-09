@@ -5,8 +5,6 @@ SQL is delivered on psql stdin so a derived tenant password never appears in pro
 identifier interpolated into SQL is derived from validate.py's strict Team ID allowlist.
 """
 
-from __future__ import annotations
-
 import hmac
 import os
 import stat

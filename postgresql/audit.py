@@ -3,8 +3,6 @@
 Matches the repo-wide structlog JSON schema `logq` expects (ts/level/service/trace_id/msg/…extra).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import sys

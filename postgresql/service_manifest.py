@@ -1,7 +1,5 @@
 """Strict, dependency-free parser for the Shimpz Service Spec v1 manifest."""
 
-from __future__ import annotations
-
 import re
 import tomllib
 from dataclasses import dataclass

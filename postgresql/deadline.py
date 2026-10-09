@@ -1,7 +1,5 @@
 """Absolute request deadlines for the PostgreSQL Service's stdlib HTTP boundary."""
 
-from __future__ import annotations
-
 import contextlib
 import io
 import socket

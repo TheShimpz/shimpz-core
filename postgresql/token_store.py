@@ -3,8 +3,6 @@
 Generated once on first boot, on a volume shared only between Team and this sidecar; never stored in .env.
 """
 
-from __future__ import annotations
-
 import grp
 import os
 import secrets

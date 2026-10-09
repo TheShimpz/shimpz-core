@@ -1,7 +1,5 @@
 """Request deadlines, authentication before any body read, and the bounded linger after a refusal."""
 
-from __future__ import annotations
-
 import contextlib
 import socket
 import time
